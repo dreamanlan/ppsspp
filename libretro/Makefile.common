@@ -23,6 +23,7 @@ INCFLAGS += \
 	-I$(EXTDIR)/glslang \
 	-I$(EXTDIR)/glslang-build \
 	-I$(EXTDIR)/native \
+	-I$(EXTDIR)/minimp3 \
 	-I$(EXTDIR)/zlib \
 	-I$(EXTDIR)/cpu_features/include \
 	-I$(ZSTDDIR) \
@@ -171,6 +172,9 @@ endif
 
 SOURCES_C += $(LIBRETRODIR)/ext/glew/glew.c
 
+SOURCES_CXX += \
+	$(EXTDIR)/minimp3/minimp3.cpp
+
 SOURCES_C += \
 	$(EXTDIR)/libkirk/AES.c \
 	$(EXTDIR)/libkirk/amctrl.c \
@@ -255,6 +259,22 @@ SOURCES_C += \
 	$(EXTDIR)/libchdr/src/libchdr_chd.c \
 	$(EXTDIR)/libchdr/src/libchdr_flac.c \
 	$(EXTDIR)/libchdr/src/libchdr_huffman.c
+
+INCFLAGS += -I$(EXTDIR)/at3_standalone
+
+SOURCES_CXX += \
+	${EXTDIR}/at3_standalone/atrac.cpp \
+	${EXTDIR}/at3_standalone/atrac3.cpp \
+	${EXTDIR}/at3_standalone/atrac3plus.cpp \
+	${EXTDIR}/at3_standalone/atrac3plusdec.cpp \
+	${EXTDIR}/at3_standalone/atrac3plusdsp.cpp \
+	${EXTDIR}/at3_standalone/get_bits.cpp \
+	${EXTDIR}/at3_standalone/compat.cpp \
+	${EXTDIR}/at3_standalone/fft.cpp \
+	${EXTDIR}/at3_standalone/float_dsp.cpp \
+	${EXTDIR}/at3_standalone/mathematics.cpp \
+	${EXTDIR}/at3_standalone/mem.cpp \
+	${EXTDIR}/at3_standalone/sinewin.cpp
 
 ifeq ($(PLATFORM_EXT), android)
 COREFLAGS += -DHAVE_DLFCN_H
@@ -699,6 +719,7 @@ SOURCES_CXX += \
 	       $(COREDIR)/HW/Camera.cpp \
 	       $(COREDIR)/HW/Display.cpp \
 	       $(COREDIR)/HW/SimpleAudioDec.cpp \
+	       $(COREDIR)/HW/Atrac3Standalone.cpp \
 	       $(COREDIR)/HW/AsyncIOManager.cpp \
 	       $(COREDIR)/HW/MediaEngine.cpp \
 	       $(COREDIR)/HW/MpegDemux.cpp \
