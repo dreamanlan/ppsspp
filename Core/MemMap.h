@@ -296,6 +296,21 @@ inline bool IsValidAddress(const u32 address) {
 	}
 }
 
+inline bool IsValid4AlignedAddress(const u32 address) {
+	if ((address & 0x3E000003) == 0x08000000) {
+		return true;
+	} else if ((address & 0x3F800003) == 0x04000000) {
+		return true;
+	} else if ((address & 0xBFFFC003) == 0x00010000) {
+		return true;
+	} else if ((address & 0x3F000000) >= 0x08000000 && (address & 0x3F000000) < 0x08000000 + g_MemorySize) {
+		return (address & 3) == 0;
+	} else {
+		return false;
+	}
+}
+
+
 inline u32 MaxSizeAtAddress(const u32 address){
 	if ((address & 0x3E000000) == 0x08000000) {
 		return 0x08000000 + g_MemorySize - (address & 0x3FFFFFFF);
@@ -337,6 +352,7 @@ inline u32 ValidSize(const u32 address, const u32 requested_size) {
 	return requested_size;
 }
 
+// NOTE: If size == 0, any address will be accepted. This may not be ideal for all cases.
 inline bool IsValidRange(const u32 address, const u32 size) {
 	return ValidSize(address, size) == size;
 }
