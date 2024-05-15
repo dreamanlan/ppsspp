@@ -537,6 +537,11 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 			return;
 		}
 	} else if (message == UIMessage::REQUEST_GAME_BOOT) {
+		// TODO: Ignore or not if it's the same game that's already running?
+		if (gamePath_ == Path(value)) {
+			WARN_LOG(LOADER, "Game already running, ignoring");
+			return;
+		}
 		const char *ext = strrchr(value, '.');
 		if (ext != nullptr && !strcmp(ext, ".ppst")) {
 			SaveState::Load(Path(value), -1, &AfterStateBoot);
@@ -1279,17 +1284,25 @@ bool EmuScreen::checkPowerDown() {
 	return false;
 }
 
-bool EmuScreen::canBeBackground(bool isTop) const {
-	if (g_Config.bSkipBufferEffects) {
-		return isTop || (g_Config.bTransparentBackground && Core_ShouldRunBehind());
-	}
+ScreenRenderRole EmuScreen::renderRole(bool isTop) const {
+	auto CanBeBackground = [&]() -> bool {
+		if (g_Config.bSkipBufferEffects) {
+			return isTop || (g_Config.bTransparentBackground && Core_ShouldRunBehind());
+		}
 
-	if (!g_Config.bTransparentBackground && !isTop) {
-		if (Core_ShouldRunBehind() || screenManager()->topScreen()->wantBrightBackground())
-			return true;
-		return false;
+		if (!g_Config.bTransparentBackground && !isTop) {
+			if (Core_ShouldRunBehind() || screenManager()->topScreen()->wantBrightBackground())
+				return true;
+			return false;
+		}
+		return true;
+	};
+
+	ScreenRenderRole role = ScreenRenderRole::MUST_BE_FIRST;
+	if (CanBeBackground()) {
+		role |= ScreenRenderRole::CAN_BE_BACKGROUND;
 	}
-	return true;
+	return role;
 }
 
 void EmuScreen::darken() {
@@ -1312,6 +1325,12 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 	if (!draw) {
 		return flags;  // shouldn't really happen but I've seen a suspicious stack trace..
 	}
+
+	// Sanity check
+#ifdef _DEBUG
+	Draw::BackendState state = draw->GetCurrentBackendState();
+	_dbg_assert_(!state.valid || state.passes == 0);
+#endif
 
 	GamepadUpdateOpacity();
 
@@ -1507,6 +1526,8 @@ bool EmuScreen::hasVisibleUI() {
 		return true;
 	if (g_Config.bEnableCardboardVR || g_Config.bEnableNetworkChat)
 		return true;
+	if (g_Config.bShowGPOLEDs)
+		return true;
 	// Debug UI.
 	if ((DebugOverlay)g_Config.iDebugOverlay != DebugOverlay::OFF || g_Config.bShowDeveloperMenu)
 		return true;
@@ -1556,6 +1577,26 @@ void EmuScreen::renderUI() {
 		DrawProfile(*ctx);
 	}
 #endif
+
+	if (g_Config.bShowGPOLEDs) {
+		// Draw a vertical strip of LEDs at the right side of the screen.
+		const float ledSize = 24.0f;
+		const float spacing = 4.0f;
+		const float height = 8 * ledSize + 7 * spacing;
+		const float x = ctx->GetBounds().w - spacing - ledSize;
+		const float y = (ctx->GetBounds().h - height) * 0.5f;
+		ctx->FillRect(UI::Drawable(0xFF000000), Bounds(x - spacing, y - spacing, ledSize + spacing * 2, height + spacing * 2));
+		for (int i = 0; i < 8; i++) {
+			int bit = (g_GPOBits >> i) & 1;
+			uint32_t color = 0xFF30FF30;
+			if (!bit) {
+				color = darkenColor(darkenColor(color));
+			}
+			Bounds ledBounds(x, y + (spacing + ledSize) * i, ledSize, ledSize);
+			ctx->FillRect(UI::Drawable(color), ledBounds);
+		}
+		ctx->Flush();
+	}
 
 	if (coreState == CORE_RUNTIME_ERROR || coreState == CORE_STEPPING) {
 		const MIPSExceptionInfo &info = Core_GetExceptionInfo();
