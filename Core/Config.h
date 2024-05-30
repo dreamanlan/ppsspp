@@ -280,6 +280,10 @@ public:
 	bool bAutoAudioDevice;
 	bool bUseNewAtrac;
 
+	// iOS only for now
+	bool bAudioMixWithOthers;
+	bool bAudioRespectSilentMode;
+
 	// UI
 	bool bShowDebuggerOnLoad;
 	int iShowStatusFlags;
@@ -602,7 +606,7 @@ public:
 
 	bool IsPortrait() const;
 	int NextValidBackend();
-	bool IsBackendEnabled(GPUBackend backend, bool validate = true);
+	bool IsBackendEnabled(GPUBackend backend);
 
 	bool UseFullScreen() const {
 		if (iForceFullScreen != -1)

@@ -476,7 +476,7 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	}
 
 	if (GetGPUBackend() == GPUBackend::VULKAN) {
-		const bool usable = !draw->GetBugs().Has(Draw::Bugs::GEOMETRY_SHADERS_SLOW_OR_BROKEN);
+		const bool usable = draw->GetDeviceCaps().geometryShaderSupported && !draw->GetBugs().Has(Draw::Bugs::GEOMETRY_SHADERS_SLOW_OR_BROKEN);
 		const bool vertexSupported = draw->GetDeviceCaps().clipDistanceSupported && draw->GetDeviceCaps().cullDistanceSupported;
 		if (usable && !vertexSupported) {
 			CheckBox *geometryCulling = graphicsSettings->Add(new CheckBox(&g_Config.bUseGeometryShader, gr->T("Geometry shader culling")));
@@ -617,7 +617,23 @@ void GameSettingsScreen::CreateAudioSettings(UI::ViewGroup *audioSettings) {
 	auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
 
 	audioSettings->Add(new ItemHeader(ms->T("Audio")));
-	CheckBox *enableSound = audioSettings->Add(new CheckBox(&g_Config.bEnableSound,a->T("Enable Sound")));
+	CheckBox *enableSound = audioSettings->Add(new CheckBox(&g_Config.bEnableSound,a->T("Enable Sound")));	
+
+#if PPSSPP_PLATFORM(IOS)
+	CheckBox *respectSilentMode = audioSettings->Add(new CheckBox(&g_Config.bAudioRespectSilentMode, a->T("Respect silent mode")));
+	respectSilentMode->OnClick.Add([=](EventParams &e) {
+		System_Notify(SystemNotification::AUDIO_MODE_CHANGED);
+		return UI::EVENT_DONE;
+	});
+	respectSilentMode->SetEnabledPtr(&g_Config.bEnableSound);
+	CheckBox *mixWithOthers = audioSettings->Add(new CheckBox(&g_Config.bAudioMixWithOthers, a->T("Mix audio with other apps")));
+	mixWithOthers->OnClick.Add([=](EventParams &e) {
+		System_Notify(SystemNotification::AUDIO_MODE_CHANGED);
+		return UI::EVENT_DONE;
+	});
+	mixWithOthers->SetEnabledPtr(&g_Config.bEnableSound);
+#endif
+
 	PopupSliderChoice *volume = audioSettings->Add(new PopupSliderChoice(&g_Config.iGlobalVolume, VOLUME_OFF, VOLUME_FULL, VOLUME_FULL, a->T("Global volume"), screenManager()));
 	volume->SetEnabledPtr(&g_Config.bEnableSound);
 	volume->SetZeroLabel(a->T("Mute"));
@@ -970,14 +986,7 @@ void GameSettingsScreen::CreateToolsSettings(UI::ViewGroup *tools) {
 
 	tools->Add(new ItemHeader(ms->T("Tools")));
 
-	bool showRetroAchievements = true;
-#if PPSSPP_PLATFORM(IOS_APP_STORE)
-	// Hide RetroAchievements login (unless the user has specified a login via the ini file).
-	// A non-working login won't pass App Store review.
-	if (g_Config.sAchievementsUserName.empty()) {
-		showRetroAchievements = false;
-	}
-#endif
+	const bool showRetroAchievements = true;
 	if (showRetroAchievements) {
 		auto retro = tools->Add(new Choice(sy->T("RetroAchievements")));
 		retro->OnClick.Add([=](UI::EventParams &) -> UI::EventReturn {
@@ -1215,6 +1224,10 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	systemSettings->Add(new CheckBox(&g_Config.bCacheFullIsoInRam, sy->T("Cache ISO in RAM", "Cache full ISO in RAM")))->SetEnabled(!PSP_IsInited());
 	systemSettings->Add(new CheckBox(&g_Config.bCheckForNewVersion, sy->T("VersionCheck", "Check for new versions of PPSSPP")));
 	systemSettings->Add(new CheckBox(&g_Config.bScreenshotsAsPNG, sy->T("Screenshots as PNG")));
+	// TODO: Make this setting available on Mac too.
+#if PPSSPP_PLATFORM(WINDOWS)
+	systemSettings->Add(new CheckBox(&g_Config.bPauseOnLostFocus, sy->T("Pause when not focused")));
+#endif
 
 	systemSettings->Add(new ItemHeader(sy->T("Cheats", "Cheats")));
 	CheckBox *enableCheats = systemSettings->Add(new CheckBox(&g_Config.bEnableCheats, sy->T("Enable Cheats")));
@@ -1770,6 +1783,7 @@ void DeveloperToolsScreen::CreateViews() {
 	bool canUseJit = System_GetPropertyBool(SYSPROP_CAN_JIT);
 	// iOS can now use JIT on all modes, apparently.
 	// The bool may come in handy for future non-jit platforms though (UWP XB1?)
+	// In iOS App Store builds, we disable the JIT.
 
 	static const char *cpuCores[] = {"Interpreter", "Dynarec/JIT (recommended)", "IR Interpreter", "JIT using IR"};
 	PopupMultiChoice *core = list->Add(new PopupMultiChoice(&g_Config.iCpuCore, sy->T("CPU Core"), cpuCores, 0, ARRAY_SIZE(cpuCores), I18NCat::SYSTEM, screenManager()));
@@ -1782,7 +1796,7 @@ void DeveloperToolsScreen::CreateViews() {
 		core->HideChoice(1);
 		core->HideChoice(3);
 	}
-	// TODO: Enable on more architectures.
+	// TODO: Enable "JIT using IR" on more architectures.
 #if !PPSSPP_ARCH(X86) && !PPSSPP_ARCH(AMD64) && !PPSSPP_ARCH(ARM64)
 	core->HideChoice(3);
 #endif

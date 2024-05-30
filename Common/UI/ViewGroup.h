@@ -60,7 +60,7 @@ public:
 
 	// Assumes that layout has taken place.
 	NeighborResult FindNeighbor(View *view, FocusDirection direction, NeighborResult best);
-	virtual NeighborResult FindScrollNeighbor(View *view, const Point &target, FocusDirection direction, NeighborResult best);
+	virtual NeighborResult FindScrollNeighbor(View *view, const Point2D &target, FocusDirection direction, NeighborResult best);
 
 	bool CanBeFocused() const override { return false; }
 	bool IsViewGroup() const override { return true; }
@@ -332,10 +332,13 @@ public:
 	void Update() override;
 
 	void SetOpen(bool open) {
+		_dbg_assert_(open_);
 		*open_ = open;
 		UpdateVisibility();
 	}
 	void SetOpenPtr(bool *open) {
+		_dbg_assert_(header_);
+		_dbg_assert_(open);
 		header_->SetOpenPtr(open);
 		open_ = open;
 		UpdateVisibility();
@@ -344,8 +347,8 @@ public:
 private:
 	void UpdateVisibility();
 	bool localOpen_ = true;
-	bool *open_;
-	CollapsibleHeader *header_;
+	bool *open_ = nullptr;
+	CollapsibleHeader *header_ = nullptr;
 };
 
 }  // namespace UI

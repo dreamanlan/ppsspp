@@ -528,6 +528,11 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		PostMessage(MainWindow::GetHWND(), MainWindow::WM_USER_WINDOW_TITLE_CHANGED, 0, 0);
 		return true;
 	}
+	case SystemRequestType::SET_KEEP_SCREEN_BRIGHT:
+	{
+		MainWindow::SetKeepScreenBright(param3 != 0);
+		return true;
+	}
 	case SystemRequestType::INPUT_TEXT_MODAL:
 		std::thread([=] {
 			std::string out;
@@ -990,7 +995,7 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 
 #ifndef _DEBUG
 	// See #11719 - too many Vulkan drivers crash on basic init.
-	if (g_Config.IsBackendEnabled(GPUBackend::VULKAN, false)) {
+	if (g_Config.IsBackendEnabled(GPUBackend::VULKAN)) {
 		VulkanSetAvailable(DetectVulkanInExternalProcess());
 	}
 #endif

@@ -13,8 +13,8 @@
 #include "UI/BackgroundAudio.h"
 #include "UI/OnScreenDisplay.h"
 
-static inline const char *DeNull(const char *ptr) {
-	return ptr ? ptr : "";
+static inline std::string_view DeNull(const char *ptr) {
+	return ptr ? std::string_view(ptr) : "";
 }
 
 // Compound view, creating a FileChooserChoice inside.
@@ -308,8 +308,6 @@ void RetroAchievementsSettingsScreen::CreateAccountTab(UI::ViewGroup *viewGroup)
 				return UI::EVENT_DONE;
 			});
 		} else {
-			// TODO: For text input on iOS, look into https://stackoverflow.com/questions/7253477/how-to-display-the-iphone-ipad-keyboard-over-a-full-screen-opengl-es-app
-
 			// Hack up a temporary quick login-form-ish-thing
 			viewGroup->Add(new PopupTextInputChoice(GetRequesterToken(), &username_, di->T("Username"), "", 128, screenManager()));
 			viewGroup->Add(new PopupTextInputChoice(GetRequesterToken(), &password_, di->T("Password"), "", 128, screenManager()))->SetPasswordDisplay();
@@ -363,7 +361,7 @@ void RetroAchievementsSettingsScreen::CreateCustomizeTab(UI::ViewGroup *viewGrou
 		viewGroup->Add(new AudioFileChooser(GetRequesterToken(), &g_Config.sAchievementsUnlockAudioFile, ac->T("Achievement unlocked"), UISound::ACHIEVEMENT_UNLOCKED));
 		viewGroup->Add(new AudioFileChooser(GetRequesterToken(), &g_Config.sAchievementsLeaderboardSubmitAudioFile, ac->T("Leaderboard score submission"), UISound::LEADERBOARD_SUBMITTED));
 	}
-	PopupSliderChoice *volume = viewGroup->Add(new PopupSliderChoice(&g_Config.iAchievementSoundVolume, VOLUME_OFF, VOLUME_FULL, VOLUME_FULL, a->T("Achievement sound volume"), screenManager()));
+	PopupSliderChoice *volume = viewGroup->Add(new PopupSliderChoice(&g_Config.iAchievementSoundVolume, VOLUME_OFF, VOLUME_FULL, VOLUME_FULL, ac->T("Achievement sound volume"), screenManager()));
 	volume->SetEnabledPtr(&g_Config.bEnableSound);
 	volume->SetZeroLabel(a->T("Mute"));
 
@@ -562,7 +560,7 @@ static void RenderGameAchievementSummary(UIContext &dc, const Bounds &bounds, fl
 	std::string description = Achievements::GetGameAchievementSummary();
 
 	dc.SetFontScale(0.66f, 0.66f);
-	dc.DrawTextRect(description.c_str(), bounds.Inset(iconSpace + 5.0f, 38.0f, 5.0f, 5.0f), fgColor, ALIGN_TOPLEFT);
+	dc.DrawTextRect(description, bounds.Inset(iconSpace + 5.0f, 38.0f, 5.0f, 5.0f), fgColor, ALIGN_TOPLEFT);
 
 	dc.SetFontScale(1.0f, 1.0f);
 	dc.Flush();

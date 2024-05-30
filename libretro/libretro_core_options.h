@@ -209,6 +209,12 @@ struct retro_core_option_v2_definition option_defs_us[] = {
          { "222MHz",   NULL },
          { "266MHz",   NULL },
          { "333MHz",   NULL },
+         { "444MHz",   NULL },
+         { "555MHz",   NULL },
+         { "666MHz",   NULL },
+         { "777MHz",   NULL },
+         { "888MHz",   NULL },
+         { "999MHz",   NULL },
          { NULL, NULL },
       },
       "disabled"
@@ -273,7 +279,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
    },
    {
       "ppsspp_memstick_inserted",
-      "Memory Stick inserted",
+      "Memory Stick Inserted",
       NULL,
       "Some games require ejecting/inserting the Memory Stick.",
       NULL,
@@ -384,7 +390,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       NULL,
       "video",
       BOOL_OPTIONS,
-      "disabled"
+      "enabled"
    },
    {
       "ppsspp_detect_vsync_swap_interval",

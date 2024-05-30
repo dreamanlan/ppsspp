@@ -81,6 +81,8 @@ static const char * const logSectionName = "LogDebug";
 static const char * const logSectionName = "Log";
 #endif
 
+static bool TryUpdateSavedPath(Path *path);
+
 std::string GPUBackendToString(GPUBackend backend) {
 	switch (backend) {
 	case GPUBackend::OPENGL:
@@ -357,9 +359,11 @@ static const ConfigSetting cpuSettings[] = {
 };
 
 static int DefaultInternalResolution() {
-	// Auto on Windows and Linux, 2x on large screens, 1x elsewhere.
+	// Auto on Windows and Linux, 2x on large screens and iOS, 1x elsewhere.
 #if defined(USING_WIN_UI) || defined(USING_QT_UI)
 	return 0;
+#elif PPSSPP_PLATFORM(IOS)
+	return 2;
 #else
 	if (System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_VR) {
 		return 4;
@@ -380,7 +384,7 @@ static int DefaultFastForwardMode() {
 }
 
 static int DefaultAndroidHwScale() {
-#ifdef __ANDROID__
+#if PPSSPP_PLATFORM(ANDROID)
 	if (System_GetPropertyInt(SYSPROP_SYSTEMVERSION) >= 19 || System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_TV) {
 		// Arbitrary cutoff at Kitkat - modern devices are usually powerful enough that hw scaling
 		// doesn't really help very much and mostly causes problems. See #11151
@@ -513,7 +517,7 @@ int Config::NextValidBackend() {
 	return iGPUBackend;
 }
 
-bool Config::IsBackendEnabled(GPUBackend backend, bool validate) {
+bool Config::IsBackendEnabled(GPUBackend backend) {
 	std::vector<std::string> split;
 
 	SplitString(sDisabledGPUBackends, ',', split);
@@ -532,10 +536,8 @@ bool Config::IsBackendEnabled(GPUBackend backend, bool validate) {
 	if (backend != GPUBackend::OPENGL)
 		return false;
 #elif PPSSPP_PLATFORM(WINDOWS)
-	if (validate) {
-		if (backend == GPUBackend::DIRECT3D11 && !DoesVersionMatchWindows(6, 0, 0, 0, true))
-			return false;
-	}
+	if (backend == GPUBackend::DIRECT3D11 && !DoesVersionMatchWindows(6, 0, 0, 0, true))
+		return false;
 #else
 	if (backend == GPUBackend::DIRECT3D11 || backend == GPUBackend::DIRECT3D9)
 		return false;
@@ -545,11 +547,8 @@ bool Config::IsBackendEnabled(GPUBackend backend, bool validate) {
 	if (backend == GPUBackend::OPENGL)
 		return false;
 #endif
-	if (validate) {
-		if (backend == GPUBackend::VULKAN && !VulkanMayBeAvailable())
-			return false;
-	}
-
+	if (backend == GPUBackend::VULKAN && !VulkanMayBeAvailable())
+		return false;
 	return true;
 }
 
@@ -702,6 +701,8 @@ static const ConfigSetting soundSettings[] = {
 	ConfigSetting("AchievementSoundVolume", &g_Config.iAchievementSoundVolume, 6, CfgFlag::PER_GAME),
 	ConfigSetting("AudioDevice", &g_Config.sAudioDevice, "", CfgFlag::DEFAULT),
 	ConfigSetting("AutoAudioDevice", &g_Config.bAutoAudioDevice, true, CfgFlag::DEFAULT),
+	ConfigSetting("AudioMixWithOthers", &g_Config.bAudioMixWithOthers, true, CfgFlag::DEFAULT),
+	ConfigSetting("AudioRespectSilentMode", &g_Config.bAudioRespectSilentMode, false, CfgFlag::DEFAULT),
 	ConfigSetting("UseNewAtrac", &g_Config.bUseNewAtrac, false, CfgFlag::DEFAULT),
 };
 
@@ -1147,6 +1148,9 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
 
 	iRunCount++;
 
+	// For iOS, issue #19211
+	TryUpdateSavedPath(&currentDirectory);
+
 	// This check is probably not really necessary here anyway, you can always
 	// press Home or Browse if you're in a bad directory.
 	if (!File::Exists(currentDirectory))
@@ -1167,6 +1171,14 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
 	// -1 is okay, though. We'll just ignore recent stuff if it is.
 	if (iMaxRecent == 0)
 		iMaxRecent = 60;
+
+	// Fix JIT setting if no longer available.
+	if (!System_GetPropertyBool(SYSPROP_CAN_JIT)) {
+		if (iCpuCore == (int)CPUCore::JIT || iCpuCore == (int)CPUCore::JIT_IR) {
+			WARN_LOG(LOADER, "Forcing JIT off due to unavailablility");
+			iCpuCore = (int)CPUCore::IR_INTERPRETER;
+		}
+	}
 
 	if (iMaxRecent > 0) {
 		private_->ResetRecentIsosThread();
@@ -1359,7 +1371,7 @@ bool Config::Save(const char *saveReason) {
 		playTimeTracker_.Save(playTime);
 
 		if (!iniFile.Save(iniFilename_)) {
-			ERROR_LOG(LOADER, "Error saving config (%s)- can't write ini '%s'", saveReason, iniFilename_.c_str());
+			ERROR_LOG(LOADER, "Error saving config (%s) - can't write ini '%s'", saveReason, iniFilename_.c_str());
 			return false;
 		}
 		INFO_LOG(LOADER, "Config saved (%s): '%s' (%0.1f ms)", saveReason, iniFilename_.c_str(), (time_now_d() - startTime) * 1000.0);
@@ -1538,6 +1550,34 @@ void Config::RemoveRecent(const std::string &file) {
 	recentIsos.erase(iter, recentIsos.end());
 }
 
+// On iOS, the path to the app documents directory changes on each launch.
+// Example path:
+// /var/mobile/Containers/Data/Application/0E0E89DE-8D8E-485A-860C-700D8BC87B86/Documents/PSP/GAME/SuicideBarbie
+// The GUID part changes on each launch.
+static bool TryUpdateSavedPath(Path *path) {
+#if PPSSPP_PLATFORM(IOS)
+	INFO_LOG(LOADER, "Original path: %s", path->c_str());
+	std::string pathStr = path->ToString();
+
+	const std::string_view applicationRoot = "/var/mobile/Containers/Data/Application/";
+	if (startsWith(pathStr, applicationRoot)) {
+		size_t documentsPos = pathStr.find("/Documents/");
+		if (documentsPos == std::string::npos) {
+			return false;
+		}
+		std::string memstick = g_Config.memStickDirectory.ToString();
+		size_t memstickDocumentsPos = memstick.find("/Documents");  // Note: No trailing slash, or we won't find it.
+		*path = Path(memstick.substr(0, memstickDocumentsPos) + pathStr.substr(documentsPos));
+		return true;
+	} else {
+		// Path can't be auto-updated.
+		return false;
+	}
+#else
+	return false;
+#endif
+}
+
 void Config::CleanRecent() {
 	private_->SetRecentIsosThread([this] {
 		SetCurrentThreadName("RecentISOs");
@@ -1548,6 +1588,10 @@ void Config::CleanRecent() {
 
 		std::lock_guard<std::mutex> guard(private_->recentIsosLock);
 		std::vector<std::string> cleanedRecent;
+		if (recentIsos.empty()) {
+			INFO_LOG(LOADER, "No recents list found.");
+		}
+
 		for (size_t i = 0; i < recentIsos.size(); i++) {
 			bool exists = false;
 			Path path = Path(recentIsos[i]);
@@ -1555,6 +1599,12 @@ void Config::CleanRecent() {
 			case PathType::CONTENT_URI:
 			case PathType::NATIVE:
 				exists = File::Exists(path);
+				if (!exists) {
+					if (TryUpdateSavedPath(&path)) {
+						exists = File::Exists(path);
+						INFO_LOG(LOADER, "Exists=%d when checking updated path: %s", exists, path.c_str());
+					}
+				}
 				break;
 			default:
 				FileLoader *loader = ConstructFileLoader(path);
@@ -1564,11 +1614,14 @@ void Config::CleanRecent() {
 			}
 
 			if (exists) {
+				std::string pathStr = path.ToString();
 				// Make sure we don't have any redundant items.
-				auto duplicate = std::find(cleanedRecent.begin(), cleanedRecent.end(), recentIsos[i]);
+				auto duplicate = std::find(cleanedRecent.begin(), cleanedRecent.end(), pathStr);
 				if (duplicate == cleanedRecent.end()) {
-					cleanedRecent.push_back(recentIsos[i]);
+					cleanedRecent.push_back(pathStr);
 				}
+			} else {
+				DEBUG_LOG(LOADER, "Removed %s from recent. errno=%d", path.c_str(), errno);
 			}
 		}
 

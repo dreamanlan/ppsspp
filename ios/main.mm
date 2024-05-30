@@ -1,4 +1,10 @@
 // main.mm boilerplate
+//
+// Overview
+//
+// main.mm: JIT enablement, starting the next step
+// AppDelegate.mm: Runs NativeInit, launches the main ViewController
+// ViewController.mm: The main application window
 
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
@@ -18,6 +24,7 @@
 #import "AppDelegate.h"
 #import "PPSSPPUIApplication.h"
 #import "ViewController.h"
+#import "iOSCoreAudio.h"
 
 #include "Common/MemoryUtil.h"
 #include "Common/System/NativeApp.h"
@@ -25,9 +32,13 @@
 #include "Common/System/Request.h"
 #include "Common/StringUtils.h"
 #include "Common/Profiler/Profiler.h"
+#include "Common/Thread/ThreadUtil.h"
 #include "Core/Config.h"
 #include "Common/Log.h"
 #include "UI/DarwinFileSystemServices.h"
+
+// Compile out all the hackery in app store builds.
+#if !PPSSPP_PLATFORM(IOS_APP_STORE)
 
 struct cs_blob_index {
 	uint32_t type;
@@ -269,6 +280,7 @@ bool jb_enable_ptrace_hack(void) {
 	
 	return true;
 }
+#endif
 
 float g_safeInsetLeft = 0.0;
 float g_safeInsetRight = 0.0;
@@ -335,11 +347,20 @@ float System_GetPropertyFloat(SystemProperty prop) {
 
 bool System_GetPropertyBool(SystemProperty prop) {
 	switch (prop) {
+		case SYSPROP_HAS_FILE_BROWSER:
+			return true;
+		case SYSPROP_HAS_FOLDER_BROWSER:
+			return true;
 		case SYSPROP_HAS_OPEN_DIRECTORY:
 			return false;
 		case SYSPROP_HAS_BACK_BUTTON:
 			return false;
 		case SYSPROP_HAS_ACCELEROMETER:
+			return true;
+		case SYSPROP_HAS_KEYBOARD:
+			return true;
+		case SYSPROP_KEYBOARD_IS_SOFT:
+			// If a hardware keyboard is connected, and we add support, we could return false here.
 			return true;
 		case SYSPROP_APP_GOLD:
 #ifdef GOLD
@@ -350,7 +371,11 @@ bool System_GetPropertyBool(SystemProperty prop) {
 		case SYSPROP_CAN_JIT:
 			return g_jitAvailable;
 		case SYSPROP_LIMITED_FILE_BROWSING:
+#if PPSSPP_PLATFORM(IOS_APP_STORE)
+			return true;
+#else
 			return false;  // But will return true in app store builds.
+#endif
 #ifndef HTTPS_NOT_AVAILABLE
 		case SYSPROP_SUPPORTS_HTTPS:
 			return true;
@@ -362,12 +387,33 @@ bool System_GetPropertyBool(SystemProperty prop) {
 
 void System_Notify(SystemNotification notification) {
 	switch (notification) {
+	case SystemNotification::UI_STATE_CHANGED:
+		dispatch_async(dispatch_get_main_queue(), ^{
+			if (sharedViewController) {
+				[sharedViewController uiStateChanged];
+			}
+		});
+		break;
+	case SystemNotification::AUDIO_MODE_CHANGED:
+		dispatch_async(dispatch_get_main_queue(), ^{
+			iOSCoreAudioUpdateSession();
+		});
+		break;
+	default:
+		break;
 	}
 }
 
 bool System_MakeRequest(SystemRequestType type, int requestId, const std::string &param1, const std::string &param2, int64_t param3, int64_t param4) {
 	switch (type) {
+	case SystemRequestType::RESTART_APP:
+        dispatch_async(dispatch_get_main_queue(), ^{
+			[(AppDelegate *)[[UIApplication sharedApplication] delegate] restart:param1.c_str()];
+		});
+		break;
+
 	case SystemRequestType::EXIT_APP:
+		// NOTE: on iOS, this is considered a crash and not a valid way to exit.
 		exit(0);
 		// The below seems right, but causes hangs. See #12140.
 		// dispatch_async(dispatch_get_main_queue(), ^{
@@ -405,17 +451,16 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		if (!strncmp(param1.c_str(), "startVideo", 10)) {
 			int width = 0, height = 0;
 			sscanf(param1.c_str(), "startVideo_%dx%d", &width, &height);
-			setCameraSize(width, height);
-			startVideo();
+			[sharedViewController startVideo:width height:height];
 		} else if (!strcmp(param1.c_str(), "stopVideo")) {
-			stopVideo();
+			[sharedViewController stopVideo];
 		}
 		return true;
 	case SystemRequestType::GPS_COMMAND:
 		if (param1 == "open") {
-			startLocation();
+			[sharedViewController startLocation];
 		} else if (param1 == "close") {
-			stopLocation();
+			[sharedViewController stopLocation];
 		}
 		return true;
 	case SystemRequestType::SHARE_TEXT:
@@ -424,6 +469,39 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		[sharedViewController shareText:text];
 		return true;
 	}
+	case SystemRequestType::NOTIFY_UI_EVENT:
+	{
+		switch ((UIEventNotification)param3) {
+		case UIEventNotification::POPUP_CLOSED:
+			[sharedViewController hideKeyboard];
+			break;
+		case UIEventNotification::TEXT_GOTFOCUS:
+			[sharedViewController showKeyboard];
+			break;
+		case UIEventNotification::TEXT_LOSTFOCUS:
+			[sharedViewController hideKeyboard];
+			break;
+		default:
+			break;
+		}
+		return true;
+	}
+/*
+	// Not 100% sure the threading is right
+	case SystemRequestType::COPY_TO_CLIPBOARD:
+	{
+		@autoreleasepool {
+			[UIPasteboard generalPasteboard].string = @(param1.c_str());
+			return 0;
+		}
+	}
+*/
+	case SystemRequestType::SET_KEEP_SCREEN_BRIGHT:
+        dispatch_async(dispatch_get_main_queue(), ^{
+            INFO_LOG(SYSTEM, "SET_KEEP_SCREEN_BRIGHT: %d", (int)param3);
+            [[UIApplication sharedApplication] setIdleTimerDisabled: (param3 ? YES : NO)];
+        });
+		return true;
 	default:
 		return false;
 	}
@@ -432,9 +510,21 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 void System_Toast(std::string_view text) {}
 void System_AskForPermission(SystemPermission permission) {}
 
-PermissionStatus System_GetPermissionStatus(SystemPermission permission) { return PERMISSION_STATUS_GRANTED; }
+void System_LaunchUrl(LaunchUrlType urlType, const char *url)
+{
+	NSURL *nsUrl = [NSURL URLWithString:[NSString stringWithCString:url encoding:NSStringEncodingConversionAllowLossy]];
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[[UIApplication sharedApplication] openURL:nsUrl options:@{} completionHandler:nil];
+	});
+}
 
+PermissionStatus System_GetPermissionStatus(SystemPermission permission) {
+	 return PERMISSION_STATUS_GRANTED;
+}
+
+#if !PPSSPP_PLATFORM(IOS_APP_STORE)
 FOUNDATION_EXTERN void AudioServicesPlaySystemSoundWithVibration(unsigned long, objc_object*, NSDictionary*);
+#endif
 
 BOOL SupportsTaptic() {
 	// we're on an iOS version that cannot instantiate UISelectionFeedbackGenerator, so no.
@@ -461,6 +551,7 @@ void System_Vibrate(int mode) {
 		}
 		[app.feedbackGenerator selectionChanged];
 	} else {
+#if !PPSSPP_PLATFORM(IOS_APP_STORE)
 		NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
 		NSArray *pattern = @[@YES, @30, @NO, @2];
 
@@ -468,27 +559,27 @@ void System_Vibrate(int mode) {
 		dictionary[@"Intensity"] = @2;
 
 		AudioServicesPlaySystemSoundWithVibration(kSystemSoundID_Vibrate, nil, dictionary);
+#endif
 	}
 }
 
 int main(int argc, char *argv[])
 {
+	// SetCurrentThreadName("MainThread");
+	version = [[[UIDevice currentDevice] systemVersion] UTF8String];
+	if (1 != sscanf(version.c_str(), "%d", &g_iosVersionMajor)) {
+		// Just set it to 14.0 if the parsing fails for whatever reason.
+		g_iosVersionMajor = 14;
+	}
+
+#if PPSSPP_PLATFORM(IOS_APP_STORE)
+	g_jitAvailable = false;
+#else
 	// Hacky hacks to try to enable JIT by pretending to be a debugger.
 	csops = reinterpret_cast<decltype(csops)>(dlsym(dlopen(nullptr, RTLD_LAZY), "csops"));
 	exc_server = reinterpret_cast<decltype(exc_server)>(dlsym(dlopen(NULL, RTLD_LAZY), "exc_server"));
 	ptrace = reinterpret_cast<decltype(ptrace)>(dlsym(dlopen(NULL, RTLD_LAZY), "ptrace"));
 	// see https://github.com/hrydgard/ppsspp/issues/11905
-
-	// Tried checking for JIT support here with AllocateExecutableMemory and ProtectMemoryPages,
-	// but it just succeeds, and then fails when you try to execute from it.
-
-	// So, we'll just resort to a version check.
-
-	version = [[[UIDevice currentDevice] systemVersion] UTF8String];
-	if (2 != sscanf(version.c_str(), "%d", &g_iosVersionMajor)) {
-		// Just set it to 14.0 if the parsing fails for whatever reason.
-		g_iosVersionMajor = 14;
-	}
 
 	if (jb_spawn_ptrace_child(argc, argv)) {
 		INFO_LOG(SYSTEM, "JIT: ptrace() child spawn trick\n");
@@ -505,6 +596,11 @@ int main(int argc, char *argv[])
 		g_jitAvailable = false;
 	}
 
+	// Tried checking for JIT support here with AllocateExecutableMemory and ProtectMemoryPages,
+	// but it just succeeds, and then fails when you try to execute from it.
+
+	// So, we'll just resort to a version check.
+	// TODO: This seems outdated.
 /*
 	if (g_iosVersionMajor > 14 || (g_iosVersionMajor == 14 && g_iosVersionMinor >= 4)) {
 		g_jitAvailable = false;
@@ -512,15 +608,16 @@ int main(int argc, char *argv[])
 		g_jitAvailable = true;
 	}
 */
-
-	PROFILE_INIT();
+#endif
 
 	// Ignore sigpipe.
 	if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
 		perror("Unable to ignore SIGPIPE");
 	}
+	PROFILE_INIT();
 
 	@autoreleasepool {
 		return UIApplicationMain(argc, argv, NSStringFromClass([PPSSPPUIApplication class]), NSStringFromClass([AppDelegate class]));
 	}
 }
+

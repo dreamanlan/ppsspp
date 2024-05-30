@@ -1317,9 +1317,9 @@ int main(int argc, char *argv[]) {
 			x = g_Config.iWindowX;
 		if (g_Config.iWindowY != -1)
 			y = g_Config.iWindowY;
-		if (g_Config.iWindowWidth > 0)
+		if (g_Config.iWindowWidth > 0 && set_xres <= 0)
 			w = g_Config.iWindowWidth;
-		if (g_Config.iWindowHeight > 0)
+		if (g_Config.iWindowHeight > 0 && set_yres <= 0)
 			h = g_Config.iWindowHeight;
 	}
 
@@ -1420,10 +1420,12 @@ int main(int argc, char *argv[]) {
 	bool waitOnExit = g_Config.iGPUBackend == (int)GPUBackend::OPENGL;
 
 	if (!mainThreadIsRender) {
-		// We should only be a message pump
+		// Vulkan mode uses this.
+		// We should only be a message pump. This allows for lower latency
+		// input events, and so on.
 		while (true) {
 			SDL_Event event;
-			while (SDL_PollEvent(&event)) {
+			while (SDL_WaitEventTimeout(&event, 100)) {
 				ProcessSDLEvent(window, event, &inputTracker);
 			}
 			if (g_QuitRequested || g_RestartRequested)

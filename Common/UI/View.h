@@ -468,7 +468,7 @@ public:
 	virtual bool IsViewGroup() const { return false; }
 	virtual bool ContainsSubview(const View *view) const { return false; }
 
-	virtual Point GetFocusPosition(FocusDirection dir) const;
+	virtual Point2D GetFocusPosition(FocusDirection dir) const;
 
 	template <class T>
 	T *AddTween(T *t) {
@@ -826,7 +826,7 @@ public:
 protected:
 	virtual std::string ValueText() const = 0;
 
-	float CalculateValueScale(const UIContext &dc, const std::string &valueText, float availWidth) const;
+	float CalculateValueScale(const UIContext &dc, std::string_view valueText, float availWidth) const;
 
 	bool passwordDisplay_ = false;
 };
@@ -904,7 +904,7 @@ public:
 	void GetContentDimensionsBySpec(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert, float &w, float &h) const override;
 	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
 
-	Point GetFocusPosition(FocusDirection dir) const override;
+	Point2D GetFocusPosition(FocusDirection dir) const override;
 
 	void SetHasSubitems(bool hasSubItems) { hasSubItems_ = hasSubItems; }
 	void SetOpenPtr(bool *open) {

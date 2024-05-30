@@ -8,6 +8,7 @@
 
 #include "Common/Render/Text/draw_text.h"
 #include "Common/Render/Text/draw_text_win.h"
+#include "Common/Render/Text/draw_text_cocoa.h"
 #include "Common/Render/Text/draw_text_uwp.h"
 #include "Common/Render/Text/draw_text_qt.h"
 #include "Common/Render/Text/draw_text_android.h"
@@ -20,13 +21,13 @@ TextDrawer::TextDrawer(Draw::DrawContext *draw) : draw_(draw) {
 TextDrawer::~TextDrawer() {
 }
 
-float TextDrawerWordWrapper::MeasureWidth(const char *str, size_t bytes) {
+float TextDrawerWordWrapper::MeasureWidth(std::string_view str) {
 	float w, h;
-	drawer_->MeasureString(str, bytes, &w, &h);
+	drawer_->MeasureString(str, &w, &h);
 	return w;
 }
 
-void TextDrawer::WrapString(std::string &out, const char *str, float maxW, int flags) {
+void TextDrawer::WrapString(std::string &out, std::string_view str, float maxW, int flags) {
 	TextDrawerWordWrapper wrapper(this, str, maxW, flags);
 	out = wrapper.Wrapped();
 }
@@ -46,7 +47,7 @@ float TextDrawer::CalculateDPIScale() {
 	return scale;
 }
 
-void TextDrawer::DrawStringRect(DrawBuffer &target, const char *str, const Bounds &bounds, uint32_t color, int align) {
+void TextDrawer::DrawStringRect(DrawBuffer &target, std::string_view str, const Bounds &bounds, uint32_t color, int align) {
 	float x = bounds.x;
 	float y = bounds.y;
 	if (align & ALIGN_HCENTER) {
@@ -60,7 +61,7 @@ void TextDrawer::DrawStringRect(DrawBuffer &target, const char *str, const Bound
 		y = bounds.y2();
 	}
 
-	std::string toDraw = str;
+	std::string toDraw(str);
 	int wrap = align & (FLAG_WRAP_TEXT | FLAG_ELLIPSIZE_TEXT);
 	if (wrap) {
 		bool rotated = (align & (ROTATE_90DEG_LEFT | ROTATE_90DEG_RIGHT)) != 0;
@@ -70,15 +71,15 @@ void TextDrawer::DrawStringRect(DrawBuffer &target, const char *str, const Bound
 	DrawString(target, toDraw.c_str(), x, y, color, align);
 }
 
-void TextDrawer::DrawStringBitmapRect(std::vector<uint8_t> &bitmapData, TextStringEntry &entry, Draw::DataFormat texFormat, const char *str, const Bounds &bounds, int align) {
-	std::string toDraw = str;
+bool TextDrawer::DrawStringBitmapRect(std::vector<uint8_t> &bitmapData, TextStringEntry &entry, Draw::DataFormat texFormat, std::string_view str, const Bounds &bounds, int align) {
+	std::string toDraw(str);
 	int wrap = align & (FLAG_WRAP_TEXT | FLAG_ELLIPSIZE_TEXT);
 	if (wrap) {
 		bool rotated = (align & (ROTATE_90DEG_LEFT | ROTATE_90DEG_RIGHT)) != 0;
 		WrapString(toDraw, str, rotated ? bounds.h : bounds.w, wrap);
 	}
 
-	DrawStringBitmap(bitmapData, entry, texFormat, toDraw.c_str(), align);
+	return DrawStringBitmap(bitmapData, entry, texFormat, toDraw.c_str(), align);
 }
 
 TextDrawer *TextDrawer::Create(Draw::DrawContext *draw) {
@@ -89,6 +90,8 @@ TextDrawer *TextDrawer::Create(Draw::DrawContext *draw) {
 	drawer = new TextDrawerWin32(draw);
 #elif PPSSPP_PLATFORM(UWP)
 	drawer = new TextDrawerUWP(draw);
+#elif PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
+	drawer = new TextDrawerCocoa(draw);
 #elif defined(USING_QT_UI)
 	drawer = new TextDrawerQt(draw);
 #elif PPSSPP_PLATFORM(ANDROID)
