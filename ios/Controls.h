@@ -1,15 +1,19 @@
 #pragma once
 
 #include <map>
+#include <string_view>
 
 #import <GameController/GameController.h>
+#import <CoreMotion/CoreMotion.h>
+
 #include "iCade/iCadeState.h"
 #include "Common/Input/InputState.h"
 
 // Code extracted from ViewController.mm, in order to modularize
 // and share it between multiple view controllers.
 
-bool SetupController(GCController *controller);
+bool InitController(GCController *controller);
+void ShutdownController(GCController *controller);
 
 struct TouchTracker {
 public:
@@ -38,3 +42,10 @@ private:
 	double lastSelectPress = 0.0f;
 	double lastStartPress = 0.0f;
 };
+
+void ProcessAccelerometerData(CMAccelerometerData *accData);
+InputKeyCode HIDUsageToInputKeyCode(UIKeyboardHIDUsage usage);
+
+void KeyboardPressesBegan(NSSet<UIPress *> *presses, UIPressesEvent *event);
+void KeyboardPressesEnded(NSSet<UIPress *> *presses, UIPressesEvent *event);
+void SendKeyboardChars(std::string_view str);

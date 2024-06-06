@@ -20,7 +20,6 @@
 #include "Common/GPU/thin3d_create.h"
 #include "Common/GPU/OpenGL/GLRenderManager.h"
 #include "Common/GPU/OpenGL/GLFeatures.h"
-#include "Common/Data/Encoding/Utf8.h"
 #include "Common/System/Display.h"
 #include "Common/System/System.h"
 #include "Common/System/OSD.h"
@@ -39,6 +38,10 @@
 #include "Core/System.h"
 #include "Core/HLE/sceUsbCam.h"
 #include "Core/HLE/sceUsbGps.h"
+
+#if !__has_feature(objc_arc)
+#error Must be built with ARC, please revise the flags for ViewController.mm to include -fobjc-arc.
+#endif
 
 class IOSGLESContext : public GraphicsContext {
 public:
@@ -105,6 +108,8 @@ id<PPSSPPViewController> sharedViewController;
 
 //@property (nonatomic) iCadeReaderView* iCadeView;
 @property (nonatomic) GCController *gameController __attribute__((weak_import));
+@property (strong, nonatomic) CMMotionManager *motionManager;
+@property (strong, nonatomic) NSOperationQueue *accelerometerQueue;
 
 @end
 
@@ -120,6 +125,9 @@ id<PPSSPPViewController> sharedViewController;
 		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(controllerDidConnect:) name:GCControllerDidConnectNotification object:nil];
 		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(controllerDidDisconnect:) name:GCControllerDidDisconnectNotification object:nil];
 	}
+	self.accelerometerQueue = [[NSOperationQueue alloc] init];
+	self.accelerometerQueue.name = @"AccelerometerQueue";
+	self.accelerometerQueue.maxConcurrentOperationCount = 1;
 	return self;
 }
 
@@ -265,7 +273,9 @@ void GLRenderLoop(IOSGLESContext *graphicsContext) {
 	[mBackGestureRecognizer setEdges:UIRectEdgeLeft];
 	[[self view] addGestureRecognizer:mBackGestureRecognizer];
 
-	INFO_LOG(G3D, "Done with viewDidLoad. Next up, OpenGL");
+	// Initialize the motion manager for accelerometer control.
+	self.motionManager = [[CMMotionManager alloc] init];
+	INFO_LOG(G3D, "Done with viewDidLoad.");
 }
 
 - (void)handleSwipeFrom:(UIScreenEdgePanGestureRecognizer *)recognizer
@@ -287,6 +297,21 @@ void GLRenderLoop(IOSGLESContext *graphicsContext) {
 
 - (void)didBecomeActive {
 	INFO_LOG(SYSTEM, "didBecomeActive begin");
+	if (self.motionManager.accelerometerAvailable) {
+		self.motionManager.accelerometerUpdateInterval = 1.0 / 60.0;
+		INFO_LOG(G3D, "Starting accelerometer updates.");
+
+		[self.motionManager startAccelerometerUpdatesToQueue:self.accelerometerQueue
+							withHandler:^(CMAccelerometerData *accelerometerData, NSError *error) {
+			if (error) {
+				NSLog(@"Accelerometer error: %@", error);
+				return;
+			}
+			ProcessAccelerometerData(accelerometerData);
+		}];
+	} else {
+		INFO_LOG(G3D, "No accelerometer available, not starting updates.");
+	}
 	[self runGLRenderLoop];
 	INFO_LOG(SYSTEM, "didBecomeActive end");
 }
@@ -294,6 +319,12 @@ void GLRenderLoop(IOSGLESContext *graphicsContext) {
 - (void)willResignActive {
 	INFO_LOG(SYSTEM, "willResignActive begin");
 	[self requestExitGLRenderLoop];
+
+	// Stop accelerometer updates
+	if (self.motionManager.accelerometerActive) {
+		INFO_LOG(G3D, "Stopping accelerometer updates");
+		[self.motionManager stopAccelerometerUpdates];
+	}
 	INFO_LOG(SYSTEM, "willResignActive end");
 }
 
@@ -424,6 +455,7 @@ void GLRenderLoop(IOSGLESContext *graphicsContext) {
 - (void)uiStateChanged
 {
 	[self setNeedsUpdateOfScreenEdgesDeferringSystemGestures];
+	[self hideKeyboard];
 }
 
 - (UIView *)getView {
@@ -433,7 +465,7 @@ void GLRenderLoop(IOSGLESContext *graphicsContext) {
 - (void)setupController:(GCController *)controller
 {
 	self.gameController = controller;
-	if (!SetupController(controller)) {
+	if (!InitController(controller)) {
 		self.gameController = nil;
 	}
 }
@@ -467,6 +499,23 @@ void GLRenderLoop(IOSGLESContext *graphicsContext) {
 					0 /* bearing */);
 }
 
+// See PPSSPPUIApplication.mm for the other method
+#if PPSSPP_PLATFORM(IOS_APP_STORE)
+
+- (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
+	KeyboardPressesBegan(presses, event);
+}
+
+- (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
+	KeyboardPressesEnded(presses, event);
+}
+
+- (void)pressesCancelled:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
+	KeyboardPressesEnded(presses, event);
+}
+
+#endif
+
 // The below is inspired by https://stackoverflow.com/questions/7253477/how-to-display-the-iphone-ipad-keyboard-over-a-full-screen-opengl-es-app
 // It's a bit limited but good enough.
 
@@ -481,18 +530,9 @@ void GLRenderLoop(IOSGLESContext *graphicsContext) {
 
 -(void) insertText:(NSString *)text
 {
-	std::string str = std::string([text UTF8String]);
+	std::string str([text UTF8String]);
 	INFO_LOG(SYSTEM, "Chars: %s", str.c_str());
-	UTF8 chars(str);
-	while (!chars.end()) {
-		uint32_t codePoint = chars.next();
-		INFO_LOG(SYSTEM, "Codepoint#: %d", codePoint);
-		KeyInput input{};
-		input.deviceId = DEVICE_ID_KEYBOARD;
-		input.flags = KEY_CHAR;
-		input.unicodeChar = codePoint;
-		NativeKey(input);
-	}
+	SendKeyboardChars(str);
 }
 
 -(BOOL) canBecomeFirstResponder

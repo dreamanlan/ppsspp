@@ -12,7 +12,6 @@
 #include "Common/GPU/thin3d.h"
 #include "Common/GPU/thin3d_create.h"
 #include "Common/Data/Text/Parsers.h"
-#include "Common/Data/Encoding/Utf8.h"
 #include "Common/System/Display.h"
 #include "Common/System/System.h"
 #include "Common/System/OSD.h"
@@ -213,6 +212,8 @@ static std::thread g_renderLoopThread;
 }
 
 @property (nonatomic) GCController *gameController __attribute__((weak_import));
+@property (strong, nonatomic) CMMotionManager *motionManager;
+@property (strong, nonatomic) NSOperationQueue *accelerometerQueue;
 
 @end  // @interface
 
@@ -228,6 +229,9 @@ static std::thread g_renderLoopThread;
 		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(controllerDidConnect:) name:GCControllerDidConnectNotification object:nil];
 		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(controllerDidDisconnect:) name:GCControllerDidDisconnectNotification object:nil];
 	}
+	self.accelerometerQueue = [[NSOperationQueue alloc] init];
+	self.accelerometerQueue.name = @"AccelerometerQueue";
+	self.accelerometerQueue.maxConcurrentOperationCount = 1;
 	return self;
 }
 
@@ -338,7 +342,21 @@ void VulkanRenderLoop(IOSVulkanContext *graphicsContext, CAMetalLayer *metalLaye
 // These two are forwarded from the appDelegate
 - (void)didBecomeActive {
 	INFO_LOG(G3D, "didBecomeActive GL");
+	if (self.motionManager.accelerometerAvailable) {
+		self.motionManager.accelerometerUpdateInterval = 1.0 / 60.0;
+		INFO_LOG(G3D, "Starting accelerometer updates.");
 
+		[self.motionManager startAccelerometerUpdatesToQueue:self.accelerometerQueue
+							withHandler:^(CMAccelerometerData *accelerometerData, NSError *error) {
+			if (error) {
+				NSLog(@"Accelerometer error: %@", error);
+				return;
+			}
+			ProcessAccelerometerData(accelerometerData);
+		}];
+	} else {
+		INFO_LOG(G3D, "No accelerometer available, not starting updates.");
+	}
 	// Spin up the emu thread. It will in turn spin up the Vulkan render thread
 	// on its own.
 	[self runVulkanRenderLoop];
@@ -347,6 +365,12 @@ void VulkanRenderLoop(IOSVulkanContext *graphicsContext, CAMetalLayer *metalLaye
 - (void)willResignActive {
 	INFO_LOG(G3D, "willResignActive GL");
 	[self requestExitVulkanRenderLoop];
+
+	// Stop accelerometer updates
+	if (self.motionManager.accelerometerActive) {
+		INFO_LOG(G3D, "Stopping accelerometer updates");
+		[self.motionManager stopAccelerometerUpdates];
+	}
 }
 
 - (void)shutdown
@@ -387,6 +411,8 @@ void VulkanRenderLoop(IOSVulkanContext *graphicsContext, CAMetalLayer *metalLaye
 
 - (void)viewDidLoad {
 	[super viewDidLoad];
+	[self hideKeyboard];
+
 	[[DisplayManager shared] setupDisplayListener];
 
 	INFO_LOG(SYSTEM, "Metal viewDidLoad");
@@ -414,11 +440,12 @@ void VulkanRenderLoop(IOSVulkanContext *graphicsContext, CAMetalLayer *metalLaye
 	locationHelper = [[LocationHelper alloc] init];
 	[locationHelper setDelegate:self];
 
-	[self hideKeyboard];
-
 	UIScreenEdgePanGestureRecognizer *mBackGestureRecognizer = [[UIScreenEdgePanGestureRecognizer alloc] initWithTarget:self action:@selector(handleSwipeFrom:) ];
 	[mBackGestureRecognizer setEdges:UIRectEdgeLeft];
 	[[self view] addGestureRecognizer:mBackGestureRecognizer];
+
+	// Initialize the motion manager for accelerometer control.
+	self.motionManager = [[CMMotionManager alloc] init];
 }
 
 // Allow device rotation to resize the swapchain
@@ -444,6 +471,7 @@ void VulkanRenderLoop(IOSVulkanContext *graphicsContext, CAMetalLayer *metalLaye
 
 - (void)viewDidDisappear:(BOOL)animated {
 	[super viewDidDisappear: animated];
+	INFO_LOG(G3D, "viewWillDisappear");
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -500,6 +528,7 @@ extern float g_safeInsetBottom;
 - (void)uiStateChanged
 {
 	[self setNeedsUpdateOfScreenEdgesDeferringSystemGestures];
+	[self hideKeyboard];
 }
 
 - (void)bindDefaultFBO
@@ -542,6 +571,23 @@ extern float g_safeInsetBottom;
 	g_iCadeTracker.ButtonUp(button);
 }
 
+// See PPSSPPUIApplication.mm for the other method
+#if PPSSPP_PLATFORM(IOS_APP_STORE)
+
+- (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
+	KeyboardPressesBegan(presses, event);
+}
+
+- (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
+	KeyboardPressesEnded(presses, event);
+}
+
+- (void)pressesCancelled:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
+	KeyboardPressesEnded(presses, event);
+}
+
+#endif
+
 - (void)controllerDidConnect:(NSNotification *)note
 {
 	if (![[GCController controllers] containsObject:self.gameController]) self.gameController = nil;
@@ -565,7 +611,7 @@ extern float g_safeInsetBottom;
 - (void)setupController:(GCController *)controller
 {
 	self.gameController = controller;
-	if (!SetupController(controller)) {
+	if (!InitController(controller)) {
 		self.gameController = nil;
 	}
 }
@@ -629,17 +675,9 @@ extern float g_safeInsetBottom;
 
 -(void) insertText:(NSString *)text
 {
-	std::string str = std::string([text UTF8String]);
+	std::string str([text UTF8String]);
 	INFO_LOG(SYSTEM, "Chars: %s", str.c_str());
-	UTF8 chars(str);
-	while (!chars.end()) {
-		uint32_t codePoint = chars.next();
-		KeyInput input{};
-		input.deviceId = DEVICE_ID_KEYBOARD;
-		input.flags = KEY_CHAR;
-		input.unicodeChar = codePoint;
-		NativeKey(input);
-	}
+	SendKeyboardChars(str);
 }
 
 -(BOOL) canBecomeFirstResponder

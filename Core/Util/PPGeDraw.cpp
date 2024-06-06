@@ -126,10 +126,13 @@ struct PPGeTextDrawerCacheKey {
 	int align;
 	float wrapWidth;
 };
+
 struct PPGeTextDrawerImage {
+	PPGeTextDrawerImage() : entry(0) {}
 	TextStringEntry entry;
 	u32 ptr;
 };
+
 static std::map<PPGeTextDrawerCacheKey, PPGeTextDrawerImage> textDrawerImages;
 
 void PPGeSetDrawContext(Draw::DrawContext *draw) {
@@ -914,7 +917,7 @@ static PPGeTextDrawerImage PPGeGetTextImage(const char *text, const PPGeStyle &s
 		textDrawer->SetFontScale(style.scale, style.scale);
 		Bounds b(0, 0, maxWidth, 272.0f);
 		std::string cleaned = ReplaceAll(text, "\r", "");
-		textDrawer->DrawStringBitmapRect(bitmapData, im.entry, Draw::DataFormat::R8_UNORM, cleaned.c_str(), b, tdalign);
+		textDrawer->DrawStringBitmapRect(bitmapData, im.entry, Draw::DataFormat::R8_UNORM, cleaned.c_str(), b, tdalign, false);
 
 		int bufwBytes = ((im.entry.bmWidth + 31) / 32) * 16;
 		u32 sz = bufwBytes * (im.entry.bmHeight + 1);
