@@ -44,6 +44,11 @@ VK_DEFINE_HANDLE(VmaAllocation);
 
 std::string VulkanVendorString(uint32_t vendorId);
 
+template<class R, class T> inline void ChainStruct(R &root, T *newStruct) {
+	newStruct->pNext = root.pNext;
+	root.pNext = newStruct;
+}
+
 // Not all will be usable on all platforms, of course...
 enum WindowSystem {
 #ifdef _WIN32
@@ -181,7 +186,6 @@ public:
 
 	int GetBestPhysicalDevice();
 	int GetPhysicalDeviceByName(const std::string &name);
-	void ChooseDevice(int physical_device);
 
 	// Convenience method to avoid code duplication.
 	// If it returns false, delete the context.
@@ -191,7 +195,8 @@ public:
 	bool EnableInstanceExtension(const char *extension, uint32_t coreVersion);
 	bool EnableDeviceExtension(const char *extension, uint32_t coreVersion);
 
-	VkResult CreateDevice();
+	// Was previously two functions, ChooseDevice and CreateDevice.
+	VkResult CreateDevice(int physical_device);
 
 	const std::string &InitError() const { return init_error_; }
 
@@ -279,6 +284,7 @@ public:
 		VkPhysicalDeviceMultiviewFeatures multiview;
 		VkPhysicalDevicePresentWaitFeaturesKHR presentWait;
 		VkPhysicalDevicePresentIdFeaturesKHR presentId;
+		VkPhysicalDeviceProvokingVertexFeaturesEXT provokingVertex;
 	};
 
 	const PhysicalDeviceProps &GetPhysicalDeviceProperties(int i = -1) const {

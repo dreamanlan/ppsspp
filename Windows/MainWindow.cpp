@@ -292,7 +292,7 @@ namespace MainWindow
 			PSP_CoreParameter().pixelHeight = height;
 		}
 
-		DEBUG_LOG(SYSTEM, "Pixel width/height: %dx%d", PSP_CoreParameter().pixelWidth, PSP_CoreParameter().pixelHeight);
+		DEBUG_LOG(Log::System, "Pixel width/height: %dx%d", PSP_CoreParameter().pixelWidth, PSP_CoreParameter().pixelHeight);
 
 		if (UpdateScreenScale(width, height)) {
 			System_PostUIMessage(UIMessage::GPU_DISPLAY_RESIZED);
@@ -1092,25 +1092,28 @@ namespace MainWindow
 		// Note that if there's a screensaver password, this simple method
 		// doesn't work on Vista or higher.
 		case WM_SYSCOMMAND:
-			{
-				if (g_keepScreenBright) {
-					switch (wParam) {
-					case SC_SCREENSAVE:
+			// Disable Alt key for menu if it's been mapped.
+			if (wParam == SC_KEYMENU && (lParam >> 16) <= 0) {
+				if (KeyMap::IsKeyMapped(DEVICE_ID_KEYBOARD, NKCODE_ALT_LEFT) || KeyMap::IsKeyMapped(DEVICE_ID_KEYBOARD, NKCODE_ALT_RIGHT)) {
+					return 0;
+				}
+			}
+			if (g_keepScreenBright) {
+				switch (wParam) {
+				case SC_SCREENSAVE:
+					return 0;
+				case SC_MONITORPOWER:
+					if (lParam == 1 || lParam == 2) {
 						return 0;
-					case SC_MONITORPOWER:
-						if (lParam == 1 || lParam == 2) {
-							return 0;
-						} else {
-							break;
-						}
-					default:
-						// fall down to DefWindowProc
+					} else {
 						break;
 					}
+				default:
+					// fall down to DefWindowProc
+					break;
 				}
-				return DefWindowProc(hWnd, message, wParam, lParam);
 			}
-			break;
+			return DefWindowProc(hWnd, message, wParam, lParam);
 		case WM_SETTINGCHANGE:
 			{
 				if (g_darkModeSupported && IsColorSchemeChangeMessage(lParam))
