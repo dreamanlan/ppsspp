@@ -40,8 +40,8 @@
 #include "Core/HLE/sceUtility.h"
 #include "Core/SaveState.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
-#include "Log.h"
-#include "LogManager.h"
+#include "Common/Log.h"
+#include "Common/Log/LogManager.h"
 
 #include "Compare.h"
 #include "HeadlessHost.h"
@@ -318,9 +318,9 @@ std::vector<std::string> ReadFromListFile(const std::string &listFilename) {
 int main(int argc, const char* argv[])
 {
 	PROFILE_INIT();
+	TimeInit();
 #if PPSSPP_PLATFORM(WINDOWS)
 	SetCleanExitOnAssert();
-	timeBeginPeriod(1);
 #else
 	// Ignore sigpipe.
 	if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {

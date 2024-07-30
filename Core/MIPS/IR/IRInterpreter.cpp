@@ -200,7 +200,7 @@ u32 IRInterpret(MIPSState *mips, const IRInst *inst) {
 			mips->r[inst->dest] = mips->r[inst->src1] ^ inst->constant;
 			break;
 		case IROp::Neg:
-			mips->r[inst->dest] = -(s32)mips->r[inst->src1];
+			mips->r[inst->dest] = (u32)(-(s32)mips->r[inst->src1]);
 			break;
 		case IROp::Not:
 			mips->r[inst->dest] = ~mips->r[inst->src1];
@@ -1237,7 +1237,8 @@ u32 IRInterpret(MIPSState *mips, const IRInst *inst) {
 			}
 			break;
 
-		case IROp::Nop:
+		case IROp::Nop: // TODO: This shouldn't crash, but for now we should not emit nops, so...
+		case IROp::Bad:
 		default:
 			Crash();
 			break;
