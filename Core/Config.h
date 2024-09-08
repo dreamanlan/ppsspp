@@ -481,9 +481,9 @@ public:
 	bool bEnableVR;
 	bool bEnable6DoF;
 	bool bEnableStereo;
-	bool bEnableMotions;
-	bool bAntiFlickeringFlow;
+	bool bEnableImmersiveVR;
 	bool bForce72Hz;
+	bool bForceVR;
 	bool bManualForceVR;
 	bool bPassthrough;
 	bool bRescaleHUD;
@@ -495,10 +495,6 @@ public:
 	float fCanvas3DDistance;
 	float fFieldOfViewPercentage;
 	float fHeadUpDisplayScale;
-	float fMotionLength;
-	float fHeadRotationScale;
-	bool bHeadRotationEnabled;
-	bool bHeadRotationSmoothing;
 
 	// Debugger
 	int iDisasmWindowX;

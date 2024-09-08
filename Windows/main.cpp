@@ -106,6 +106,7 @@ CVFPUDlg *vfpudlg = nullptr;
 
 static std::string langRegion;
 static std::string osName;
+static std::string osVersion;
 static std::string gpuDriverVersion;
 
 static std::string restartArgs;
@@ -203,6 +204,8 @@ std::string System_GetProperty(SystemProperty prop) {
 	switch (prop) {
 	case SYSPROP_NAME:
 		return osName;
+	case SYSPROP_SYSTEMBUILD:
+		return osVersion;
 	case SYSPROP_LANGREGION:
 		return langRegion;
 	case SYSPROP_CLIPBOARD_TEXT:
@@ -355,6 +358,7 @@ float System_GetPropertyFloat(SystemProperty prop) {
 
 bool System_GetPropertyBool(SystemProperty prop) {
 	switch (prop) {
+	case SYSPROP_HAS_TEXT_CLIPBOARD:
 	case SYSPROP_HAS_DEBUGGER:
 	case SYSPROP_HAS_FILE_BROWSER:
 	case SYSPROP_HAS_FOLDER_BROWSER:
@@ -904,12 +908,18 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 	langRegion = GetDefaultLangRegion();
 	osName = GetWindowsVersion() + " " + GetWindowsSystemArchitecture();
 
+	// OS Build
+	uint32_t outMajor = 0, outMinor = 0, outBuild = 0;
+	if (GetVersionFromKernel32(outMajor, outMinor, outBuild)) {
+		// Builds with (service pack) don't show OS Build for now
+		osVersion = std::to_string(outMajor) + "." + std::to_string(outMinor) + "." + std::to_string(outBuild);
+	}
+
 	std::string configFilename = "";
 	const std::wstring configOption = L"--config=";
 
 	std::string controlsConfigFilename = "";
 	const std::wstring controlsOption = L"--controlconfig=";
-
 
 	for (size_t i = 1; i < wideArgs.size(); ++i) {
 		if (wideArgs[i][0] == L'\0')

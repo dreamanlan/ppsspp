@@ -303,7 +303,7 @@ static const ConfigSetting generalSettings[] = {
 	ConfigSetting("ShowMenuBar", &g_Config.bShowMenuBar, true, CfgFlag::DEFAULT),
 
 	ConfigSetting("MemStickInserted", &g_Config.bMemStickInserted, true, CfgFlag::PER_GAME | CfgFlag::REPORT),
-	ConfigSetting("EnablePlugins", &g_Config.bLoadPlugins, true, CfgFlag::PER_GAME),
+	ConfigSetting("LoadPlugins", &g_Config.bLoadPlugins, true, CfgFlag::PER_GAME),
 
 	ConfigSetting("IgnoreCompatSettings", &g_Config.sIgnoreCompatSettings, "", CfgFlag::PER_GAME | CfgFlag::REPORT),
 
@@ -423,7 +423,7 @@ static int DefaultGPUBackend() {
 
 #if PPSSPP_PLATFORM(WINDOWS)
 	// If no Vulkan, use Direct3D 11 on Windows 8+ (most importantly 10.)
-	if (DoesVersionMatchWindows(6, 2, 0, 0, true)) {
+	if (IsWin8OrHigher()) {
 		return (int)GPUBackend::DIRECT3D11;
 	}
 #elif PPSSPP_PLATFORM(ANDROID)
@@ -448,13 +448,18 @@ static int DefaultGPUBackend() {
 		return (int)GPUBackend::VULKAN;
 	}
 #endif
+
 #elif PPSSPP_PLATFORM(MAC)
+
 #if PPSSPP_ARCH(ARM64)
 	return (int)GPUBackend::VULKAN;
 #else
 	// On Intel (generally older Macs) default to OpenGL.
 	return (int)GPUBackend::OPENGL;
 #endif
+
+#elif PPSSPP_PLATFORM(IOS_APP_STORE)
+	return (int)GPUBackend::VULKAN;
 #endif
 
 	// TODO: On some additional Linux platforms, we should also default to Vulkan.
@@ -489,7 +494,7 @@ int Config::NextValidBackend() {
 		}
 #endif
 #if PPSSPP_PLATFORM(WINDOWS)
-		if (!failed.count(GPUBackend::DIRECT3D11) && DoesVersionMatchWindows(6, 1, 0, 0, true)) {
+		if (!failed.count(GPUBackend::DIRECT3D11) && IsWin7OrHigher()) {
 			return (int)GPUBackend::DIRECT3D11;
 		}
 #endif
@@ -536,7 +541,7 @@ bool Config::IsBackendEnabled(GPUBackend backend) {
 	if (backend != GPUBackend::OPENGL)
 		return false;
 #elif PPSSPP_PLATFORM(WINDOWS)
-	if (backend == GPUBackend::DIRECT3D11 && !DoesVersionMatchWindows(6, 0, 0, 0, true))
+	if (backend == GPUBackend::DIRECT3D11 && !IsVistaOrHigher())
 		return false;
 #else
 	if (backend == GPUBackend::DIRECT3D11 || backend == GPUBackend::DIRECT3D9)
@@ -956,9 +961,9 @@ static const ConfigSetting vrSettings[] = {
 	ConfigSetting("VREnable", &g_Config.bEnableVR, true, CfgFlag::PER_GAME),
 	ConfigSetting("VREnable6DoF", &g_Config.bEnable6DoF, false, CfgFlag::PER_GAME),
 	ConfigSetting("VREnableStereo", &g_Config.bEnableStereo, false, CfgFlag::PER_GAME),
-	ConfigSetting("VREnableMotions", &g_Config.bEnableMotions, true, CfgFlag::PER_GAME),
 	ConfigSetting("VRForce72Hz", &g_Config.bForce72Hz, true, CfgFlag::PER_GAME),
-	ConfigSetting("VRAntiFlickeringFlow", &g_Config.bAntiFlickeringFlow, true, CfgFlag::PER_GAME),
+	ConfigSetting("VRForce", &g_Config.bForceVR, false, CfgFlag::DEFAULT),
+	ConfigSetting("VRImmersiveMode", &g_Config.bEnableImmersiveVR, true, CfgFlag::PER_GAME),
 	ConfigSetting("VRManualForceVR", &g_Config.bManualForceVR, false, CfgFlag::PER_GAME),
 	ConfigSetting("VRPassthrough", &g_Config.bPassthrough, false, CfgFlag::PER_GAME),
 	ConfigSetting("VRRescaleHUD", &g_Config.bRescaleHUD, true, CfgFlag::PER_GAME),
@@ -970,10 +975,6 @@ static const ConfigSetting vrSettings[] = {
 	ConfigSetting("VRCanvas3DDistance", &g_Config.fCanvas3DDistance, 3.0f, CfgFlag::DEFAULT),
 	ConfigSetting("VRFieldOfView", &g_Config.fFieldOfViewPercentage, 100.0f, CfgFlag::PER_GAME),
 	ConfigSetting("VRHeadUpDisplayScale", &g_Config.fHeadUpDisplayScale, 0.3f, CfgFlag::PER_GAME),
-	ConfigSetting("VRMotionLength", &g_Config.fMotionLength, 0.5f, CfgFlag::DEFAULT),
-	ConfigSetting("VRHeadRotationScale", &g_Config.fHeadRotationScale, 5.0f, CfgFlag::PER_GAME),
-	ConfigSetting("VRHeadRotationEnabled", &g_Config.bHeadRotationEnabled, false, CfgFlag::PER_GAME),
-	ConfigSetting("VRHeadRotationSmoothing", &g_Config.bHeadRotationSmoothing, false, CfgFlag::PER_GAME),
 };
 
 static const ConfigSectionSettings sections[] = {

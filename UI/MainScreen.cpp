@@ -695,8 +695,12 @@ bool GameBrowser::HasSpecialFiles(std::vector<Path> &filenames) {
 
 void GameBrowser::Update() {
 	LinearLayout::Update();
-	if (listingPending_ && path_.IsListingReady()) {
+	if (refreshPending_) {
+		path_.Refresh();
+	}
+	if ((listingPending_ && path_.IsListingReady()) || refreshPending_) {
 		Refresh();
+		refreshPending_ = false;
 	}
 	if (searchPending_) {
 		ApplySearchFilter();
@@ -1540,6 +1544,7 @@ UI::EventReturn MainScreen::OnGameHighlight(UI::EventParams &e) {
 }
 
 UI::EventReturn MainScreen::OnGameSelectedInstant(UI::EventParams &e) {
+	// TODO: This is really not necessary here in all cases.
 	g_Config.Save("MainScreen::OnGameSelectedInstant");
 	ScreenManager *screen = screenManager();
 	LaunchFile(screen, Path(e.s));
@@ -1613,6 +1618,12 @@ void MainScreen::dialogFinished(const Screen *dialog, DialogResult result) {
 		} else {
 			// Not refocusing, so we need to stop the audio.
 			g_BackgroundAudio.SetGame(Path());
+		}
+	}
+	if (tag == "InstallZip") {
+		INFO_LOG(Log::System, "InstallZip finished, refreshing");
+		if (gameBrowsers_.size() >= 2) {
+			gameBrowsers_[1]->RequestRefresh();
 		}
 	}
 }
