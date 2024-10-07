@@ -211,13 +211,14 @@ enum FormatSupport {
 	FMT_STORAGE_IMAGE = 64,
 };
 
-enum InfoField {
+enum class InfoField {
 	APINAME,
 	APIVERSION,
 	VENDORSTRING,
 	VENDOR,
 	SHADELANGVERSION,
 	DRIVER,
+	DEVICE_API_VERSION,  // Vulkan-only
 };
 
 enum class GPUVendor {
@@ -450,9 +451,9 @@ public:
 class Framebuffer : public RefCountedObject {
 public:
 	Framebuffer() : RefCountedObject("Framebuffer") {}
-	int Width() { return width_; }
-	int Height() { return height_; }
-	int Layers() { return layers_; }
+	int Width() const { return width_; }
+	int Height() const { return height_; }
+	int Layers() const { return layers_; }
 	int MultiSampleLevel() { return multiSampleLevel_; }
 
 	virtual void UpdateTag(const char *tag) {}

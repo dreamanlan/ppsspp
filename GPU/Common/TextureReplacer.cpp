@@ -318,37 +318,37 @@ bool TextureReplacer::LoadIniValues(IniFile &ini, VFSBackend *dir, bool isOverri
 		// Format: hashname = filename.png
 		bool checkFilenames = saveEnabled_ && !g_Config.bIgnoreTextureFilenames && !vfsIsZip_;
 
-		for (const auto &item : hashes) {
+		for (const auto &[k, v] : hashes) {
 			ReplacementCacheKey key(0, 0);
 			// sscanf might fail to pluck the level if omitted from the line, but that's ok, we default level to 0.
 			// sscanf doesn't write to non-matched outputs.
 			int level = 0;
-			if (sscanf(item.first.c_str(), "%16llx%8x_%d", &key.cachekey, &key.hash, &level) >= 1) {
+			if (sscanf(k.c_str(), "%16llx%8x_%d", &key.cachekey, &key.hash, &level) >= 1) {
 				// We allow empty filenames, to mark textures that we don't want to keep saving.
-				filenameMap[key][level] = item.second;
+				filenameMap[key][level] = v;
 				if (checkFilenames) {
 					// TODO: We should check for the union of these on all platforms, really.
 #if PPSSPP_PLATFORM(WINDOWS)
-					bool bad = item.second.find_first_of("\\ABCDEFGHIJKLMNOPQRSTUVWXYZ:<>|?*") != std::string::npos;
+					bool bad = v.find_first_of("\\ABCDEFGHIJKLMNOPQRSTUVWXYZ:<>|?*") != std::string::npos;
 					// Uppercase probably means the filenames don't match.
 					// Avoiding an actual check of the filenames to avoid performance impact.
 #else
-					bool bad = item.second.find_first_of("\\:<>|?*") != std::string::npos;
+					bool bad = v.find_first_of("\\:<>|?*") != std::string::npos;
 #endif
 					if (bad) {
 						badFileNameCount++;
 						if (badFileNameCount == 10) {
 							badFilenames.append("...");
 						} else if (badFileNameCount < 10) {
-							badFilenames.append(item.second);
+							badFilenames.append(v);
 							badFilenames.push_back('\n');
 						}
 					}
 				}
-			} else if (item.first.empty()) {
-				INFO_LOG(Log::G3D, "Ignoring [hashes] line with empty key: '= %s'", item.second.c_str());
+			} else if (k.empty()) {
+				INFO_LOG(Log::G3D, "Ignoring [hashes] line with empty key: '= %s'", v.c_str());
 			} else {
-				ERROR_LOG(Log::G3D, "Unsupported syntax under [hashes], ignoring: %s = ", item.first.c_str());
+				ERROR_LOG(Log::G3D, "Unsupported syntax under [hashes], ignoring: %s = ", k.c_str());
 			}
 		}
 	}
@@ -365,24 +365,24 @@ bool TextureReplacer::LoadIniValues(IniFile &ini, VFSBackend *dir, bool isOverri
 	if (ini.HasSection("hashranges")) {
 		auto hashranges = ini.GetOrCreateSection("hashranges")->ToMap();
 		// Format: addr,w,h = newW,newH
-		for (const auto &item : hashranges) {
-			ParseHashRange(item.first, item.second);
+		for (const auto &[k, v] : hashranges) {
+			ParseHashRange(k, v);
 		}
 	}
 
 	if (ini.HasSection("filtering")) {
 		auto filters = ini.GetOrCreateSection("filtering")->ToMap();
 		// Format: hashname = nearest or linear
-		for (const auto &item : filters) {
-			ParseFiltering(item.first, item.second);
+		for (const auto &[k, v] : filters) {
+			ParseFiltering(k, v);
 		}
 	}
 
 	if (ini.HasSection("reducehashranges")) {
 		auto reducehashranges = ini.GetOrCreateSection("reducehashranges")->ToMap();
 		// Format: w,h = reducehashvalues
-		for (const auto& item : reducehashranges) {
-			ParseReduceHashRange(item.first, item.second);
+		for (const auto &[k, v] : reducehashranges) {
+			ParseReduceHashRange(k, v);
 		}
 	}
 
@@ -1009,7 +1009,7 @@ bool TextureReplacer::GenerateIni(const std::string &gameID, Path &generatedFile
 
 [options]
 version = 1
-hash = quick             # options available: "quick", xxh32 - more accurate, but much slower, xxh64 - more accurate and quite fast, but slower than xxh32 on 32 bit cpu's
+hash = quick             # options available: "quick", "xxh32" - more accurate, but slower, "xxh64" - more accurate and quite fast, but slower than xxh32 on 32 bit cpu's
 ignoreMipmap = true      # Usually, can just generate them with basisu, no need to dump.
 reduceHash = false       # Unsafe and can cause glitches in some cases, but allows to skip garbage data in some textures reducing endless duplicates as a side effect speeds up hashing as well, requires stronger hash like xxh32 or xxh64
 ignoreAddress = false    # Reduces duplicates at the cost of making hash less reliable, requires stronger hash like xxh32 or xxh64. Basically automatically sets the address to 0 in the dumped filenames.

@@ -442,34 +442,35 @@ public:
 	std::string GetInfoString(InfoField info) const override {
 		// TODO: Make these actually query the right information
 		switch (info) {
-			case APINAME:
-				if (gl_extensions.IsGLES) {
-					return "OpenGL ES";
-				} else {
-					return "OpenGL";
-				}
-			case VENDORSTRING: return renderManager_.GetGLString(GL_VENDOR);
-			case VENDOR:
-				switch (caps_.vendor) {
-				case GPUVendor::VENDOR_AMD: return "VENDOR_AMD";
-				case GPUVendor::VENDOR_IMGTEC: return "VENDOR_POWERVR";
-				case GPUVendor::VENDOR_NVIDIA: return "VENDOR_NVIDIA";
-				case GPUVendor::VENDOR_INTEL: return "VENDOR_INTEL";
-				case GPUVendor::VENDOR_QUALCOMM: return "VENDOR_ADRENO";
-				case GPUVendor::VENDOR_ARM: return "VENDOR_ARM";
-				case GPUVendor::VENDOR_BROADCOM: return "VENDOR_BROADCOM";
-				case GPUVendor::VENDOR_VIVANTE: return "VENDOR_VIVANTE";
-				case GPUVendor::VENDOR_APPLE: return "VENDOR_APPLE";
-				case GPUVendor::VENDOR_MESA: return "VENDOR_MESA";
-				case GPUVendor::VENDOR_UNKNOWN:
-				default:
-					return "VENDOR_UNKNOWN";
-				}
-				break;
-			case DRIVER: return renderManager_.GetGLString(GL_RENDERER);
-			case SHADELANGVERSION: return renderManager_.GetGLString(GL_SHADING_LANGUAGE_VERSION);
-			case APIVERSION: return renderManager_.GetGLString(GL_VERSION);
-			default: return "?";
+		case InfoField::APINAME:
+			if (gl_extensions.IsGLES) {
+				return "OpenGL ES";
+			} else {
+				return "OpenGL";
+			}
+		case InfoField::VENDORSTRING:
+			return renderManager_.GetGLString(GL_VENDOR);
+		case InfoField::VENDOR:
+			switch (caps_.vendor) {
+			case GPUVendor::VENDOR_AMD: return "VENDOR_AMD";
+			case GPUVendor::VENDOR_IMGTEC: return "VENDOR_POWERVR";
+			case GPUVendor::VENDOR_NVIDIA: return "VENDOR_NVIDIA";
+			case GPUVendor::VENDOR_INTEL: return "VENDOR_INTEL";
+			case GPUVendor::VENDOR_QUALCOMM: return "VENDOR_ADRENO";
+			case GPUVendor::VENDOR_ARM: return "VENDOR_ARM";
+			case GPUVendor::VENDOR_BROADCOM: return "VENDOR_BROADCOM";
+			case GPUVendor::VENDOR_VIVANTE: return "VENDOR_VIVANTE";
+			case GPUVendor::VENDOR_APPLE: return "VENDOR_APPLE";
+			case GPUVendor::VENDOR_MESA: return "VENDOR_MESA";
+			case GPUVendor::VENDOR_UNKNOWN:
+			default:
+				return "VENDOR_UNKNOWN";
+			}
+			break;
+		case InfoField::DRIVER: return renderManager_.GetGLString(GL_RENDERER);
+		case InfoField::SHADELANGVERSION: return renderManager_.GetGLString(GL_SHADING_LANGUAGE_VERSION);
+		case InfoField::APIVERSION: return renderManager_.GetGLString(GL_VERSION);
+		default: return "?";
 		}
 	}
 
@@ -768,7 +769,7 @@ OpenGLContext::OpenGLContext(bool canChangeSwapInterval) : renderManager_(frameT
 
 		if (gl_extensions.EXT_shader_framebuffer_fetch) {
 			shaderLanguageDesc_.framebufferFetchExtension = "#extension GL_EXT_shader_framebuffer_fetch : require";
-			shaderLanguageDesc_.lastFragData = gl_extensions.GLES3 ? "fragColor0" : "gl_LastFragData[0]";
+			shaderLanguageDesc_.lastFragData = "fragColor0";
 		} else if (gl_extensions.ARM_shader_framebuffer_fetch) {
 			shaderLanguageDesc_.framebufferFetchExtension = "#extension GL_ARM_shader_framebuffer_fetch : require";
 			shaderLanguageDesc_.lastFragData = "gl_LastFragColorARM";
@@ -799,12 +800,12 @@ OpenGLContext::~OpenGLContext() {
 void OpenGLContext::BeginFrame(DebugFlags debugFlags) {
 	renderManager_.BeginFrame(debugFlags & DebugFlags::PROFILE_TIMESTAMPS);
 	FrameData &frameData = frameData_[renderManager_.GetCurFrame()];
-	renderManager_.BeginPushBuffer(frameData.push);
+	frameData.push->Begin();
 }
 
 void OpenGLContext::EndFrame() {
 	FrameData &frameData = frameData_[renderManager_.GetCurFrame()];
-	renderManager_.EndPushBuffer(frameData.push);  // upload the data!
+	frameData.push->End();  // upload the data!
 	renderManager_.Finish();
 	Invalidate(InvalidationFlags::CACHED_RENDER_STATE);
 }

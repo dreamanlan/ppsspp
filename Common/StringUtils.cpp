@@ -40,6 +40,7 @@
 
 #include <algorithm>
 #include <iomanip>
+#include <cctype>
 
 #include "Common/Buffer.h"
 #include "Common/StringUtils.h"
@@ -91,6 +92,12 @@ long parseLong(std::string s) {
 		value = strtol(s.c_str(),NULL, 10);
 	}
 	return value;
+}
+
+bool containsNoCase(std::string_view haystack, std::string_view needle) {
+	auto pred = [](char ch1, char ch2) { return std::toupper(ch1) == std::toupper(ch2); };
+	auto found = std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(), pred);
+	return found != haystack.end();
 }
 
 bool CharArrayFromFormatV(char* out, int outsize, const char* format, va_list args)

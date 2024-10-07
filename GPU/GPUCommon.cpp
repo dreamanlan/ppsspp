@@ -210,9 +210,9 @@ u32 GPUCommon::DrawSync(int mode) {
 
 	// If there's no current list, it must be complete.
 	DisplayList *top = NULL;
-	for (auto it = dlQueue.begin(), end = dlQueue.end(); it != end; ++it) {
-		if (dls[*it].state != PSP_GE_DL_STATE_COMPLETED) {
-			top = &dls[*it];
+	for (int i : dlQueue) {
+		if (dls[i].state != PSP_GE_DL_STATE_COMPLETED) {
+			top = &dls[i];
 			break;
 		}
 	}
@@ -412,9 +412,9 @@ u32 GPUCommon::EnqueueList(u32 listpc, u32 stall, int subIntrBase, PSPPointer<Ps
 	}
 	if (id < 0) {
 		ERROR_LOG_REPORT(Log::G3D, "No DL ID available to enqueue");
-		for (auto it = dlQueue.begin(); it != dlQueue.end(); ++it) {
-			DisplayList &dl = dls[*it];
-			DEBUG_LOG(Log::G3D, "DisplayList %d status %d pc %08x stall %08x", *it, dl.state, dl.pc, dl.stall);
+		for (int i : dlQueue) {
+			DisplayList &dl = dls[i];
+			DEBUG_LOG(Log::G3D, "DisplayList %d status %d pc %08x stall %08x", i, dl.state, dl.pc, dl.stall);
 		}
 		return SCE_KERNEL_ERROR_OUT_OF_MEMORY;
 	}
@@ -918,6 +918,9 @@ void GPUCommon::Execute_Call(u32 op, u32 diff) {
 	const u32 target = gstate_c.getRelativeAddress(op & 0x00FFFFFC);
 	if (!Memory::IsValidAddress(target)) {
 		ERROR_LOG(Log::G3D, "CALL to illegal address %08x - ignoring! data=%06x", target, op & 0x00FFFFFF);
+		if (g_Config.bIgnoreBadMemAccess) {
+			return;
+		}
 		UpdateState(GPUSTATE_ERROR);
 		return;
 	}
@@ -1546,8 +1549,8 @@ bool GPUCommon::GetCurrentDisplayList(DisplayList &list) {
 std::vector<DisplayList> GPUCommon::ActiveDisplayLists() {
 	std::vector<DisplayList> result;
 
-	for (auto it = dlQueue.begin(), end = dlQueue.end(); it != end; ++it) {
-		result.push_back(dls[*it]);
+	for (int it : dlQueue) {
+		result.push_back(dls[it]);
 	}
 
 	return result;

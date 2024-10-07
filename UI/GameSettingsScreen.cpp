@@ -57,6 +57,7 @@
 #include "UI/MemStickScreen.h"
 #include "UI/Theme.h"
 #include "UI/RetroAchievementScreens.h"
+#include "UI/OnScreenDisplay.h"
 
 #include "Common/File/FileUtil.h"
 #include "Common/File/AndroidContentURI.h"
@@ -78,6 +79,9 @@
 #include "android/jni/TestRunner.h"
 #include "GPU/GPUInterface.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
+
+#include "Core/Core.h" // for Core_IsStepping
+#include "Core/MIPS/MIPSTracer.h"
 
 #if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
 #include "UI/DarwinFileSystemServices.h"
@@ -117,6 +121,17 @@ static bool SupportsCustomDriver() {
 #endif
 }
 
+#endif
+
+#if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
+static void SetMemStickDirDarwin(int requesterToken) {
+	auto initialPath = g_Config.memStickDirectory;
+	INFO_LOG(Log::System, "Current path: %s", initialPath.c_str());
+	System_BrowseForFolder(requesterToken, "", initialPath, [](const std::string &value, int) {
+		INFO_LOG(Log::System, "Selected path: %s", value.c_str());
+		DarwinFileSystemServices::setUserPreferredMemoryStickDirectory(Path(value));
+	});
+}
 #endif
 
 GameSettingsScreen::GameSettingsScreen(const Path &gamePath, std::string gameID, bool editThenRestore)
@@ -1110,7 +1125,20 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	}
 
 #if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
-	systemSettings->Add(new Choice(sy->T("Set Memory Stick folder")))->OnClick.Handle(this, &GameSettingsScreen::OnChangeMemStickDir);
+	bool showItHere = true;
+#if PPSSPP_PLATFORM(IOS_APP_STORE)
+	if (g_Config.memStickDirectory == DarwinFileSystemServices::defaultMemoryStickPath()) {
+		// We still keep a way to access it on the developer tools screen.
+		showItHere = false;
+	}
+#endif
+	if (showItHere) {
+		systemSettings->Add(new Choice(sy->T("Set Memory Stick folder")))->OnClick.Add(
+			[=](UI::EventParams &) {
+				SetMemStickDirDarwin(GetRequesterToken());
+				return UI::EVENT_DONE;
+			});	
+	}
 #endif
 
 #if PPSSPP_PLATFORM(ANDROID)
@@ -1118,7 +1146,7 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 		memstickDisplay_ = g_Config.memStickDirectory.ToVisualString();
 		auto memstickPath = systemSettings->Add(new ChoiceWithValueDisplay(&memstickDisplay_, sy->T("Memory Stick folder", "Memory Stick folder"), I18NCat::NONE));
 		memstickPath->SetEnabled(!PSP_IsInited());
-		memstickPath->OnClick.Handle(this, &GameSettingsScreen::OnChangeMemStickDir);
+		memstickPath->OnClick.Handle(this, &GameSettingsScreen::OnShowMemstickScreen);
 
 		// Display USB path for convenience.
 		std::string usbPath;
@@ -1135,7 +1163,7 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	memstickDisplay_ = g_Config.memStickDirectory.ToVisualString();
 	auto memstickPath = systemSettings->Add(new ChoiceWithValueDisplay(&memstickDisplay_, sy->T("Memory Stick folder", "Memory Stick folder"), I18NCat::NONE));
 	memstickPath->SetEnabled(!PSP_IsInited());
-	memstickPath->OnClick.Handle(this, &GameSettingsScreen::OnChangeMemStickDir);
+	memstickPath->OnClick.Handle(this, &GameSettingsScreen::OnShowMemstickScreen);
 #else
 	SavePathInMyDocumentChoice = systemSettings->Add(new CheckBox(&installed_, sy->T("Save path in My Documents", "Save path in My Documents")));
 	SavePathInMyDocumentChoice->SetEnabled(!PSP_IsInited());
@@ -1344,15 +1372,8 @@ UI::EventReturn GameSettingsScreen::OnJitAffectingSetting(UI::EventParams &e) {
 	return UI::EVENT_DONE;
 }
 
-UI::EventReturn GameSettingsScreen::OnChangeMemStickDir(UI::EventParams &e) {
-#if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
-	auto initialPath = g_Config.memStickDirectory;
-	System_BrowseForFolder(GetRequesterToken(), "", initialPath, [](const std::string &value, int) {
-		DarwinFileSystemServices::setUserPreferredMemoryStickDirectory(Path(value));
-	});
-#else
+UI::EventReturn GameSettingsScreen::OnShowMemstickScreen(UI::EventParams &e) {
 	screenManager()->push(new MemStickScreen(false));
-#endif
 	return UI::EVENT_DONE;
 }
 
@@ -1645,7 +1666,7 @@ UI::EventReturn GameSettingsScreen::OnAudioDevice(UI::EventParams &e) {
 UI::EventReturn GameSettingsScreen::OnChangeQuickChat0(UI::EventParams &e) {
 #if PPSSPP_PLATFORM(WINDOWS) || defined(USING_QT_UI) || PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(SWITCH)
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
-	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 1"), g_Config.sQuickChat0, [](const std::string &value, int) {
+	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 1"), g_Config.sQuickChat0, false, [](const std::string &value, int) {
 		g_Config.sQuickChat0 = value;
 	});
 #endif
@@ -1655,7 +1676,7 @@ UI::EventReturn GameSettingsScreen::OnChangeQuickChat0(UI::EventParams &e) {
 UI::EventReturn GameSettingsScreen::OnChangeQuickChat1(UI::EventParams &e) {
 #if PPSSPP_PLATFORM(WINDOWS) || defined(USING_QT_UI) || PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(SWITCH)
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
-	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 2"), g_Config.sQuickChat1, [](const std::string &value, int) {
+	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 2"), g_Config.sQuickChat1, false, [](const std::string &value, int) {
 		g_Config.sQuickChat1 = value;
 	});
 #endif
@@ -1665,7 +1686,7 @@ UI::EventReturn GameSettingsScreen::OnChangeQuickChat1(UI::EventParams &e) {
 UI::EventReturn GameSettingsScreen::OnChangeQuickChat2(UI::EventParams &e) {
 #if PPSSPP_PLATFORM(WINDOWS) || defined(USING_QT_UI) || PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(SWITCH)
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
-	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 3"), g_Config.sQuickChat2, [](const std::string &value, int) {
+	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 3"), g_Config.sQuickChat2, false, [](const std::string &value, int) {
 		g_Config.sQuickChat2 = value;
 	});
 #endif
@@ -1675,7 +1696,7 @@ UI::EventReturn GameSettingsScreen::OnChangeQuickChat2(UI::EventParams &e) {
 UI::EventReturn GameSettingsScreen::OnChangeQuickChat3(UI::EventParams &e) {
 #if PPSSPP_PLATFORM(WINDOWS) || defined(USING_QT_UI) || PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(SWITCH)
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
-	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 4"), g_Config.sQuickChat3, [](const std::string &value, int) {
+	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 4"), g_Config.sQuickChat3, false, [](const std::string &value, int) {
 		g_Config.sQuickChat3 = value;
 	});
 #endif
@@ -1685,7 +1706,7 @@ UI::EventReturn GameSettingsScreen::OnChangeQuickChat3(UI::EventParams &e) {
 UI::EventReturn GameSettingsScreen::OnChangeQuickChat4(UI::EventParams &e) {
 #if PPSSPP_PLATFORM(WINDOWS) || defined(USING_QT_UI) || PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(SWITCH)
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
-	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 5"), g_Config.sQuickChat4, [](const std::string &value, int) {
+	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 5"), g_Config.sQuickChat4, false, [](const std::string &value, int) {
 		g_Config.sQuickChat4 = value;
 	});
 #endif
@@ -1695,7 +1716,7 @@ UI::EventReturn GameSettingsScreen::OnChangeQuickChat4(UI::EventParams &e) {
 UI::EventReturn GameSettingsScreen::OnChangeNickname(UI::EventParams &e) {
 #if PPSSPP_PLATFORM(WINDOWS) || defined(USING_QT_UI) || PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(SWITCH)
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
-	System_InputBoxGetString(GetRequesterToken(), n->T("Enter a new PSP nickname"), g_Config.sNickName, [](const std::string &value, int) {
+	System_InputBoxGetString(GetRequesterToken(), n->T("Enter a new PSP nickname"), g_Config.sNickName, false, [](const std::string &value, int) {
 		g_Config.sNickName = StripSpaces(value);
 	});
 #endif
@@ -1760,6 +1781,8 @@ void DeveloperToolsScreen::CreateViews() {
 	auto a = GetI18NCategory(I18NCat::AUDIO);
 	auto sy = GetI18NCategory(I18NCat::SYSTEM);
 	auto ps = GetI18NCategory(I18NCat::POSTSHADERS);
+	auto ms = GetI18NCategory(I18NCat::MEMSTICK);
+	auto si = GetI18NCategory(I18NCat::SYSINFO);
 
 	AddStandardBack(root_);
 
@@ -1879,13 +1902,76 @@ void DeveloperToolsScreen::CreateViews() {
 	});
 #endif
 
+#if PPSSPP_PLATFORM(IOS_APP_STORE)
+	list->Add(new NoticeView(NoticeLevel::WARN, ms->T("Moving the memstick directory is NOT recommended on iOS"), ""));
+	list->Add(new Choice(sy->T("Set Memory Stick folder")))->OnClick.Add(
+		[=](UI::EventParams &) {
+			SetMemStickDirDarwin(GetRequesterToken());
+			return UI::EVENT_DONE;
+		});
+#endif
+
 	static const char *ffModes[] = { "Render all frames", "", "Frame Skipping" };
 	PopupMultiChoice *ffMode = list->Add(new PopupMultiChoice(&g_Config.iFastForwardMode, dev->T("Fast-forward mode"), ffModes, 0, ARRAY_SIZE(ffModes), I18NCat::GRAPHICS, screenManager()));
 	ffMode->SetEnabledFunc([]() { return !g_Config.bVSync; });
 	ffMode->HideChoice(1);  // not used
 
 	auto displayRefreshRate = list->Add(new PopupSliderChoice(&g_Config.iDisplayRefreshRate, 60, 1000, 60, dev->T("Display refresh rate"), 1, screenManager()));
-	displayRefreshRate->SetFormat(dev->T("%d Hz"));
+	displayRefreshRate->SetFormat(si->T("%d Hz"));
+
+#if !PPSSPP_PLATFORM(ANDROID) && !PPSSPP_PLATFORM(IOS) && !PPSSPP_PLATFORM(SWITCH)
+	list->Add(new ItemHeader(dev->T("MIPSTracer")));
+
+	MIPSTracerEnabled_ = mipsTracer.tracing_enabled;
+	CheckBox *MIPSTracerEnabled = new CheckBox(&MIPSTracerEnabled_, dev->T("MIPSTracer enabled"));
+	list->Add(MIPSTracerEnabled)->OnClick.Handle(this, &DeveloperToolsScreen::OnMIPSTracerEnabled);
+	MIPSTracerEnabled->SetEnabledFunc([]() {
+		bool temp = g_Config.iCpuCore == static_cast<int>(CPUCore::IR_INTERPRETER) && PSP_IsInited();
+		return temp && Core_IsStepping() && coreState != CORE_POWERDOWN;
+	});
+
+	Choice *TraceDumpPath = list->Add(new Choice(dev->T("Select the file path for the trace")));
+	TraceDumpPath->OnClick.Handle(this, &DeveloperToolsScreen::OnMIPSTracerPathChanged);
+	TraceDumpPath->SetEnabledFunc([]() {
+		if (!PSP_IsInited())
+			return false;
+		return true;
+	});
+
+	MIPSTracerPath_ = mipsTracer.get_logging_path();
+	MIPSTracerPath = list->Add(new InfoItem(dev->T("Current log file"), MIPSTracerPath_));
+
+	PopupSliderChoice* storage_capacity = list->Add(
+		new PopupSliderChoice(
+			&mipsTracer.in_storage_capacity, 0x4'0000, 0x40'0000, 0x10'0000, dev->T("Storage capacity"), 0x10000, screenManager()
+		)
+	);
+	storage_capacity->SetFormat("0x%x asm opcodes");
+	storage_capacity->OnChange.Add([&](UI::EventParams &) {
+		INFO_LOG(Log::JIT, "User changed the tracer's storage capacity to 0x%x", mipsTracer.in_storage_capacity);
+		return UI::EVENT_CONTINUE;
+	});
+
+	PopupSliderChoice* trace_max_size = list->Add(
+		new PopupSliderChoice(
+			&mipsTracer.in_max_trace_size, 0x1'0000, 0x40'0000, 0x10'0000, dev->T("Max allowed trace size"), 0x10000, screenManager()
+		)
+	);
+	trace_max_size->SetFormat("%d basic blocks");
+	trace_max_size->OnChange.Add([&](UI::EventParams &) {
+		INFO_LOG(Log::JIT, "User changed the tracer's max trace size to %d", mipsTracer.in_max_trace_size);
+		return UI::EVENT_CONTINUE;
+	});
+
+	Button *FlushTrace = list->Add(new Button(dev->T("Flush the trace")));
+	FlushTrace->OnClick.Handle(this, &DeveloperToolsScreen::OnMIPSTracerFlushTrace);
+
+	Button *InvalidateJitCache = list->Add(new Button(dev->T("Clear the JIT cache")));
+	InvalidateJitCache->OnClick.Handle(this, &DeveloperToolsScreen::OnMIPSTracerClearJitCache);
+
+	Button *ClearMIPSTracer = list->Add(new Button(dev->T("Clear the MIPSTracer")));
+	ClearMIPSTracer->OnClick.Handle(this, &DeveloperToolsScreen::OnMIPSTracerClearTracer);
+#endif
 
 	Draw::DrawContext *draw = screenManager()->getDrawContext();
 
@@ -1905,7 +1991,7 @@ void DeveloperToolsScreen::CreateViews() {
 	// Experimental, allow some VR features without OpenXR
 	if (GetGPUBackend() == GPUBackend::OPENGL) {
 		auto vr = GetI18NCategory(I18NCat::VR);
-		list->Add(new ItemHeader(gr->T("Virtual reality")));
+		list->Add(new ItemHeader(vr->T("Virtual reality")));
 		list->Add(new CheckBox(&g_Config.bForceVR, vr->T("VR camera")));
 	}
 
@@ -2076,6 +2162,50 @@ UI::EventReturn DeveloperToolsScreen::OnRemoteDebugger(UI::EventParams &e) {
 	return UI::EVENT_DONE;
 }
 
+UI::EventReturn DeveloperToolsScreen::OnMIPSTracerEnabled(UI::EventParams &e) {
+	if (MIPSTracerEnabled_) {
+		u32 capacity = mipsTracer.in_storage_capacity;
+		u32 trace_size = mipsTracer.in_max_trace_size;
+
+		mipsTracer.initialize(capacity, trace_size);
+		mipsTracer.start_tracing();
+	}
+	else {
+		mipsTracer.stop_tracing();
+	}
+	return UI::EVENT_DONE;
+}
+
+UI::EventReturn DeveloperToolsScreen::OnMIPSTracerPathChanged(UI::EventParams &e) {
+	auto dev = GetI18NCategory(I18NCat::DEVELOPER);
+	System_BrowseForFile(GetRequesterToken(), dev->T("Select the log file"), BrowseFileType::ANY,
+		[this](const std::string &value, int) {
+		mipsTracer.set_logging_path(value);
+		MIPSTracerPath_ = value;
+		MIPSTracerPath->SetRightText(MIPSTracerPath_);
+	});
+	return UI::EVENT_DONE;
+}
+
+UI::EventReturn DeveloperToolsScreen::OnMIPSTracerFlushTrace(UI::EventParams &e) {
+	mipsTracer.flush_to_file();
+	// The error logs are emitted inside the tracer
+
+	return UI::EVENT_DONE;
+}
+
+UI::EventReturn DeveloperToolsScreen::OnMIPSTracerClearJitCache(UI::EventParams &e) {
+	INFO_LOG(Log::JIT, "Clearing the jit cache...");
+	System_PostUIMessage(UIMessage::REQUEST_CLEAR_JIT);
+	return UI::EVENT_DONE;
+}
+
+UI::EventReturn DeveloperToolsScreen::OnMIPSTracerClearTracer(UI::EventParams &e) {
+	INFO_LOG(Log::JIT, "Clearing the MIPSTracer...");
+	mipsTracer.clear();
+	return UI::EVENT_DONE;
+}
+
 void DeveloperToolsScreen::update() {
 	UIDialogScreenWithBackground::update();
 	allowDebugger_ = !WebServerStopped(WebServerFlags::DEBUGGER);
@@ -2224,7 +2354,7 @@ UI::EventReturn HostnameSelectScreen::OnDeleteAllClick(UI::EventParams &e) {
 
 UI::EventReturn HostnameSelectScreen::OnEditClick(UI::EventParams& e) {
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
-	System_InputBoxGetString(GetRequesterToken(), n->T("proAdhocServer Address:"), addrView_->GetText(), [this](const std::string& value, int) {
+	System_InputBoxGetString(GetRequesterToken(), n->T("proAdhocServer Address:"), addrView_->GetText(), false, [this](const std::string& value, int) {
 		addrView_->SetText(value);
 	});
 	return UI::EVENT_DONE;

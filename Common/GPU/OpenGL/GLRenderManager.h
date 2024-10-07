@@ -122,9 +122,7 @@ public:
 		if (program) {
 			glDeleteProgram(program);
 		}
-		if (locData_) {
-			delete locData_;
-		}
+		delete locData_;
 	}
 	struct Semantic {
 		int location;
@@ -376,14 +374,6 @@ public:
 	void DeletePushBuffer(GLPushBuffer *pushbuffer) {
 		_dbg_assert_(pushbuffer != nullptr);
 		deleter_.pushBuffers.push_back(pushbuffer);
-	}
-
-	void BeginPushBuffer(GLPushBuffer *pushbuffer) {
-		pushbuffer->Begin();
-	}
-
-	void EndPushBuffer(GLPushBuffer *pushbuffer) {
-		pushbuffer->End();
 	}
 
 	bool IsInRenderPass() const {

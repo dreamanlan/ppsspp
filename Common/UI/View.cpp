@@ -77,8 +77,8 @@ void Event::Trigger(EventParams &e) {
 
 // Call this from UI thread
 EventReturn Event::Dispatch(EventParams &e) {
-	for (auto iter = handlers_.begin(); iter != handlers_.end(); ++iter) {
-		if ((iter->func)(e) == UI::EVENT_DONE) {
+	for (auto &handler : handlers_) {
+		if ((handler.func)(e) == UI::EVENT_DONE) {
 			// Event is handled, stop looping immediately. This event might even have gotten deleted.
 			return UI::EVENT_DONE;
 		}
@@ -1142,18 +1142,25 @@ void TextEdit::Draw(UIContext &dc) {
 	Bounds textBounds = bounds_;
 	textBounds.x = textX - scrollPos_;
 
+	std::string textToDisplay = text_;
+	if (passwordMasking_) {
+		for (int i = 0; i < textToDisplay.size(); i++) {
+			textToDisplay[i] = '*';
+		}
+	}
+
 	if (text_.empty()) {
 		if (placeholderText_.size()) {
 			uint32_t c = textColor & 0x50FFFFFF;
 			dc.DrawTextRect(placeholderText_, bounds_, c, ALIGN_CENTER);
 		}
 	} else {
-		dc.DrawTextRect(text_, textBounds, textColor, ALIGN_VCENTER | ALIGN_LEFT | align_);
+		dc.DrawTextRect(textToDisplay, textBounds, textColor, ALIGN_VCENTER | ALIGN_LEFT | align_);
 	}
 
 	if (HasFocus()) {
 		// Hack to find the caret position. Might want to find a better way...
-		dc.MeasureText(dc.theme->uiFont, 1.0f, 1.0f, text_.substr(0, caret_), &w, &h, ALIGN_VCENTER | ALIGN_LEFT | align_);
+		dc.MeasureText(dc.theme->uiFont, 1.0f, 1.0f, textToDisplay.substr(0, caret_), &w, &h, ALIGN_VCENTER | ALIGN_LEFT | align_);
 		float caretX = w - scrollPos_;
 		if (caretX > bounds_.w) {
 			scrollPos_ += caretX - bounds_.w;
@@ -1322,7 +1329,7 @@ bool TextEdit::Key(const KeyInput &input) {
 
 	// Process chars.
 	if (input.flags & KEY_CHAR) {
-		int unichar = input.keyCode;
+		const int unichar = input.keyCode;
 		if (unichar >= 0x20 && !ctrlDown_) {  // Ignore control characters.
 			// Insert it! (todo: do it with a string insert)
 			char buf[8];
