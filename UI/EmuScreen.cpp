@@ -352,7 +352,7 @@ void EmuScreen::bootGame(const Path &filename) {
 		ERROR_LOG(Log::Boot, "InitStart bootGame error: %s", errorMessage_.c_str());
 	}
 
-	if (PSP_CoreParameter().compat.flags().RequireBufferedRendering && g_Config.bSkipBufferEffects) {
+	if (PSP_CoreParameter().compat.flags().RequireBufferedRendering && g_Config.bSkipBufferEffects && !g_Config.bSoftwareRendering) {
 		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
 		g_OSD.Show(OSDType::MESSAGE_WARNING, gr->T("BufferedRenderingRequired", "Warning: This game requires Rendering Mode to be set to Buffered."), 10.0f);
 	}
@@ -1281,14 +1281,16 @@ bool EmuScreen::checkPowerDown() {
 	}
 
 	if (coreState == CORE_POWERDOWN && !PSP_IsIniting() && !PSP_IsRebooting()) {
+		bool shutdown = false;
 		if (PSP_IsInited()) {
 			PSP_Shutdown();
+			shutdown = true;
 		}
 		INFO_LOG(Log::System, "SELF-POWERDOWN!");
 		screenManager()->switchScreen(new MainScreen());
 		bootPending_ = false;
 		invalid_ = true;
-		return true;
+		return shutdown;
 	}
 	return false;
 }
@@ -1369,6 +1371,9 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 			framebufferBound = true;
 		}
 		draw->SetTargetSize(g_display.pixel_xres, g_display.pixel_yres);
+	} else {
+		// Some other screen bound the backbuffer first.
+		framebufferBound = true;
 	}
 
 	g_OSD.NudgeSidebar();
@@ -1376,6 +1381,7 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 	if (mode & ScreenRenderMode::TOP) {
 		System_Notify(SystemNotification::KEEP_SCREEN_AWAKE);
 	} else if (!Core_ShouldRunBehind() && strcmp(screenManager()->topScreen()->tag(), "DevMenu") != 0) {
+		// NOTE: The strcmp is != 0 - so all popped-over screens EXCEPT DevMenu
 		// Just to make sure.
 		if (PSP_IsInited() && !skipBufferEffects) {
 			_dbg_assert_(gpu);
@@ -1383,9 +1389,22 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 			gpu->CopyDisplayToOutput(true);
 			PSP_EndHostFrame();
 		}
-		if (!framebufferBound && (!gpu || !gpu->PresentedThisFrame())) {
+		if (gpu->PresentedThisFrame()) {
+			framebufferBound = true;
+		}
+		if (!framebufferBound) {
 			draw->BindFramebufferAsRenderTarget(nullptr, { RPAction::CLEAR, RPAction::CLEAR, RPAction::CLEAR, }, "EmuScreen_Behind");
 		}
+
+		Draw::BackendState state = draw->GetCurrentBackendState();
+		if (state.valid) {
+			_dbg_assert_msg_(state.passes >= 1, "skipB: %d sw: %d mode: %d back: %d tag: %s behi: %d", (int)skipBufferEffects, (int)g_Config.bSoftwareRendering, (int)mode, (int)g_Config.iGPUBackend, screenManager()->topScreen()->tag(), (int)g_Config.bRunBehindPauseMenu);
+			// Workaround any remaining bugs like this.
+			if (state.passes == 0) {
+				draw->BindFramebufferAsRenderTarget(nullptr, { RPAction::CLEAR, RPAction::CLEAR, RPAction::CLEAR, }, "EmuScreen_SafeFallback");
+			}
+		}
+
 		// Need to make sure the UI texture is available, for "darken".
 		screenManager()->getUIContext()->BeginFrame();
 		draw->SetViewport(viewport);
@@ -1445,6 +1464,12 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 	uint32_t clearColor = 0;
 	if (!blockedExecution) {
 		PSP_BeginHostFrame();
+		if (SaveState::Process()) {
+			// We might have lost the framebuffer bind if we had one, due to a readback.
+			if (framebufferBound) {
+				draw->BindFramebufferAsRenderTarget(nullptr, { RPAction::CLEAR, RPAction::CLEAR, RPAction::CLEAR, clearColor }, "EmuScreen_SavestateRebind");
+			}
+		}
 		PSP_RunLoopWhileState();
 
 		flags |= ScreenRenderFlags::HANDLED_THROTTLING;
@@ -1486,10 +1511,6 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 			break;
 		}
 
-		if (framebufferBound && gpu) {
-			gpu->PresentedThisFrame();
-		}
-
 		PSP_EndHostFrame();
 
 		// This place rougly matches how libretro handles it (after retro_frame).
@@ -1508,8 +1529,14 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 
 	Draw::BackendState state = draw->GetCurrentBackendState();
 
-	// We allow if !state.valid, that means it's not the Vulkan backend.
-	_assert_msg_(!state.valid || state.passes >= 1, "skipB: %d sw: %d mode: %d back: %d", (int)skipBufferEffects, (int)g_Config.bSoftwareRendering, mode, (int)g_Config.iGPUBackend);
+	// State.valid just states whether the passes parameter has a meaningful value.
+	if (state.valid) {
+		_dbg_assert_msg_(state.passes >= 1, "skipB: %d sw: %d mode: %d back: %d bound: %d", (int)skipBufferEffects, (int)g_Config.bSoftwareRendering, (int)mode, (int)g_Config.iGPUBackend, (int)framebufferBound);
+		if (state.passes == 0) {
+			// Workaround any remaining bugs like this.
+			draw->BindFramebufferAsRenderTarget(nullptr, { RPAction::CLEAR, RPAction::CLEAR, RPAction::CLEAR, }, "EmuScreen_SafeFallback");
+		}
+	}
 
 	screenManager()->getUIContext()->BeginFrame();
 
@@ -1524,7 +1551,9 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 	}
 
 	// NOTE: We don't check for powerdown if we're not the top screen.
-	checkPowerDown();
+	if (checkPowerDown()) {
+		draw->BindFramebufferAsRenderTarget(nullptr, { RPAction::CLEAR, RPAction::CLEAR, RPAction::CLEAR, clearColor }, "EmuScreen_PowerDown");
+	}
 
 	if (hasVisibleUI()) {
 		draw->SetViewport(viewport);

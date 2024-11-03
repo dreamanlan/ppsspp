@@ -89,6 +89,7 @@ void FramebufferManagerCommon::Init(int msaaLevel) {
 	NotifyRenderResized(msaaLevel);
 }
 
+// Returns true if we need to stop the render thread
 bool FramebufferManagerCommon::UpdateRenderSize(int msaaLevel) {
 	const bool newRender = renderWidth_ != (float)PSP_CoreParameter().renderWidth || renderHeight_ != (float)PSP_CoreParameter().renderHeight || msaaLevel_ != msaaLevel;
 
@@ -111,6 +112,11 @@ bool FramebufferManagerCommon::UpdateRenderSize(int msaaLevel) {
 	useBufferedRendering_ = newBuffered;
 
 	presentation_->UpdateRenderSize(renderWidth_, renderHeight_);
+
+	// If just switching TO buffered rendering, no need to pause the threads. In fact this causes problems due to the open backbuffer renderpass.
+	if (!useBufferedRendering_ && newBuffered) {
+		return false;
+	}
 	return newRender || newSettings;
 }
 
@@ -1517,7 +1523,7 @@ Draw::Texture *FramebufferManagerCommon::MakePixelTexture(const u8 *srcPixels, G
 	return tex;
 }
 
-void FramebufferManagerCommon::DrawFramebufferToOutput(const u8 *srcPixels, int srcStride, GEBufferFormat srcPixelFormat) {
+bool FramebufferManagerCommon::DrawFramebufferToOutput(const u8 *srcPixels, int srcStride, GEBufferFormat srcPixelFormat) {
 	textureCache_->ForgetLastTexture();
 	shaderManager_->DirtyLastShader();
 
@@ -1525,7 +1531,7 @@ void FramebufferManagerCommon::DrawFramebufferToOutput(const u8 *srcPixels, int 
 	float v0 = 0.0f, v1 = 1.0f;
 	Draw::Texture *pixelsTex = MakePixelTexture(srcPixels, srcPixelFormat, srcStride, 512, 272);
 	if (!pixelsTex)
-		return;
+		return false;
 
 	int uvRotation = useBufferedRendering_ ? g_Config.iInternalScreenRotation : ROTATION_LOCKED_HORIZONTAL;
 	OutputFlags flags = g_Config.iDisplayFilter == SCALE_LINEAR ? OutputFlags::LINEAR : OutputFlags::NEAREST;
@@ -1546,6 +1552,8 @@ void FramebufferManagerCommon::DrawFramebufferToOutput(const u8 *srcPixels, int 
 
 	DiscardFramebufferCopy();
 	currentRenderVfb_ = nullptr;
+
+	return true;
 }
 
 void FramebufferManagerCommon::SetViewport2D(int x, int y, int w, int h) {
@@ -1627,8 +1635,14 @@ void FramebufferManagerCommon::CopyDisplayToOutput(bool reallyDirty) {
 	if (!vfb) {
 		if (Memory::IsValidAddress(fbaddr)) {
 			// The game is displaying something directly from RAM. In GTA, it's decoded video.
-			DrawFramebufferToOutput(Memory::GetPointerUnchecked(fbaddr), displayStride_, displayFormat_);
-			// This effectively calls presentation_->NotifyPresent();
+			// If successful, this effectively calls presentation_->NotifyPresent();
+			if (!DrawFramebufferToOutput(Memory::GetPointerUnchecked(fbaddr), displayStride_, displayFormat_)) {
+				if (useBufferedRendering_) {
+					// Bind and clear the backbuffer. This should be the first time during the frame that it's bound.
+					draw_->BindFramebufferAsRenderTarget(nullptr, { Draw::RPAction::CLEAR, Draw::RPAction::CLEAR, Draw::RPAction::CLEAR }, "CopyDisplayToOutput_DrawError");
+				}
+				presentation_->NotifyPresent();
+			}
 			return;
 		} else {
 			DEBUG_LOG(Log::FrameBuf, "Found no FBO to display! displayFBPtr = %08x", fbaddr);
@@ -1897,8 +1911,8 @@ void FramebufferManagerCommon::ResizeFramebufFBO(VirtualFramebuffer *vfb, int w,
 
 struct CopyCandidate {
 	VirtualFramebuffer *vfb = nullptr;
-	int y;
-	int h;
+	int y = 0;
+	int h = 0;
 
 	std::string ToString(RasterChannel channel) const {
 		return StringFromFormat("%08x %s %dx%d y=%d h=%d", vfb->Address(channel), GeBufferFormatToString(vfb->Format(channel)), vfb->width, vfb->height, y, h);

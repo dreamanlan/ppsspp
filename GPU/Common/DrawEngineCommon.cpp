@@ -44,6 +44,7 @@ DrawEngineCommon::DrawEngineCommon() : decoderMap_(16) {
 	transformedExpanded_ = (TransformedVertex *)AllocateMemoryPages(3 * TRANSFORMED_VERTEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
 	decoded_ = (u8 *)AllocateMemoryPages(DECODED_VERTEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
 	decIndex_ = (u16 *)AllocateMemoryPages(DECODED_INDEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
+	indexGen.Setup(decIndex_);
 }
 
 DrawEngineCommon::~DrawEngineCommon() {
@@ -806,6 +807,8 @@ int DrawEngineCommon::ComputeNumVertsToDecode() const {
 	return sum;
 }
 
+// Takes a list of consecutive PRIM opcodes, and extends the current draw call to include them.
+// This is just a performance optimization.
 int DrawEngineCommon::ExtendNonIndexedPrim(const uint32_t *cmd, const uint32_t *stall, u32 vertTypeID, bool clockwise, int *bytesRead, bool isTriangle) {
 	const uint32_t *start = cmd;
 	int prevDrawVerts = numDrawVerts_ - 1;

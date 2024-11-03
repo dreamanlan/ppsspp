@@ -216,6 +216,7 @@ ShaderManagerVulkan::ShaderManagerVulkan(Draw::DrawContext *draw)
 	uboAlignment_ = vulkan->GetPhysicalDeviceProperties().properties.limits.minUniformBufferOffsetAlignment;
 
 	uniforms_ = (Uniforms *)AllocateAlignedMemory(sizeof(Uniforms), 16);
+	_assert_(uniforms_);
 
 	static_assert(sizeof(uniforms_->ub_base) <= 512, "ub_base grew too big");
 	static_assert(sizeof(uniforms_->ub_lights) <= 512, "ub_lights grew too big");
@@ -501,7 +502,7 @@ enum class VulkanCacheDetectFlags {
 };
 
 #define CACHE_HEADER_MAGIC 0xff51f420 
-#define CACHE_VERSION 51
+#define CACHE_VERSION 52
 
 struct VulkanCacheHeader {
 	uint32_t magic;

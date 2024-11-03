@@ -349,7 +349,7 @@ bool VulkanRenderManager::CreateBackbuffers() {
 
 void VulkanRenderManager::StartThreads() {
 	{
-		std::unique_lock<std::mutex> lock(compileMutex_);
+		std::unique_lock<std::mutex> lock(compileQueueMutex_);
 		_assert_(compileQueue_.empty());
 	}
 
@@ -370,6 +370,10 @@ void VulkanRenderManager::StartThreads() {
 
 // Called from main thread.
 void VulkanRenderManager::StopThreads() {
+	// Make sure we don't have an open non-backbuffer render pass
+	if (curRenderStep_ && curRenderStep_->render.framebuffer != nullptr) {
+		EndCurRenderStep();
+	}
 	// Not sure this is a sensible check - should be ok even if not.
 	// _dbg_assert_(steps_.empty());
 
@@ -395,7 +399,7 @@ void VulkanRenderManager::StopThreads() {
 	}
 
 	{
-		std::unique_lock<std::mutex> lock(compileMutex_);
+		std::unique_lock<std::mutex> lock(compileQueueMutex_);
 		runCompileThread_ = false;  // Compiler and present thread both look at this bool.
 		_assert_(compileThread_.joinable());
 		compileCond_.notify_one();
@@ -410,7 +414,7 @@ void VulkanRenderManager::StopThreads() {
 	CreateMultiPipelinesTask::WaitForAll();
 
 	{
-		std::unique_lock<std::mutex> lock(compileMutex_);
+		std::unique_lock<std::mutex> lock(compileQueueMutex_);
 		_assert_(compileQueue_.empty());
 	}
 }
@@ -425,7 +429,7 @@ void VulkanRenderManager::DestroyBackbuffers() {
 void VulkanRenderManager::CheckNothingPending() {
 	_assert_(pipelinesToCheck_.empty());
 	{
-		std::unique_lock<std::mutex> lock(compileMutex_);
+		std::unique_lock<std::mutex> lock(compileQueueMutex_);
 		_assert_(compileQueue_.empty());
 	}
 }
@@ -434,7 +438,7 @@ VulkanRenderManager::~VulkanRenderManager() {
 	INFO_LOG(Log::G3D, "VulkanRenderManager destructor");
 
 	{
-		std::unique_lock<std::mutex> lock(compileMutex_);
+		std::unique_lock<std::mutex> lock(compileQueueMutex_);
 		_assert_(compileQueue_.empty());
 	}
 
@@ -462,7 +466,7 @@ void VulkanRenderManager::CompileThreadFunc() {
 		bool exitAfterCompile = false;
 		std::vector<CompileQueueEntry> toCompile;
 		{
-			std::unique_lock<std::mutex> lock(compileMutex_);
+			std::unique_lock<std::mutex> lock(compileQueueMutex_);
 			while (compileQueue_.empty() && runCompileThread_) {
 				compileCond_.wait(lock);
 			}
@@ -521,7 +525,7 @@ void VulkanRenderManager::CompileThreadFunc() {
 		sleep_ms(1);
 	}
 
-	std::unique_lock<std::mutex> lock(compileMutex_);
+	std::unique_lock<std::mutex> lock(compileQueueMutex_);
 	_assert_(compileQueue_.empty());
 }
 
@@ -794,7 +798,7 @@ VKRGraphicsPipeline *VulkanRenderManager::CreateGraphicsPipeline(VKRGraphicsPipe
 			VKRRenderPassStoreAction::STORE, VKRRenderPassStoreAction::DONT_CARE, VKRRenderPassStoreAction::DONT_CARE,
 		};
 		VKRRenderPass *compatibleRenderPass = queueRunner_.GetRenderPass(key);
-		std::unique_lock<std::mutex> lock(compileMutex_);
+		std::unique_lock<std::mutex> lock(compileQueueMutex_);
 		bool needsCompile = false;
 		for (size_t i = 0; i < (size_t)RenderPassType::TYPE_COUNT; i++) {
 			if (!(variantBitmask & (1 << i)))
@@ -865,13 +869,14 @@ void VulkanRenderManager::EndCurRenderStep() {
 
 	VkSampleCountFlagBits sampleCount = curRenderStep_->render.framebuffer ? curRenderStep_->render.framebuffer->sampleCount : VK_SAMPLE_COUNT_1_BIT;
 
-	compileMutex_.lock();
+	compileQueueMutex_.lock();
 	bool needsCompile = false;
 	for (VKRGraphicsPipeline *pipeline : pipelinesToCheck_) {
 		if (!pipeline) {
 			// Not good, but let's try not to crash.
 			continue;
 		}
+		std::lock_guard<std::mutex> lock(pipeline->mutex_);
 		if (!pipeline->pipeline[(size_t)rpType]) {
 			pipeline->pipeline[(size_t)rpType] = Promise<VkPipeline>::CreateEmpty();
 			_assert_(renderPass);
@@ -881,7 +886,7 @@ void VulkanRenderManager::EndCurRenderStep() {
 	}
 	if (needsCompile)
 		compileCond_.notify_one();
-	compileMutex_.unlock();
+	compileQueueMutex_.unlock();
 	pipelinesToCheck_.clear();
 
 	// We don't do this optimization for very small targets, probably not worth it.
@@ -1137,6 +1142,8 @@ void VulkanRenderManager::CopyImageToMemorySync(VkImage image, int mipLevel, int
 
 	// Need to call this after FlushSync so the pixels are guaranteed to be ready in CPU-accessible VRAM.
 	queueRunner_.CopyReadbackBuffer(frameData_[vulkan_->GetCurFrame()], nullptr, w, h, destFormat, destFormat, pixelStride, pixels);
+
+	_dbg_assert_(steps_.empty());
 }
 
 static void RemoveDrawCommands(FastVec<VkRenderData> *cmds) {
@@ -1335,8 +1342,6 @@ void VulkanRenderManager::BlitFramebuffer(VKRFramebuffer *src, VkRect2D srcRect,
 		}
 	}
 
-	EndCurRenderStep();
-
 	// Sanity check. Added an assert to try to gather more info.
 	// Got this assert in NPJH50443 FINAL FANTASY TYPE-0, but pretty rare. Moving back to debug assert.
 	if (aspectMask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
@@ -1348,6 +1353,8 @@ void VulkanRenderManager::BlitFramebuffer(VKRFramebuffer *src, VkRect2D srcRect,
 			return;
 		}
 	}
+
+	EndCurRenderStep();
 
 	VKRStep *step = new VKRStep{ VKRStepType::BLIT };
 	step->blit.aspectMask = aspectMask;

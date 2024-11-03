@@ -137,11 +137,11 @@ struct VKRGraphicsPipeline {
 
 	VKRGraphicsPipelineDesc *desc = nullptr;
 	Promise<VkPipeline> *pipeline[(size_t)RenderPassType::TYPE_COUNT]{};
+	std::mutex mutex_;  // protects the pipeline array
 
 	VkSampleCountFlagBits SampleCount() const { return sampleCount_; }
 
 	const char *Tag() const { return tag_.c_str(); }
-
 private:
 	void DestroyVariantsInstant(VkDevice device);
 
@@ -285,9 +285,13 @@ public:
 	void ReportBadStateForDraw();
 
 	void NudgeCompilerThread() {
-		compileMutex_.lock();
+		compileQueueMutex_.lock();
 		compileCond_.notify_one();
-		compileMutex_.unlock();
+		compileQueueMutex_.unlock();
+	}
+
+	void AssertInRenderPass() const {
+		_dbg_assert_(curRenderStep_ && curRenderStep_->stepType == VKRStepType::RENDER);
 	}
 
 	// This is the first call in a draw operation. Instead of asserting like we used to, you can now check the
@@ -611,7 +615,7 @@ private:
 	std::thread compileThread_;
 	// Sync
 	std::condition_variable compileCond_;
-	std::mutex compileMutex_;
+	std::mutex compileQueueMutex_;
 	std::vector<CompileQueueEntry> compileQueue_;
 
 	// Thread for measuring presentation delay.

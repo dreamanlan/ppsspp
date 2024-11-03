@@ -395,6 +395,17 @@ NPDRMDemoBlockDevice::NPDRMDemoBlockDevice(FileLoader *fileLoader)
 		ERROR_LOG(Log::Loader, "Invalid NPUMDIMG header!");
 	}
 
+	u32 psar_id;
+	fileLoader->ReadAt(psarOffset, 4, 1, &psar_id);
+
+	INFO_LOG(Log::Loader, "NPDRM: PSAR ID: %08x", psar_id);
+	// PS1 PSAR begins with "PSISOIMG0000"
+	if (psar_id == 'SISP') {
+		lbaSize_ = 0;  // Mark invalid
+		ERROR_LOG(Log::Loader, "PSX not supported! Should have been caught earlier.");
+		return;
+	}
+
 	kirk_init();
 
 	// getkey
@@ -413,11 +424,16 @@ NPDRMDemoBlockDevice::NPDRMDemoBlockDevice(FileLoader *fileLoader)
 	lbaSize_     = (lbaEnd-lbaStart+1);     // LBA size of ISO
 	blockLBAs_   = *(u32*)(np_header+0x0c); // block size in LBA
 
+	char psarStr[5] = {};
+	memcpy(psarStr, &psar_id, 4);
+
 	// Protect against a badly decrypted header, and send information through the assert about what's being played (implicitly).
-	_assert_msg_(blockLBAs_ <= 4096, "Bad blockLBAs in header: %08x (%s)", blockLBAs_, fileLoader->GetPath().ToVisualString().c_str());
+	_dbg_assert_msg_(blockLBAs_ <= 4096, "Bad blockLBAs in header: %08x (%s) psar: %s", blockLBAs_, fileLoader->GetPath().ToVisualString().c_str(), psarStr);
 
 	// When we remove the above assert, let's just try to survive.
 	if (blockLBAs_ > 4096) {
+		ERROR_LOG(Log::Loader, "Bad blockLBAs in header: %08x (%s) psar: %s", blockLBAs_, fileLoader->GetPath().ToVisualString().c_str(), psarStr);
+		// We'll end up displaying an error message since ReadBlock will fail.
 		return;
 	}
 
@@ -433,7 +449,7 @@ NPDRMDemoBlockDevice::NPDRMDemoBlockDevice(FileLoader *fileLoader)
 	table_ = new table_info[numBlocks_];
 
 	readSize = fileLoader_->ReadAt(psarOffset + tableOffset_, 1, tableSize_, table_);
-	if (readSize!=tableSize_){
+	if (readSize != tableSize_){
 		ERROR_LOG(Log::Loader, "Invalid NPUMDIMG table!");
 	}
 

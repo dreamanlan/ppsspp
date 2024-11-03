@@ -722,10 +722,6 @@ void GPUCommon::PSPFrame() {
 	GPURecord::NotifyBeginFrame();
 }
 
-bool GPUCommon::PresentedThisFrame() const {
-	return framebufferManager_ ? framebufferManager_->PresentedThisFrame() : true;
-}
-
 void GPUCommon::SlowRunLoop(DisplayList &list) {
 	const bool dumpThisFrame = dumpThisFrame_;
 	while (downcount > 0) {
@@ -1353,8 +1349,7 @@ void GPUCommon::FlushImm() {
 }
 
 void GPUCommon::Execute_Unknown(u32 op, u32 diff) {
-	if ((op & 0xFFFFFF) != 0)
-		WARN_LOG_REPORT_ONCE(unknowncmd, Log::G3D, "Unknown GE command : %08x ", op);
+	// Do nothing. We used to report here, but we're confident we have them all so no need to report unknown.
 }
 
 void GPUCommon::FastLoadBoneMatrix(u32 target) {
@@ -1871,6 +1866,18 @@ void GPUCommon::DoBlockTransfer(u32 skipDrawReason) {
 }
 
 bool GPUCommon::PerformMemoryCopy(u32 dest, u32 src, int size, GPUCopyFlag flags) {
+	/*
+	// TODO: Should add this. But let's do it after the 1.18 release.
+	if (dest == 0 || src == 0) {
+		_dbg_assert_msg_(false, "Bad PerformMemoryCopy: %08x -> %08x, size %d (flag: %d)", src, dest, size, (int)flags);
+		return false;
+	}
+	*/
+	if (size == 0) {
+		_dbg_assert_msg_(false, "Zero-sized PerformMemoryCopy: %08x -> %08x, size %d (flag: %d)", src, dest, size, (int)flags);
+		// Let's not ignore this yet but if we hit this, we should investigate.
+	}
+
 	// Track stray copies of a framebuffer in RAM. MotoGP does this.
 	if (framebufferManager_->MayIntersectFramebufferColor(src) || framebufferManager_->MayIntersectFramebufferColor(dest)) {
 		if (!framebufferManager_->NotifyFramebufferCopy(src, dest, size, flags, gstate_c.skipDrawReason)) {
