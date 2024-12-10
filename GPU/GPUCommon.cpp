@@ -26,6 +26,7 @@
 #include "GPU/GPUCommon.h"
 #include "GPU/GPUState.h"
 #include "Core/Config.h"
+#include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/Debugger/MemBlockInfo.h"
 #include "Core/MemMap.h"
@@ -96,7 +97,7 @@ void GPUCommon::Reinitialize() {
 	memset(dls, 0, sizeof(dls));
 	for (int i = 0; i < DisplayListMaxCount; ++i) {
 		dls[i].state = PSP_GE_DL_STATE_NONE;
-		dls[i].waitTicks = 0;
+		dls[i].waitUntilTicks = 0;
 	}
 
 	nextListID = 0;
@@ -272,7 +273,7 @@ int GPUCommon::ListSync(int listid, int mode) {
 		return SCE_KERNEL_ERROR_ILLEGAL_CONTEXT;
 	}
 
-	if (dl.waitTicks > CoreTiming::GetTicks()) {
+	if (dl.waitUntilTicks > CoreTiming::GetTicks()) {
 		__GeWaitCurrentThread(GPU_SYNC_LIST, listid, "GeListSync");
 	}
 	return PSP_GE_LIST_COMPLETED;
@@ -357,7 +358,9 @@ void GPUCommon::ResetMatrices() {
 	gstate_c.Dirty(DIRTY_WORLDMATRIX | DIRTY_VIEWMATRIX | DIRTY_PROJMATRIX | DIRTY_TEXMATRIX | DIRTY_FRAGMENTSHADER_STATE | DIRTY_BONE_UNIFORMS);
 }
 
-u32 GPUCommon::EnqueueList(u32 listpc, u32 stall, int subIntrBase, PSPPointer<PspGeListArgs> args, bool head) {
+u32 GPUCommon::EnqueueList(u32 listpc, u32 stall, int subIntrBase, PSPPointer<PspGeListArgs> args, bool head, bool *runList) {
+	*runList = false;
+
 	// TODO Check the stack values in missing arg and ajust the stack depth
 
 	// Check alignment
@@ -406,7 +409,7 @@ u32 GPUCommon::EnqueueList(u32 listpc, u32 stall, int subIntrBase, PSPPointer<Ps
 			id = possibleID;
 			break;
 		}
-		if (possibleList.state == PSP_GE_DL_STATE_COMPLETED && possibleList.waitTicks < currentTicks) {
+		if (possibleList.state == PSP_GE_DL_STATE_COMPLETED && possibleList.waitUntilTicks < currentTicks) {
 			id = possibleID;
 		}
 	}
@@ -429,7 +432,7 @@ u32 GPUCommon::EnqueueList(u32 listpc, u32 stall, int subIntrBase, PSPPointer<Ps
 	dl.stackptr = 0;
 	dl.signal = PSP_GE_SIGNAL_NONE;
 	dl.interrupted = false;
-	dl.waitTicks = (u64)-1;
+	dl.waitUntilTicks = (u64)-1;
 	dl.interruptsEnabled = interruptsEnabled_;
 	dl.started = false;
 	dl.offsetAddr = 0;
@@ -465,9 +468,9 @@ u32 GPUCommon::EnqueueList(u32 listpc, u32 stall, int subIntrBase, PSPPointer<Ps
 		drawCompleteTicks = (u64)-1;
 
 		// TODO save context when starting the list if param is set
-		ProcessDLQueue();
+		// LATER: Wait, what? Please explain.
+		*runList = true;
 	}
-
 	return id;
 }
 
@@ -486,15 +489,15 @@ u32 GPUCommon::DequeueList(int listid) {
 	else
 		dlQueue.remove(listid);
 
-	dl.waitTicks = 0;
+	dl.waitUntilTicks = 0;
 	__GeTriggerWait(GPU_SYNC_LIST, listid);
 
 	CheckDrawSync();
-
 	return 0;
 }
 
-u32 GPUCommon::UpdateStall(int listid, u32 newstall) {
+u32 GPUCommon::UpdateStall(int listid, u32 newstall, bool *runList) {
+	*runList = false;
 	if (listid < 0 || listid >= DisplayListMaxCount || dls[listid].state == PSP_GE_DL_STATE_NONE)
 		return SCE_KERNEL_ERROR_INVALID_ID;
 	auto &dl = dls[listid];
@@ -502,13 +505,13 @@ u32 GPUCommon::UpdateStall(int listid, u32 newstall) {
 		return SCE_KERNEL_ERROR_ALREADY;
 
 	dl.stall = newstall & 0x0FFFFFFF;
-	
-	ProcessDLQueue();
 
+	*runList = true;
 	return 0;
 }
 
-u32 GPUCommon::Continue() {
+u32 GPUCommon::Continue(bool *runList) {
+	*runList = false;
 	if (!currentList)
 		return 0;
 
@@ -544,7 +547,7 @@ u32 GPUCommon::Continue() {
 		return -1;
 	}
 
-	ProcessDLQueue();
+	*runList = true;
 	return 0;
 }
 
@@ -664,26 +667,30 @@ bool GPUCommon::InterpretList(DisplayList &list) {
 	debugRecording_ = GPUDebug::IsActive() || GPURecord::IsActive();
 	const bool useFastRunLoop = !dumpThisFrame_ && !debugRecording_;
 	while (gpuState == GPUSTATE_RUNNING) {
-		{
-			if (list.pc == list.stall) {
-				gpuState = GPUSTATE_STALL;
-				downcount = 0;
-			}
+		if (list.pc == list.stall) {
+			gpuState = GPUSTATE_STALL;
+			downcount = 0;
 		}
 
 		if (useFastRunLoop) {
+			// When no Ge debugger is active, we go full speed.
 			FastRunLoop(list);
 		} else {
-			SlowRunLoop(list);
+			// When a Ge debugger is active (or similar), we do more checking.
+			if (!SlowRunLoop(list)) {
+				// Hit a breakpoint, so we set the state and bail. We can resume later.
+				// TODO: Cycle counting might need some more care?
+				FinishDeferred();
+				_dbg_assert_(!GPURecord::IsActive());
+				gpuState = GPUSTATE_BREAK;
+				return false;
+			}
 		}
 
-		{
-			downcount = list.stall == 0 ? 0x0FFFFFFF : (list.stall - list.pc) / 4;
-
-			if (gpuState == GPUSTATE_STALL && list.stall != list.pc) {
-				// Unstalled.
-				gpuState = GPUSTATE_RUNNING;
-			}
+		downcount = list.stall == 0 ? 0x0FFFFFFF : (list.stall - list.pc) / 4;
+		if (gpuState == GPUSTATE_STALL && list.pc != list.stall) {
+			// Unstalled (Can this happen?)
+			gpuState = GPUSTATE_RUNNING;
 		}
 	}
 
@@ -722,11 +729,13 @@ void GPUCommon::PSPFrame() {
 	GPURecord::NotifyBeginFrame();
 }
 
-void GPUCommon::SlowRunLoop(DisplayList &list) {
+// Returns false on breakpoint.
+bool GPUCommon::SlowRunLoop(DisplayList &list) {
 	const bool dumpThisFrame = dumpThisFrame_;
 	while (downcount > 0) {
-		bool process = GPUDebug::NotifyCommand(list.pc);
-		if (process) {
+		GPUDebug::NotifyResult result = GPUDebug::NotifyCommand(list.pc);
+
+		if (result == GPUDebug::NotifyResult::Execute) {
 			GPURecord::NotifyCommand(list.pc);
 			u32 op = Memory::ReadUnchecked_U32(list.pc);
 			u32 cmd = op >> 24;
@@ -747,11 +756,14 @@ void GPUCommon::SlowRunLoop(DisplayList &list) {
 			gstate.cmdmem[cmd] = op;
 
 			ExecuteOp(op, diff);
+		} else if (result == GPUDebug::NotifyResult::Break) {
+			return false;
 		}
 
 		list.pc += 4;
 		--downcount;
 	}
+	return true;
 }
 
 // The newPC parameter is used for jumps, we don't count cycles between.
@@ -829,7 +841,9 @@ int GPUCommon::GetNextListIndex() {
 	}
 }
 
-void GPUCommon::ProcessDLQueue() {
+// This is now called when coreState == CORE_RUNNING_GE.
+// TODO: It should return the next action.. (break into debugger or continue running)
+DLResult GPUCommon::ProcessDLQueue() {
 	startingTicks = CoreTiming::GetTicks();
 	cyclesExecuted = 0;
 
@@ -841,15 +855,23 @@ void GPUCommon::ProcessDLQueue() {
 
 	for (int listIndex = GetNextListIndex(); listIndex != -1; listIndex = GetNextListIndex()) {
 		DisplayList &l = dls[listIndex];
-		DEBUG_LOG(Log::G3D, "Starting DL execution at %08x - stall = %08x", l.pc, l.stall);
+		DEBUG_LOG(Log::G3D, "%s DL execution at %08x - stall = %08x (startingTicks=%d)", l.pc == l.startpc ? "Starting" : "Resuming", l.pc, l.stall, startingTicks);
 		if (!InterpretList(l)) {
-			return;
-		} else {
-			// Some other list could've taken the spot while we dilly-dallied around.
-			if (l.state != PSP_GE_DL_STATE_QUEUED) {
-				// At the end, we can remove it from the queue and continue.
-				dlQueue.erase(std::remove(dlQueue.begin(), dlQueue.end(), listIndex), dlQueue.end());
+			switch (gpuState) {
+			case GPURunState::GPUSTATE_STALL:
+				return DLResult::Stall;
+			case GPURunState::GPUSTATE_BREAK:
+				return DLResult::Break;
+			default:
+				return DLResult::Error;
 			}
+		}
+
+		// Some other list could've taken the spot while we dilly-dallied around, so we need the check.
+		// Yes, this does happen.
+		if (l.state != PSP_GE_DL_STATE_QUEUED) {
+			// At the end, we can remove it from the queue and continue.
+			dlQueue.erase(std::remove(dlQueue.begin(), dlQueue.end(), listIndex), dlQueue.end());
 		}
 	}
 
@@ -861,8 +883,16 @@ void GPUCommon::ProcessDLQueue() {
 
 	drawCompleteTicks = startingTicks + cyclesExecuted;
 	busyTicks = std::max(busyTicks, drawCompleteTicks);
+
 	__GeTriggerSync(GPU_SYNC_DRAW, 1, drawCompleteTicks);
 	// Since the event is in CoreTiming, we're in sync.  Just set 0 now.
+	return DLResult::Done;
+}
+
+bool GPUCommon::ShouldSplitOverGe() const {
+	// Check for debugger active, etc.
+	// We only need to do this if we want to be able to step through Ge display lists using the Ge debuggers.
+	return GPUDebug::IsActive() || g_Config.bShowImDebugger;
 }
 
 void GPUCommon::Execute_OffsetAddr(u32 op, u32 diff) {
@@ -1146,9 +1176,9 @@ void GPUCommon::Execute_End(u32 op, u32 diff) {
 				currentList->pendingInterrupt = true;
 			} else {
 				currentList->state = PSP_GE_DL_STATE_COMPLETED;
-				currentList->waitTicks = startingTicks + cyclesExecuted;
-				busyTicks = std::max(busyTicks, currentList->waitTicks);
-				__GeTriggerSync(GPU_SYNC_LIST, currentList->id, currentList->waitTicks);
+				currentList->waitUntilTicks = startingTicks + cyclesExecuted;
+				busyTicks = std::max(busyTicks, currentList->waitUntilTicks);
+				__GeTriggerSync(GPU_SYNC_LIST, currentList->id, currentList->waitUntilTicks);
 			}
 			break;
 		}
@@ -1389,7 +1419,7 @@ struct DisplayList_v1 {
 	DisplayListStackEntry stack[32];
 	int stackptr;
 	bool interrupted;
-	u64 waitTicks;
+	u64 waitUntilTicks;
 	bool interruptsEnabled;
 	bool pendingInterrupt;
 	bool started;
@@ -1410,7 +1440,7 @@ struct DisplayList_v2 {
 	DisplayListStackEntry stack[32];
 	int stackptr;
 	bool interrupted;
-	u64 waitTicks;
+	u64 waitUntilTicks;
 	bool interruptsEnabled;
 	bool pendingInterrupt;
 	bool started;
@@ -1504,6 +1534,7 @@ void GPUCommon::DoState(PointerWrap &p) {
 void GPUCommon::InterruptStart(int listid) {
 	interruptRunning = true;
 }
+
 void GPUCommon::InterruptEnd(int listid) {
 	interruptRunning = false;
 	isbreak = false;
@@ -1516,7 +1547,7 @@ void GPUCommon::InterruptEnd(int listid) {
 			gstate.Restore(dl.context);
 			ReapplyGfxState();
 		}
-		dl.waitTicks = 0;
+		dl.waitUntilTicks = 0;
 		__GeTriggerWait(GPU_SYNC_LIST, listid);
 
 		// Make sure the list isn't still queued since it's now completed.
@@ -1527,8 +1558,6 @@ void GPUCommon::InterruptEnd(int listid) {
 				dlQueue.remove(listid);
 		}
 	}
-
-	ProcessDLQueue();
 }
 
 // TODO: Maybe cleaner to keep this in GE and trigger the clear directly?
@@ -1549,6 +1578,24 @@ bool GPUCommon::GetCurrentDisplayList(DisplayList &list) {
 	}
 	list = *currentList;
 	return true;
+}
+
+int GPUCommon::GetCurrentPrimCount() {
+	DisplayList list;
+	if (GetCurrentDisplayList(list)) {
+		u32 cmd = Memory::Read_U32(list.pc);
+		if ((cmd >> 24) == GE_CMD_PRIM || (cmd >> 24) == GE_CMD_BOUNDINGBOX) {
+			return cmd & 0xFFFF;
+		} else if ((cmd >> 24) == GE_CMD_BEZIER || (cmd >> 24) == GE_CMD_SPLINE) {
+			u32 u = (cmd & 0x00FF) >> 0;
+			u32 v = (cmd & 0xFF00) >> 8;
+			return u * v;
+		}
+		return true;
+	} else {
+		// Current prim value.
+		return gstate.cmdmem[GE_CMD_PRIM] & 0xFFFF;
+	}
 }
 
 std::vector<DisplayList> GPUCommon::ActiveDisplayLists() {
@@ -1594,7 +1641,7 @@ void GPUCommon::ResetListState(int listID, DisplayListState state) {
 	downcount = 0;
 }
 
-GPUDebugOp GPUCommon::DissassembleOp(u32 pc, u32 op) {
+GPUDebugOp GPUCommon::DisassembleOp(u32 pc, u32 op) {
 	char buffer[1024];
 	u32 prev = Memory::IsValidAddress(pc - 4) ? Memory::ReadUnchecked_U32(pc - 4) : 0;
 	GeDisassembleOp(pc, op, prev, buffer, sizeof(buffer));
@@ -1607,7 +1654,7 @@ GPUDebugOp GPUCommon::DissassembleOp(u32 pc, u32 op) {
 	return info;
 }
 
-std::vector<GPUDebugOp> GPUCommon::DissassembleOpRange(u32 startpc, u32 endpc) {
+std::vector<GPUDebugOp> GPUCommon::DisassembleOpRange(u32 startpc, u32 endpc) {
 	char buffer[1024];
 	std::vector<GPUDebugOp> result;
 	GPUDebugOp info;
@@ -1697,7 +1744,7 @@ void GPUCommon::DoBlockTransfer(u32 skipDrawReason) {
 	bool dstWraps = Memory::IsVRAMAddress(dstBasePtr) && !dstValid;
 
 	char tag[128];
-	size_t tagSize;
+	size_t tagSize = 0;
 
 	// Tell the framebuffer manager to take action if possible. If it does the entire thing, let's just return.
 	if (!framebufferManager_ || !framebufferManager_->NotifyBlockTransferBefore(dstBasePtr, dstStride, dstX, dstY, srcBasePtr, srcStride, srcX, srcY, width, height, bpp, skipDrawReason)) {
@@ -1963,3 +2010,4 @@ bool GPUCommon::DescribeCodePtr(const u8 *ptr, std::string &name) {
 	// which is owned by the drawengine.
 	return drawEngineCommon_->DescribeCodePtr(ptr, name);
 }
+

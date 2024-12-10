@@ -22,29 +22,41 @@
 
 #include "Core/System.h"
 #include "Core/CoreParameter.h"
+#include "GPU/GPUDefinitions.h"
 
 class GraphicsContext;
 
-// called from emu thread
-void UpdateRunLoop(GraphicsContext *ctx);
-
-// Returns false when an UI exit state is detected.
-bool Core_Run(GraphicsContext *ctx);
-void Core_Stop();
-
-// For platforms that don't call Core_Run
+// For platforms that don't call Run
 void Core_SetGraphicsContext(GraphicsContext *ctx);
 
-// called from gui
-void Core_EnableStepping(bool step, const char *reason = nullptr, u32 relatedAddress = 0);
+// Returns false when an UI exit state is detected.
+void Core_Stop();
 
-bool Core_ShouldRunBehind();
-bool Core_MustRunBehind();
+// X11, sigh.
+#ifdef None
+#undef None
+#endif
+
+enum class CPUStepType {
+	None,
+	Into,
+	Over,
+	Out,
+	Frame,
+};
+
+// Async, called from gui
+void Core_Break(const char *reason, u32 relatedAddress = 0);
+
+// Resumes execution. Works both when stepping the CPU and the GE.
+void Core_Resume();
+
+// This should be called externally.
+// Can fail if another step type was requested this frame.
+bool Core_RequestCPUStep(CPUStepType stepType, int stepSize);
 
 bool Core_NextFrame();
-void Core_DoSingleStep();
-void Core_UpdateSingleStep();
-void Core_ProcessStepping();
+void Core_SwitchToGe();  // Switches from CPU emulation to GE display list execution.
 
 // Changes every time we enter stepping.
 int Core_GetSteppingCounter();
@@ -67,6 +79,28 @@ enum class CoreLifecycle {
 	MEMORY_REINITED,
 };
 
+// RUNNING must be at 0, NEXTFRAME must be at 1.
+enum CoreState {
+	// Emulation is running normally.
+	CORE_RUNNING_CPU = 0,
+	// Emulation was running normally, just reached the end of a frame.
+	CORE_NEXTFRAME = 1,
+	// Emulation is paused, CPU thread is sleeping.
+	CORE_STEPPING_CPU,  // Can be used for recoverable runtime errors (ignored memory exceptions)
+	// Core is being powered up.
+	CORE_POWERUP,
+	// Core is being powered down.
+	CORE_POWERDOWN,
+	// An error happened at boot.
+	CORE_BOOT_ERROR,
+	// Unrecoverable runtime error. Recoverable errors should use CORE_STEPPING.
+	CORE_RUNTIME_ERROR,
+	// Stepping the GPU. When done, will switch over to STEPPING_CPU.
+	CORE_STEPPING_GE,
+	// Running the GPU. When done, will switch over to RUNNING_CPU.
+	CORE_RUNNING_GE,
+};
+
 // Callback is called on the Emu thread.
 typedef void (* CoreLifecycleFunc)(CoreLifecycle stage);
 void Core_ListenLifecycle(CoreLifecycleFunc func);
@@ -80,18 +114,22 @@ bool Core_IsStepping();
 
 bool Core_IsActive();
 bool Core_IsInactive();
-// Warning: these currently work only on Windows.
+
+// Warning: these three are only used on Windows - debugger integration.
+void Core_StateProcessed();
 void Core_WaitInactive();
-void Core_WaitInactive(int milliseconds);
-
-bool UpdateScreenScale(int width, int height);
-
-// Don't run the core when minimized etc.
-void Core_NotifyWindowHidden(bool hidden);
-bool Core_IsWindowHidden();
 
 void Core_SetPowerSaving(bool mode);
 bool Core_GetPowerSaving();
+
+void Core_RunLoopUntil(u64 globalticks);
+
+const char *CoreStateToString(CoreState state);
+
+extern volatile CoreState coreState;
+extern volatile bool coreStatePending;
+
+void Core_UpdateState(CoreState newState);
 
 enum class MemoryExceptionType {
 	NONE,
@@ -113,7 +151,7 @@ void Core_MemoryException(u32 address, u32 accessSize, u32 pc, MemoryExceptionTy
 void Core_MemoryExceptionInfo(u32 address, u32 accessSize, u32 pc, MemoryExceptionType type, std::string_view additionalInfo, bool forceReport);
 
 void Core_ExecException(u32 address, u32 pc, ExecExceptionType type);
-void Core_Break(u32 pc);
+void Core_BreakException(u32 pc);
 // Call when loading save states, etc.
 void Core_ResetException();
 

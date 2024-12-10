@@ -175,7 +175,7 @@ option(USE_LIBNX "Set to ON to build for Switch(libnx)" OFF)
 option(USE_FFMPEG "Build with FFMPEG support" ON)
 option(USE_DISCORD "Build with Discord support" ON)
 option(USE_MINIUPNPC "Build with miniUPnPc support" ON)
-option(USE_ARMIPS "Build with armips support in API/debugger" ON)
+option(USE_ARMIPS "Build with armips support in API/debuggerdebugger" ON)
 option(USE_SYSTEM_SNAPPY "Dynamically link against system snappy" ${USE_SYSTEM_SNAPPY})
 option(USE_SYSTEM_FFMPEG "Dynamically link against system FFMPEG" ${USE_SYSTEM_FFMPEG})
 option(USE_SYSTEM_LIBZIP "Dynamically link against system libzip" ${USE_SYSTEM_LIBZIP})
@@ -381,6 +381,14 @@ endforeach()
 if(NOT MSVC)
 	# NEON optimizations in libpng17 seem to cause PNG load errors, see #14485.
 	add_definitions(-DPNG_ARM_NEON_OPT=0)
+
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Werror=return-type -Wno-unused-function -Wno-sign-compare -Wno-unused-but-set-variable -Wno-reorder -Wno-unknown-pragmas -Wno-unused-value -Wno-unused-variable")
+	if(NOT CLANG)
+		# This one is very useful but has many false positives.
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-class-memaccess")
+	else()
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations")
+	endif()
 
 	if(ANDROID)
 		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++17")
@@ -645,6 +653,7 @@ add_library(Common STATIC
 	Common/Data/Collections/Hashmaps.h
 	Common/Data/Collections/TinySet.h
 	Common/Data/Collections/FastVec.h
+	Common/Data/Collections/CharQueue.h
 	Common/Data/Collections/CyclicBuffer.h
 	Common/Data/Collections/ThreadSafeList.h
 	Common/Data/Color/RGBAUtil.cpp
@@ -876,6 +885,8 @@ add_library(Common STATIC
 	Common/FakeCPUDetect.cpp
 	Common/ExceptionHandlerSetup.cpp
 	Common/ExceptionHandlerSetup.h
+	Common/GhidraClient.h
+	Common/GhidraClient.cpp
 	Common/Log.h
 	Common/Log.cpp
 	Common/Log/ConsoleListener.cpp
@@ -909,7 +920,11 @@ add_library(Common STATIC
 include_directories(Common)
 setup_target_project(Common Common)
 
-target_link_libraries(Common Ext::Snappy cpu_features)
+if(IOS)
+	target_compile_definitions(Common PUBLIC GLES_SILENCE_DEPRECATION)
+endif()
+
+target_link_libraries(Common Ext::Snappy cpu_features imgui)
 
 if(ARM64)
     if(ANDROID)
@@ -1507,6 +1522,14 @@ endif()
 
 list(APPEND NativeAppSource
 	android/jni/TestRunner.cpp
+	UI/ImDebugger/ImDebugger.cpp
+	UI/ImDebugger/ImDebugger.h
+	UI/ImDebugger/ImGe.cpp
+	UI/ImDebugger/ImGe.h
+	UI/ImDebugger/ImDisasmView.cpp
+	UI/ImDebugger/ImDisasmView.h
+	UI/ImDebugger/ImStructViewer.cpp
+	UI/ImDebugger/ImStructViewer.h
 	UI/DiscordIntegration.cpp
 	UI/NativeApp.cpp
 	UI/BackgroundAudio.h
@@ -1947,11 +1970,13 @@ set(GPU_SOURCES
 	GPU/Debugger/Record.cpp
 	GPU/Debugger/Record.h
 	GPU/Debugger/RecordFormat.h
+	GPU/Debugger/State.cpp
+	GPU/Debugger/State.h
 	GPU/Debugger/Stepping.cpp
 	GPU/Debugger/Stepping.h
 	GPU/ge_constants.h
 	GPU/GeConstants.cpp
-	GPU/GPUInterface.h
+	GPU/GPUDefinitions.h
 	GPU/GeDisasm.cpp
 	GPU/GeDisasm.h
 	GPU/GPU.cpp
@@ -2432,7 +2457,7 @@ endif()
 
 include_directories(ext/libchdr/include)
 
-target_link_libraries(${CoreLibName} Common native chdr kirk cityhash sfmt19937 xbrz xxhash rcheevos minimp3 at3_standalone ${GlslangLibs}
+target_link_libraries(${CoreLibName} Common native chdr kirk cityhash sfmt19937 xbrz xxhash rcheevos minimp3 at3_standalone lua ${GlslangLibs}
 	${CoreExtraLibs} ${OPENGL_LIBRARIES} ${X11_LIBRARIES} ${CMAKE_DL_LIBS})
 
 if(NOT HTTPS_NOT_AVAILABLE)
@@ -2514,7 +2539,6 @@ if(USE_MINIUPNPC)
 			#${MINIUPNP_DIR}/miniupnpcmodule.c
 			${MINIUPNP_DIR}/src/miniwget.c
 			${MINIUPNP_DIR}/src/minixml.c
-			${MINIUPNP_DIR}/src/minixmlvalid.c
 			${MINIUPNP_DIR}/src/portlistingparse.c
 			${MINIUPNP_DIR}/src/receivedata.c
 			#${MINIUPNP_DIR}/upnpc.c # causing an error due to already existing _main()

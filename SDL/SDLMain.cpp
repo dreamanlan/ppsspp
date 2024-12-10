@@ -1,7 +1,3 @@
-// SDL/EGL implementation of the framework.
-// This is quite messy due to platform-specific implementations and #ifdef's.
-// If your platform is not supported, it is suggested to use Qt instead.
-
 #include <cstdlib>
 #include <unistd.h>
 #include <pwd.h>
@@ -195,7 +191,11 @@ static void UpdateScreenDPI(SDL_Window *window) {
 		SDL_GL_GetDrawableSize(window, &drawable_width, NULL);
 	else if (g_Config.iGPUBackend == (int)GPUBackend::VULKAN)
 		SDL_Vulkan_GetDrawableSize(window, &drawable_width, NULL);
-
+	else {
+		// If we add SDL support for more platforms, we'll end up here.
+		g_DesktopDPI = 1.0f;
+		return;
+	}
 	// Round up a little otherwise there would be a gap sometimes
 	// in fractional scaling
 	g_DesktopDPI = ((float) drawable_width + 1.0f) / window_width;
@@ -686,7 +686,7 @@ static std::thread emuThread;
 static std::atomic<int> emuThreadState((int)EmuThreadState::DISABLED);
 
 static void EmuThreadFunc(GraphicsContext *graphicsContext) {
-	SetCurrentThreadName("Emu");
+	SetCurrentThreadName("EmuThread");
 
 	// There's no real requirement that NativeInit happen on this thread.
 	// We just call the update/render loop here.
@@ -695,7 +695,7 @@ static void EmuThreadFunc(GraphicsContext *graphicsContext) {
 	NativeInitGraphics(graphicsContext);
 
 	while (emuThreadState != (int)EmuThreadState::QUIT_REQUESTED) {
-		UpdateRunLoop(graphicsContext);
+		NativeFrame(graphicsContext);
 	}
 	emuThreadState = (int)EmuThreadState::STOPPED;
 	graphicsContext->StopThread();
@@ -729,7 +729,7 @@ struct InputStateTracker {
 		}
 	}
 
-	bool mouseDown;
+	int mouseDown;  // bitflags
 	bool mouseCaptured;
 };
 
@@ -737,7 +737,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 	// We have to juggle around 3 kinds of "DPI spaces" if a logical DPI is
 	// provided (through --dpi, it is equal to system DPI if unspecified):
 	// - SDL gives us motion events in "system DPI" points
-	// - UpdateScreenScale expects pixels, so in a way "96 DPI" points
+	// - Native_UpdateScreenScale expects pixels, so in a way "96 DPI" points
 	// - The UI code expects motion events in "logical DPI" points
 	float mx = event.motion.x * g_DesktopDPI * g_display.dpi_scale_x;
 	float my = event.motion.y * g_DesktopDPI * g_display.dpi_scale_x;
@@ -756,17 +756,17 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			int new_height = event.window.data2;
 
 			// The size given by SDL is in point-units, convert these to
-			// pixels before passing to UpdateScreenScale()
+			// pixels before passing to Native_UpdateScreenScale()
 			int new_width_px = new_width * g_DesktopDPI;
 			int new_height_px = new_height * g_DesktopDPI;
 
-			Core_NotifyWindowHidden(false);
+			Native_NotifyWindowHidden(false);
 
 			Uint32 window_flags = SDL_GetWindowFlags(window);
 			bool fullscreen = (window_flags & SDL_WINDOW_FULLSCREEN);
 
 			// This one calls NativeResized if the size changed.
-			UpdateScreenScale(new_width_px, new_height_px);
+			Native_UpdateScreenScale(new_width_px, new_height_px);
 
 			// Set variable here in case fullscreen was toggled by hotkey
 			if (g_Config.UseFullScreen() != fullscreen) {
@@ -804,11 +804,11 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 
 		case SDL_WINDOWEVENT_MINIMIZED:
 		case SDL_WINDOWEVENT_HIDDEN:
-			Core_NotifyWindowHidden(true);
+			Native_NotifyWindowHidden(true);
 			break;
 		case SDL_WINDOWEVENT_EXPOSED:
 		case SDL_WINDOWEVENT_SHOWN:
-			Core_NotifyWindowHidden(false);
+			Native_NotifyWindowHidden(false);
 			break;
 		default:
 			break;
@@ -843,7 +843,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 				if (ctrl && (k == SDLK_w))
 				{
 					if (Core_IsStepping())
-						Core_EnableStepping(false);
+						Core_Resume();
 					Core_Stop();
 					System_PostUIMessage(UIMessage::REQUEST_GAME_STOP);
 					// NOTE: Unlike Windows version, this
@@ -854,7 +854,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 				if (ctrl && (k == SDLK_b))
 				{
 					System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
-					Core_EnableStepping(false);
+					Core_Resume();
 				}
 			}
 			break;
@@ -943,11 +943,12 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 		switch (event.button.button) {
 		case SDL_BUTTON_LEFT:
 			{
-				inputTracker->mouseDown = true;
+				inputTracker->mouseDown |= 1;
 				TouchInput input{};
 				input.x = mx;
 				input.y = my;
 				input.flags = TOUCH_DOWN | TOUCH_MOUSE;
+				input.buttons = 1;
 				input.id = 0;
 				NativeTouch(input);
 				KeyInput key(DEVICE_ID_MOUSE, NKCODE_EXT_MOUSEBUTTON_1, KEY_DOWN);
@@ -956,12 +957,12 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			break;
 		case SDL_BUTTON_RIGHT:
 			{
-				// Right button only emits mouse move events. This is weird,
-				// but consistent with Windows. Needs cleanup.
+				inputTracker->mouseDown |= 2;
 				TouchInput input{};
 				input.x = mx;
 				input.y = my;
-				input.flags = TOUCH_MOVE | TOUCH_MOUSE;
+				input.flags = TOUCH_DOWN | TOUCH_MOUSE;
+				input.buttons = 2;
 				input.id = 0;
 				NativeTouch(input);
 				KeyInput key(DEVICE_ID_MOUSE, NKCODE_EXT_MOUSEBUTTON_2, KEY_DOWN);
@@ -1018,25 +1019,27 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			break;
 		}
 	case SDL_MOUSEMOTION:
-		if (inputTracker->mouseDown) {
+		{
 			TouchInput input{};
 			input.x = mx;
 			input.y = my;
 			input.flags = TOUCH_MOVE | TOUCH_MOUSE;
+			input.buttons = inputTracker->mouseDown;
 			input.id = 0;
 			NativeTouch(input);
+			NativeMouseDelta(event.motion.xrel, event.motion.yrel);
+			break;
 		}
-		NativeMouseDelta(event.motion.xrel, event.motion.yrel);
-		break;
 	case SDL_MOUSEBUTTONUP:
 		switch (event.button.button) {
 		case SDL_BUTTON_LEFT:
 			{
-				inputTracker->mouseDown = false;
+				inputTracker->mouseDown &= ~1;
 				TouchInput input{};
 				input.x = mx;
 				input.y = my;
 				input.flags = TOUCH_UP | TOUCH_MOUSE;
+				input.buttons = 1;
 				NativeTouch(input);
 				KeyInput key(DEVICE_ID_MOUSE, NKCODE_EXT_MOUSEBUTTON_1, KEY_UP);
 				NativeKey(key);
@@ -1044,12 +1047,14 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			break;
 		case SDL_BUTTON_RIGHT:
 			{
+				inputTracker->mouseDown &= ~2;
 				// Right button only emits mouse move events. This is weird,
 				// but consistent with Windows. Needs cleanup.
 				TouchInput input{};
 				input.x = mx;
 				input.y = my;
-				input.flags = TOUCH_MOVE | TOUCH_MOUSE;
+				input.flags = TOUCH_UP | TOUCH_MOUSE;
+				input.buttons = 2;
 				NativeTouch(input);
 				KeyInput key(DEVICE_ID_MOUSE, NKCODE_EXT_MOUSEBUTTON_2, KEY_UP);
 				NativeKey(key);
@@ -1421,7 +1426,7 @@ int main(int argc, char *argv[]) {
 
 	float dpi_scale = 1.0f / (g_ForcedDPI == 0.0f ? g_DesktopDPI : g_ForcedDPI);
 
-	UpdateScreenScale(w * g_DesktopDPI, h * g_DesktopDPI);
+	Native_UpdateScreenScale(w * g_DesktopDPI, h * g_DesktopDPI);
 
 	bool mainThreadIsRender = g_Config.iGPUBackend == (int)GPUBackend::OPENGL;
 
@@ -1487,6 +1492,15 @@ int main(int argc, char *argv[]) {
 
 	bool waitOnExit = g_Config.iGPUBackend == (int)GPUBackend::OPENGL;
 
+	// Check if the path to a directory containing an unpacked ISO is passed as a command line argument
+	for (int i = 1; i < argc; i++) {
+		if (File::IsDirectory(Path(argv[i]))) {
+			// Display the toast warning
+			System_Toast("Warning: Playing unpacked games may cause issues.");
+			break;
+		}
+	}
+
 	if (!mainThreadIsRender) {
 		// Vulkan mode uses this.
 		// We should only be a message pump. This allows for lower latency
@@ -1521,7 +1535,7 @@ int main(int argc, char *argv[]) {
 		if (g_QuitRequested || g_RestartRequested)
 			break;
 		if (emuThreadState == (int)EmuThreadState::DISABLED) {
-			UpdateRunLoop(graphicsContext);
+			NativeFrame(graphicsContext);
 		}
 		if (g_QuitRequested || g_RestartRequested)
 			break;
@@ -1531,7 +1545,7 @@ int main(int argc, char *argv[]) {
 
 		inputTracker.MouseCaptureControl();
 
-		bool renderThreadPaused = Core_IsWindowHidden() && g_Config.bPauseWhenMinimized && emuThreadState != (int)EmuThreadState::DISABLED;
+		bool renderThreadPaused = Native_IsWindowHidden() && g_Config.bPauseWhenMinimized && emuThreadState != (int)EmuThreadState::DISABLED;
 		if (emuThreadState != (int)EmuThreadState::DISABLED && !renderThreadPaused) {
 			if (!graphicsContext->ThreadFrame())
 				break;

@@ -129,6 +129,7 @@ bool VKRGraphicsPipeline::Create(VulkanContext *vulkan, VkRenderPass compatibleR
 	double taken_ms_since_scheduling = (now - scheduleTime) * 1000.0;
 	double taken_ms = (now - start) * 1000.0;
 
+#ifndef _DEBUG
 	if (taken_ms < 0.1) {
 		DEBUG_LOG(Log::G3D, "Pipeline (x/%d) time on %s: %0.2f ms, %0.2f ms since scheduling (fast) rpType: %04x sampleBits: %d (%s)",
 			countToCompile, GetCurrentThreadName(), taken_ms, taken_ms_since_scheduling, (u32)rpType, (u32)sampleCount, tag_.c_str());
@@ -136,6 +137,7 @@ bool VKRGraphicsPipeline::Create(VulkanContext *vulkan, VkRenderPass compatibleR
 		INFO_LOG(Log::G3D, "Pipeline (x/%d) time on %s: %0.2f ms, %0.2f ms since scheduling  rpType: %04x sampleBits: %d (%s)",
 			countToCompile, GetCurrentThreadName(), taken_ms, taken_ms_since_scheduling, (u32)rpType, (u32)sampleCount, tag_.c_str());
 	}
+#endif
 
 	bool success = true;
 	if (result == VK_INCOMPLETE) {
@@ -279,7 +281,7 @@ public:
 
 void CreateMultiPipelinesTask::WaitForAll() {
 	while (tasksInFlight_.load() > 0) {
-		sleep_ms(2);
+		sleep_ms(2, "create-multi-pipelines-wait");
 	}
 }
 
@@ -522,7 +524,7 @@ void VulkanRenderManager::CompileThreadFunc() {
 		}
 
 		// Hold off just a bit before we check again, to allow bunches of pipelines to collect.
-		sleep_ms(1);
+		sleep_ms(1, "pipeline-collect");
 	}
 
 	std::unique_lock<std::mutex> lock(compileQueueMutex_);
@@ -579,7 +581,7 @@ void VulkanRenderManager::PresentWaitThreadFunc() {
 			waitedId++;
 		} else {
 			// We caught up somehow, which is a bad sign (we should have blocked, right?). Maybe we should break out of the loop?
-			sleep_ms(1);
+			sleep_ms(1, "present-wait-problem");
 			frameTimeHistory_[waitedId].waitCount++;
 		}
 		_dbg_assert_(waitedId <= frameIdGen_);
@@ -1875,7 +1877,7 @@ void VulkanRenderManager::SanityCheckPassesOnAdd() {
 	// Check that we don't have any previous passes that write to the backbuffer, that must ALWAYS be the last one.
 	for (int i = 0; i < steps_.size(); i++) {
 		if (steps_[i]->stepType == VKRStepType::RENDER) {
-			_dbg_assert_(steps_[i]->render.framebuffer != nullptr);
+			_dbg_assert_msg_(steps_[i]->render.framebuffer != nullptr, "Adding second backbuffer pass? Not good!");
 		}
 	}
 #endif

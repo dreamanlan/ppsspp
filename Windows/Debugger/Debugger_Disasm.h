@@ -11,14 +11,14 @@
 #include "Common/CommonWindows.h"
 
 class CtrlDisAsmView;
+class BreakpointManager;
 
-class CDisasm : public Dialog
-{
+class CDisasm : public Dialog {
 private:
 	int minWidth;
 	int minHeight;
 	DebugInterface *cpu;
-	u64 lastTicks;
+	u64 lastTicks_;
 
 	HWND statusBarWnd;
 	CtrlBreakpointList* breakpointList;
@@ -28,6 +28,7 @@ private:
 	CtrlWatchList *watchList_;
 	TabControl* leftTabs;
 	TabControl* bottomTabs;
+	BreakpointManager *breakpoints_;
 	std::vector<BreakPoint> displayedBreakPoints_;
 	std::vector<MemCheck> displayedMemChecks_;
 	bool keepStatusBarText = false;
@@ -38,9 +39,7 @@ private:
 	void UpdateSize(WORD width, WORD height);
 	void SavePosition();
 	void updateThreadLabel(bool clear);
-	void stepInto();
-	void stepOver();
-	void stepOut();
+	void step(CPUStepType stepType);
 	void runToLine();
 
 public:

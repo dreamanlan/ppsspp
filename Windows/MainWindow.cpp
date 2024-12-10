@@ -81,7 +81,7 @@
 #include "Windows/CaptureDevice.h"
 #include "Windows/TouchInputHandler.h"
 #include "Windows/MainWindowMenu.h"
-#include "GPU/GPUInterface.h"
+#include "GPU/GPUCommon.h"
 #include "UI/OnScreenDisplay.h"
 #include "UI/GameSettingsScreen.h"
 
@@ -273,7 +273,7 @@ namespace MainWindow
 
 	static void HandleSizeChange(int newSizingType) {
 		SavePosition();
-		Core_NotifyWindowHidden(false);
+		Native_NotifyWindowHidden(false);
 		if (!g_Config.bPauseWhenMinimized) {
 			System_PostUIMessage(UIMessage::WINDOW_MINIMIZED, "false");
 		}
@@ -294,7 +294,7 @@ namespace MainWindow
 
 		DEBUG_LOG(Log::System, "Pixel width/height: %dx%d", PSP_CoreParameter().pixelWidth, PSP_CoreParameter().pixelHeight);
 
-		if (UpdateScreenScale(width, height)) {
+		if (Native_UpdateScreenScale(width, height)) {
 			System_PostUIMessage(UIMessage::GPU_DISPLAY_RESIZED);
 			System_PostUIMessage(UIMessage::GPU_RENDER_RESIZED);
 		}
@@ -632,29 +632,29 @@ namespace MainWindow
 				float y = GET_Y_LPARAM(lParam) * g_display.dpi_scale_y;
 				WindowsRawInput::SetMousePos(x, y);
 
-				TouchInput touch;
-				touch.id = 0;
-				touch.flags = TOUCH_DOWN;
+				TouchInput touch{};
+				touch.flags = TOUCH_DOWN | TOUCH_MOUSE;
+				touch.buttons = 1;
 				touch.x = x;
 				touch.y = y;
 				NativeTouch(touch);
 				SetCapture(hWnd);
 
 				// Simulate doubleclick, doesn't work with RawInput enabled
-				static double lastMouseDown;
+				static double lastMouseDownTime;
 				static float lastMouseDownX = -1.0f;
 				static float lastMouseDownY = -1.0f;
-				double now = time_now_d();
-				if ((now - lastMouseDown) < 0.001 * GetDoubleClickTime()) {
-					float dx = lastMouseDownX - x;
-					float dy = lastMouseDownY - y;
-					float distSq = dx * dx + dy * dy;
-					if (distSq < 3.0f*3.0f && !g_Config.bShowTouchControls && !g_Config.bMouseControl && GetUIState() == UISTATE_INGAME && g_Config.bFullscreenOnDoubleclick) {
+				const double now = time_now_d();
+				if ((now - lastMouseDownTime) < 0.001 * GetDoubleClickTime()) {
+					const float dx = lastMouseDownX - x;
+					const float dy = lastMouseDownY - y;
+					const float distSq = dx * dx + dy * dy;
+					if (distSq < 3.0f*3.0f && !g_Config.bShowTouchControls && !g_Config.bShowImDebugger && !g_Config.bMouseControl && GetUIState() == UISTATE_INGAME && g_Config.bFullscreenOnDoubleclick) {
 						SendToggleFullscreen(!g_Config.UseFullScreen());
 					}
-					lastMouseDown = 0.0;
+					lastMouseDownTime = 0.0;
 				} else {
-					lastMouseDown = now;
+					lastMouseDownTime = now;
 				}
 				lastMouseDownX = x;
 				lastMouseDownY = y;
@@ -680,14 +680,18 @@ namespace MainWindow
 				float y = (float)cursorY * g_display.dpi_scale_y;
 				WindowsRawInput::SetMousePos(x, y);
 
+				// Mouse moves now happen also when no button is pressed.
+				TouchInput touch{};
+				touch.flags = TOUCH_MOVE | TOUCH_MOUSE;
 				if (wParam & MK_LBUTTON) {
-					TouchInput touch;
-					touch.id = 0;
-					touch.flags = TOUCH_MOVE;
-					touch.x = x;
-					touch.y = y;
-					NativeTouch(touch);
+					touch.buttons |= 1;
 				}
+				if (wParam & MK_RBUTTON) {
+					touch.buttons |= 2;
+				}
+				touch.x = x;
+				touch.y = y;
+				NativeTouch(touch);
 			}
 			break;
 
@@ -702,9 +706,9 @@ namespace MainWindow
 				float y = (float)GET_Y_LPARAM(lParam) * g_display.dpi_scale_y;
 				WindowsRawInput::SetMousePos(x, y);
 
-				TouchInput touch;
-				touch.id = 0;
-				touch.flags = TOUCH_UP;
+				TouchInput touch{};
+				touch.buttons = 1;
+				touch.flags = TOUCH_UP | TOUCH_MOUSE;
 				touch.x = x;
 				touch.y = y;
 				NativeTouch(touch);
@@ -715,6 +719,34 @@ namespace MainWindow
 		case WM_TOUCH:
 			touchHandler.handleTouchEvent(hWnd, message, wParam, lParam);
 			return 0;
+
+		case WM_RBUTTONDOWN:
+		{
+			float x = GET_X_LPARAM(lParam) * g_display.dpi_scale_x;
+			float y = GET_Y_LPARAM(lParam) * g_display.dpi_scale_y;
+
+			TouchInput touch{};
+			touch.buttons = 2;
+			touch.flags = TOUCH_DOWN | TOUCH_MOUSE;
+			touch.x = x;
+			touch.y = y;
+			NativeTouch(touch);
+			break;
+		}
+
+		case WM_RBUTTONUP:
+		{
+			float x = GET_X_LPARAM(lParam) * g_display.dpi_scale_x;
+			float y = GET_Y_LPARAM(lParam) * g_display.dpi_scale_y;
+
+			TouchInput touch{};
+			touch.buttons = 2;
+			touch.flags = TOUCH_UP | TOUCH_MOUSE;
+			touch.x = x;
+			touch.y = y;
+			NativeTouch(touch);
+			break;
+		}
 
 		default:
 			return DefWindowProc(hWnd, message, wParam, lParam);
@@ -841,10 +873,15 @@ namespace MainWindow
 				}
 				if (!noFocusPause && g_Config.bPauseOnLostFocus && GetUIState() == UISTATE_INGAME) {
 					if (pause != Core_IsStepping()) {
-						if (disasmWindow)
+						if (disasmWindow) {
 							SendMessage(disasmWindow->GetDlgHandle(), WM_COMMAND, IDC_STOPGO, 0);
-						else
-							Core_EnableStepping(pause, "ui.lost_focus", 0);
+						} else {
+							if (pause) {
+								Core_Break("ui.lost_focus", 0);
+							} else {
+								Core_Resume();
+							}
+						}
 					}
 				}
 
@@ -899,7 +936,7 @@ namespace MainWindow
 				break;
 
 			case SIZE_MINIMIZED:
-				Core_NotifyWindowHidden(true);
+				Native_NotifyWindowHidden(true);
 				if (!g_Config.bPauseWhenMinimized) {
 					System_PostUIMessage(UIMessage::WINDOW_MINIMIZED, "true");
 				}
@@ -1018,7 +1055,6 @@ namespace MainWindow
 					if (DragQueryFile(hdrop, 0, filename, ARRAY_SIZE(filename)) != 0) {
 						const std::string utf8_filename = ReplaceAll(ConvertWStringToUTF8(filename), "\\", "/");
 						System_PostUIMessage(UIMessage::REQUEST_GAME_BOOT, utf8_filename);
-						Core_EnableStepping(false);
 					}
 				}
 				DragFinish(hdrop);
@@ -1143,11 +1179,11 @@ namespace MainWindow
 
 	void ToggleDebugConsoleVisibility() {
 		if (!g_Config.bEnableLogging) {
-			LogManager::GetInstance()->GetConsoleListener()->Show(false);
+			g_logManager.GetConsoleListener()->Show(false);
 			EnableMenuItem(menu, ID_DEBUG_LOG, MF_GRAYED);
 		}
 		else {
-			LogManager::GetInstance()->GetConsoleListener()->Show(true);
+			g_logManager.GetConsoleListener()->Show(true);
 			EnableMenuItem(menu, ID_DEBUG_LOG, MF_ENABLED);
 		}
 	}

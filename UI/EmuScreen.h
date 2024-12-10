@@ -29,6 +29,8 @@
 #include "Core/KeyMap.h"
 #include "Core/ControlMapper.h"
 
+#include "UI/ImDebugger/ImDebugger.h"
+
 struct AxisInput;
 
 class AsyncImageFileView;
@@ -56,6 +58,10 @@ public:
 
 	// We also need to do some special handling of queued UI events to handle closing the chat window.
 	bool key(const KeyInput &key) override;
+	void touch(const TouchInput &key) override;
+
+	void deviceLost() override;
+	void deviceRestored(Draw::DrawContext *draw) override;
 
 protected:
 	void darken();
@@ -73,6 +79,7 @@ private:
 	void bootComplete();
 	bool hasVisibleUI();
 	void renderUI();
+	void renderImDebugger();
 
 	void onVKey(int virtualKeyCode, bool down);
 	void onVKeyAnalog(int virtualKeyCode, float value);
@@ -110,7 +117,6 @@ private:
 	UI::CallbackColorTween *loadingViewColor_ = nullptr;
 	UI::VisibilityTween *loadingViewVisible_ = nullptr;
 	UI::Spinner *loadingSpinner_ = nullptr;
-	UI::TextView *loadingTextView_ = nullptr;
 	UI::Button *resumeButton_ = nullptr;
 	UI::Button *resetButton_ = nullptr;
 	UI::Button *backButton_ = nullptr;
@@ -124,4 +130,18 @@ private:
 	std::atomic<bool> doFrameAdvance_{};
 
 	ControlMapper controlMapper_;
+
+	std::unique_ptr<ImDebugger> imDebugger_ = nullptr;
+
+	bool imguiInited_ = false;
+	// For ImGui modifier tracking
+	bool keyCtrlLeft_ = false;
+	bool keyCtrlRight_ = false;
+	bool keyShiftLeft_ = false;
+	bool keyShiftRight_ = false;
+	bool keyAltLeft_ = false;
+	bool keyAltRight_ = false;
 };
+
+bool MustRunBehind();
+bool ShouldRunBehind();

@@ -40,27 +40,13 @@ int CPU_HZ = 222000000;
 #define INITIAL_SLICE_LENGTH 20000
 #define MAX_SLICE_LENGTH 100000000
 
-namespace CoreTiming
-{
-
-struct EventType {
-	TimedCallback callback;
-	const char *name;
-};
+namespace CoreTiming {
 
 static std::vector<EventType> event_types;
 // Only used during restore.
 static std::set<int> usedEventTypes;
 static std::set<int> restoredEventTypes;
 static int nextEventTypeRestoreId = -1;
-
-struct BaseEvent {
-	s64 time;
-	u64 userdata;
-	int type;
-};
-
-typedef LinkedListItem<BaseEvent> Event;
 
 Event *first;
 Event *eventPool = 0;
@@ -120,6 +106,14 @@ u64 GetGlobalTimeUs() {
 	return lastGlobalTimeUs + usSinceLast;
 }
 
+const Event *GetFirstEvent() {
+	return first;
+}
+
+const std::vector<EventType> &GetEventTypes() {
+	return event_types;
+}
+
 Event* GetNewEvent()
 {
 	if(!eventPool)
@@ -153,7 +147,7 @@ int RegisterEvent(const char *name, TimedCallback callback) {
 
 void AntiCrashCallback(u64 userdata, int cyclesLate) {
 	ERROR_LOG(Log::SaveState, "Savestate broken: an unregistered event was called.");
-	Core_EnableStepping(true, "savestate.crash", 0);
+	Core_Break("savestate.crash", 0);
 }
 
 void RestoreRegisterEvent(int &event_type, const char *name, TimedCallback callback) {

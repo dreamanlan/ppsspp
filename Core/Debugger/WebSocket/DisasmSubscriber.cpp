@@ -100,7 +100,7 @@ void WebSocketDisasmState::WriteDisasmLine(JsonWriter &json, const DisassemblyLi
 	} else {
 		json.writeNull("macroEncoding");
 	}
-	int c = currentDebugMIPS->getColor(addr) & 0x00FFFFFF;
+	int c = currentDebugMIPS->getColor(addr, false) & 0x00FFFFFF;
 	json.writeString("backgroundColor", StringFromFormat("#%02x%02x%02x", c & 0xFF, (c >> 8) & 0xFF, c >> 16));
 	json.writeString("name", l.name);
 	json.writeString("params", l.params);
@@ -138,7 +138,7 @@ void WebSocketDisasmState::WriteDisasmLine(JsonWriter &json, const DisassemblyLi
 	bool enabled = false;
 	int breakpointOffset = -1;
 	for (u32 i = 0; i < l.totalSize; i += 4) {
-		if (CBreakPoints::IsAddressBreakPoint(addr + i, &enabled))
+		if (g_breakpoints.IsAddressBreakPoint(addr + i, &enabled))
 			breakpointOffset = i;
 		if (breakpointOffset != -1 && enabled)
 			break;
@@ -148,7 +148,7 @@ void WebSocketDisasmState::WriteDisasmLine(JsonWriter &json, const DisassemblyLi
 		json.pushDict("breakpoint");
 		json.writeBool("enabled", enabled);
 		json.writeUint("address", addr + breakpointOffset);
-		auto cond = CBreakPoints::GetBreakPointCondition(addr + breakpointOffset);
+		auto cond = g_breakpoints.GetBreakPointCondition(addr + breakpointOffset);
 		if (cond)
 			json.writeString("condition", cond->expressionString);
 		else

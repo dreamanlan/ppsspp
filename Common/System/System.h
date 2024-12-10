@@ -70,6 +70,8 @@ enum class SystemRequestType {
 	BROWSE_FOR_FILE,
 	BROWSE_FOR_FOLDER,
 
+	BROWSE_FOR_FILE_SAVE,
+
 	EXIT_APP,
 	RESTART_APP,  // For graphics backend changes
 	RECREATE_ACTIVITY,  // Android
@@ -217,6 +219,7 @@ enum class SystemNotification {
 	UI,
 	MEM_VIEW,
 	DISASSEMBLY,
+	DISASSEMBLY_AFTERSTEP,
 	DEBUG_MODE_CHANGE,
 	BOOT_DONE,  // this is sent from EMU thread! Make sure that Host handles it properly!
 	SYMBOL_MAP_UPDATED,

@@ -275,7 +275,7 @@ namespace SaveState
 			if (g_Config.iRewindSnapshotInterval <= 0) {
 				return;
 			}
-			if (coreState != CORE_RUNNING) {
+			if (coreState != CORE_RUNNING_CPU) {
 				return;
 			}
 
@@ -419,14 +419,13 @@ namespace SaveState
 		// Don't actually run it until next frame.
 		// It's possible there might be a duplicate but it won't hurt us.
 		needsProcess = true;
-		Core_UpdateSingleStep();
 	}
 
 	void Load(const Path &filename, int slot, Callback callback, void *cbUserData)
 	{
 		rewindStates.NotifyState();
 		if (coreState == CoreState::CORE_RUNTIME_ERROR)
-			Core_EnableStepping(true, "savestate.load", 0);
+			Core_Break("savestate.load", 0);
 		Enqueue(Operation(SAVESTATE_LOAD, filename, slot, callback, cbUserData));
 	}
 
@@ -434,7 +433,7 @@ namespace SaveState
 	{
 		rewindStates.NotifyState();
 		if (coreState == CoreState::CORE_RUNTIME_ERROR)
-			Core_EnableStepping(true, "savestate.save", 0);
+			Core_Break("savestate.save", 0);
 		Enqueue(Operation(SAVESTATE_SAVE, filename, slot, callback, cbUserData));
 	}
 
@@ -446,7 +445,7 @@ namespace SaveState
 	void Rewind(Callback callback, void *cbUserData)
 	{
 		if (coreState == CoreState::CORE_RUNTIME_ERROR)
-			Core_EnableStepping(true, "savestate.rewind", 0);
+			Core_Break("savestate.rewind", 0);
 		Enqueue(Operation(SAVESTATE_REWIND, Path(), -1, callback, cbUserData));
 	}
 
@@ -802,26 +801,24 @@ namespace SaveState
 
 	std::string GetSlotDateAsString(const Path &gameFilename, int slot) {
 		Path fn = GenerateSaveSlotFilename(gameFilename, slot, STATE_EXTENSION);
-		if (File::Exists(fn)) {
-			tm time;
-			if (File::GetModifTime(fn, time)) {
-				char buf[256];
-				// TODO: Use local time format? Americans and some others might not like ISO standard :)
-				switch (g_Config.iDateFormat) {
-				case PSP_SYSTEMPARAM_DATE_FORMAT_YYYYMMDD:
-					strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &time);
-					break;
-				case PSP_SYSTEMPARAM_DATE_FORMAT_MMDDYYYY:
-					strftime(buf, sizeof(buf), "%m-%d-%Y %H:%M:%S", &time);
-					break;
-				case PSP_SYSTEMPARAM_DATE_FORMAT_DDMMYYYY:
-					strftime(buf, sizeof(buf), "%d-%m-%Y %H:%M:%S", &time);
-					break;
-				default: // Should never happen
-					return "";
-				}
-				return std::string(buf);
+		tm time;
+		if (File::GetModifTime(fn, time)) {
+			char buf[256];
+			// TODO: Use local time format? Americans and some others might not like ISO standard :)
+			switch (g_Config.iDateFormat) {
+			case PSP_SYSTEMPARAM_DATE_FORMAT_YYYYMMDD:
+				strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &time);
+				break;
+			case PSP_SYSTEMPARAM_DATE_FORMAT_MMDDYYYY:
+				strftime(buf, sizeof(buf), "%m-%d-%Y %H:%M:%S", &time);
+				break;
+			case PSP_SYSTEMPARAM_DATE_FORMAT_DDMMYYYY:
+				strftime(buf, sizeof(buf), "%d-%m-%Y %H:%M:%S", &time);
+				break;
+			default: // Should never happen
+				return "";
 			}
+			return std::string(buf);
 		}
 		return "";
 	}

@@ -20,7 +20,7 @@
 #include "Core/System.h"
 #include "Core/Util/GameDB.h"
 #include "GPU/GPU.h"
-#include "GPU/GPUInterface.h"
+#include "GPU/GPUCommon.h"
 // TODO: This should be moved here or to Common, doesn't belong in /GPU
 #include "GPU/Vulkan/DebugVisVulkan.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
@@ -190,7 +190,7 @@ static void DrawFrameTiming(UIContext *ctx, const Bounds &bounds) {
 	ctx->RebindTexture();
 }
 
-void DrawFramebufferList(UIContext *ctx, GPUInterface *gpu, const Bounds &bounds) {
+void DrawFramebufferList(UIContext *ctx, GPUDebugInterface *gpu, const Bounds &bounds) {
 	if (!gpu) {
 		return;
 	}
@@ -271,6 +271,12 @@ void DrawCrashDump(UIContext *ctx, const Path &gamePath) {
 	auto sy = GetI18NCategory(I18NCat::SYSTEM);
 	FontID ubuntu24("UBUNTU24");
 	std::string discID = g_paramSFO.GetDiscID();
+
+	std::string activeFlags = PSP_CoreParameter().compat.GetActiveFlagsString();
+	if (activeFlags.empty()) {
+		activeFlags = "(no compat flags active)";
+	}
+
 	int x = 20 + System_GetPropertyFloat(SYSPROP_DISPLAY_SAFE_INSET_LEFT);
 	int y = 20 + System_GetPropertyFloat(SYSPROP_DISPLAY_SAFE_INSET_TOP);
 
@@ -419,10 +425,10 @@ Invalid / Unknown (%d)
 	snprintf(statbuf, sizeof(statbuf),
 		"CPU Core: %s (flags: %08x)\n"
 		"Locked CPU freq: %d MHz\n"
-		"Cheats: %s, Plugins: %s\n\n%s",
+		"Cheats: %s, Plugins: %s\n%s\n\n%s",
 		CPUCoreAsString(g_Config.iCpuCore), g_Config.uJitDisableFlags,
 		GetLockedCPUSpeedMhz(),
-		CheatsInEffect() ? "Y" : "N", HLEPlugins::HasEnabled() ? "Y" : "N", tips.c_str());
+		CheatsInEffect() ? "Y" : "N", HLEPlugins::HasEnabled() ? "Y" : "N", activeFlags.c_str(), tips.c_str());
 
 	ctx->Draw()->DrawTextShadow(ubuntu24, statbuf, x, y, 0xFFFFFFFF);
 	ctx->Flush();

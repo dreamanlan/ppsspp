@@ -19,6 +19,7 @@
 #include "Windows/Debugger/DebuggerShared.h"
 #include "Windows/Debugger/BreakpointWindow.h"
 #include "Windows/Debugger/EditSymbolsWindow.h"
+#include "Core/RetroAchievements.h"
 #include "Windows/main.h"
 
 #include "Common/CommonWindows.h"
@@ -60,7 +61,7 @@ void CtrlDisAsmView::deinit()
 	//UnregisterClass(szClassName, hInst)
 }
 
-void CtrlDisAsmView::scanFunctions()
+void CtrlDisAsmView::scanVisibleFunctions()
 {
 	manager.analyze(windowStart,manager.getNthNextAddress(windowStart,visibleRows)-windowStart);
 }
@@ -322,7 +323,7 @@ void CtrlDisAsmView::assembleOpcode(u32 address, const std::string &defaultText)
 	Reporting::NotifyDebugger();
 	if (result == true)
 	{
-		scanFunctions();
+		scanVisibleFunctions();
 
 		if (address == curAddress)
 			gotoAddr(manager.getNthNextAddress(curAddress,1));
@@ -492,7 +493,7 @@ void CtrlDisAsmView::drawArguments(HDC hdc, const DisassemblyLineInfo &line, int
 void CtrlDisAsmView::onPaint(WPARAM wParam, LPARAM lParam)
 {
 	auto memLock = Memory::Lock();
-	if (!debugger->isAlive()) return;
+	if (!debugger->isAlive() || Achievements::HardcoreModeActive()) return;
 
 	PAINTSTRUCT ps;
 	HDC actualHdc = BeginPaint(wnd, &ps);
@@ -527,10 +528,10 @@ void CtrlDisAsmView::onPaint(WPARAM wParam, LPARAM lParam)
 		addressPositions[address] = rowY1;
 
 		// draw background
-		COLORREF backgroundColor = whiteBackground ? 0xFFFFFF : debugger->getColor(address);
+		COLORREF backgroundColor = whiteBackground ? 0xFFFFFF : (debugger->getColor(address, false) & 0xFFFFFF);
 		COLORREF textColor = 0x000000;
 
-		if (isInInterval(address,line.totalSize,debugger->getPC()))
+		if (isInInterval(address, line.totalSize, debugger->getPC()))
 		{
 			backgroundColor = scaleColor(backgroundColor,1.05f);
 		}
@@ -560,7 +561,7 @@ void CtrlDisAsmView::onPaint(WPARAM wParam, LPARAM lParam)
 
 		// display address/symbol
 		bool enabled;
-		if (CBreakPoints::IsAddressBreakPoint(address,&enabled))
+		if (g_breakpoints.IsAddressBreakPoint(address,&enabled))
 		{
 			if (enabled) textColor = 0x0000FF;
 			int yOffset = std::max(-1, (rowHeight - 14 + 1) / 2);
@@ -641,7 +642,7 @@ void CtrlDisAsmView::onVScroll(WPARAM wParam, LPARAM lParam)
 		return;
 	}
 
-	scanFunctions();
+	scanVisibleFunctions();
 	redraw();
 }
 
@@ -672,6 +673,9 @@ void CtrlDisAsmView::followBranch()
 
 void CtrlDisAsmView::onChar(WPARAM wParam, LPARAM lParam)
 {
+	if (Achievements::HardcoreModeActive())
+		return;
+
 	if (keyTaken) return;
 
 	char str[2];
@@ -686,9 +690,9 @@ void CtrlDisAsmView::editBreakpoint()
 	BreakpointWindow win(wnd,debugger);
 
 	bool exists = false;
-	if (CBreakPoints::IsAddressBreakPoint(curAddress))
+	if (g_breakpoints.IsAddressBreakPoint(curAddress))
 	{
-		auto breakpoints = CBreakPoints::GetBreakpoints();
+		auto breakpoints = g_breakpoints.GetBreakpoints();
 		for (size_t i = 0; i < breakpoints.size(); i++)
 		{
 			if (breakpoints[i].addr == curAddress)
@@ -706,13 +710,16 @@ void CtrlDisAsmView::editBreakpoint()
 	if (win.exec())
 	{
 		if (exists)
-			CBreakPoints::RemoveBreakPoint(curAddress);
+			g_breakpoints.RemoveBreakPoint(curAddress);
 		win.addBreakpoint();
 	}
 }
 
 void CtrlDisAsmView::onKeyDown(WPARAM wParam, LPARAM lParam)
 {
+	if (Achievements::HardcoreModeActive())
+		return;
+
 	dontRedraw = false;
 	u32 windowEnd = manager.getNthNextAddress(windowStart,visibleRows);
 	keyTaken = true;
@@ -750,11 +757,11 @@ void CtrlDisAsmView::onKeyDown(WPARAM wParam, LPARAM lParam)
 			break;
 		case VK_UP:
 			scrollWindow(-1);
-			scanFunctions();
+			scanVisibleFunctions();
 			break;
 		case VK_DOWN:
 			scrollWindow(1);
-			scanFunctions();
+			scanVisibleFunctions();
 			break;
 		case VK_NEXT:
 			setCurAddress(manager.getNthPreviousAddress(windowEnd,1),KeyDownAsync(VK_SHIFT));
@@ -836,7 +843,7 @@ void CtrlDisAsmView::scrollAddressIntoView()
 	else if (curAddress >= windowEnd)
 		windowStart =  manager.getNthPreviousAddress(curAddress,visibleRows-1);
 
-	scanFunctions();
+	scanVisibleFunctions();
 }
 
 bool CtrlDisAsmView::curAddressIsVisible()
@@ -861,29 +868,31 @@ void CtrlDisAsmView::redraw()
 void CtrlDisAsmView::toggleBreakpoint(bool toggleEnabled)
 {
 	bool enabled;
-	if (CBreakPoints::IsAddressBreakPoint(curAddress, &enabled)) {
+	if (g_breakpoints.IsAddressBreakPoint(curAddress, &enabled)) {
 		if (!enabled) {
 			// enable disabled breakpoints
-			CBreakPoints::ChangeBreakPoint(curAddress, true);
-		} else if (!toggleEnabled && CBreakPoints::GetBreakPointCondition(curAddress) != nullptr) {
+			g_breakpoints.ChangeBreakPoint(curAddress, true);
+		} else if (!toggleEnabled && g_breakpoints.GetBreakPointCondition(curAddress) != nullptr) {
 			// don't just delete a breakpoint with a custom condition
 			int ret = MessageBox(wnd,L"This breakpoint has a custom condition.\nDo you want to remove it?",L"Confirmation",MB_YESNO);
 			if (ret == IDYES)
-				CBreakPoints::RemoveBreakPoint(curAddress);
+				g_breakpoints.RemoveBreakPoint(curAddress);
 		} else if (toggleEnabled) {
 			// disable breakpoint
-			CBreakPoints::ChangeBreakPoint(curAddress, false);
+			g_breakpoints.ChangeBreakPoint(curAddress, false);
 		} else {
 			// otherwise just remove breakpoint
-			CBreakPoints::RemoveBreakPoint(curAddress);
+			g_breakpoints.RemoveBreakPoint(curAddress);
 		}
 	} else {
-		CBreakPoints::AddBreakPoint(curAddress);
+		g_breakpoints.AddBreakPoint(curAddress);
 	}
 }
 
 void CtrlDisAsmView::onMouseDown(WPARAM wParam, LPARAM lParam, int button)
 {
+	if (Achievements::HardcoreModeActive())
+		return;
 	dontRedraw = false;
 	int y = HIWORD(lParam);
 
@@ -947,6 +956,9 @@ void CtrlDisAsmView::NopInstructions(u32 selectRangeStart, u32 selectRangeEnd) {
 
 void CtrlDisAsmView::onMouseUp(WPARAM wParam, LPARAM lParam, int button)
 {
+	if (Achievements::HardcoreModeActive())
+		return;
+
 	if (button == 1)
 	{
 		int y = HIWORD(lParam);
@@ -1112,6 +1124,9 @@ void CtrlDisAsmView::onMouseUp(WPARAM wParam, LPARAM lParam, int button)
 
 void CtrlDisAsmView::onMouseMove(WPARAM wParam, LPARAM lParam, int button)
 {
+	if (Achievements::HardcoreModeActive())
+		return;
+
 	if ((button & 1) != 0)
 	{
 		int y = HIWORD(lParam);
@@ -1428,5 +1443,5 @@ u32 CtrlDisAsmView::getInstructionSizeAt(u32 address)
 {
 	u32 start = manager.getStartAddress(address);
 	u32 next  = manager.getNthNextAddress(start,1);
-	return next-address;
+	return next - address;
 }

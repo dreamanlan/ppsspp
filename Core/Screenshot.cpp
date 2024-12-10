@@ -31,7 +31,7 @@
 #include "Core/Core.h"
 #include "GPU/Common/GPUDebugInterface.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
-#include "GPU/GPUInterface.h"
+#include "GPU/GPUCommon.h"
 #include "GPU/GPUState.h"
 
 // This is used to make non-ASCII paths work for filename.
@@ -346,7 +346,7 @@ bool TakeGameScreenshot(Draw::DrawContext *draw, const Path &filename, Screensho
 	} else if (g_display.rotation != DisplayRotation::ROTATE_0) {
 		_dbg_assert_(draw);
 		GPUDebugBuffer temp;
-		success = ::GetOutputFramebuffer(draw, buf);
+		success = ::GetOutputFramebuffer(draw, temp);
 		if (success) {
 			buf = ApplyRotation(temp, g_display.rotation);
 		}
