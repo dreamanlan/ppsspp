@@ -16,7 +16,6 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <algorithm>
-#include "Common/CommonWindows.h"
 #include "Common/TimeUtil.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/Serialize/Serializer.h"
@@ -29,6 +28,7 @@
 #include "Core/HLE/sceUtility.h"
 #include "Core/HLE/sceNet.h"
 #include "Core/HLE/sceNetAdhoc.h"
+#include "Core/HLE/sceNetApctl.h"
 #include "Core/Dialog/PSPNetconfDialog.h"
 #include "Common/Data/Encoding/Utf8.h"
 
@@ -247,6 +247,10 @@ int PSPNetconfDialog::Update(int animSpeed) {
 
 		UpdateFade(animSpeed);
 		StartDraw();
+
+		// This disables the notice that we don't support the internet below.
+		// Keeping the code in case we need it for something later.
+		hideNotice = true;
 
 		if (!hideNotice) {
 			auto err = GetI18NCategory(I18NCat::ERRORS);

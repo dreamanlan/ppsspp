@@ -17,16 +17,13 @@
 
 #include "ppsspp_config.h"
 
-#include <algorithm>
 #include <functional>
 
 using namespace std::placeholders;
 
 #include "Common/Render/TextureAtlas.h"
 #include "Common/GPU/OpenGL/GLFeatures.h"
-#include "Common/Render/Text/draw_text.h"
 #include "Common/File/FileUtil.h"
-#include "Common/Battery/Battery.h"
 #include "Common/File/VFS/VFS.h"
 #include "Common/UI/Root.h"
 #include "Common/UI/UI.h"
@@ -41,11 +38,11 @@ using namespace std::placeholders;
 #include "Common/Log.h"
 #include "Common/System/Display.h"
 #include "Common/System/System.h"
-#include "Common/System/NativeApp.h"
 #include "Common/System/Request.h"
 #include "Common/System/OSD.h"
 #include "Common/Profiler/Profiler.h"
 #include "Common/Math/curves.h"
+#include "Common/StringUtils.h"
 #include "Common/TimeUtil.h"
 
 #ifndef MOBILE_DEVICE
@@ -500,6 +497,9 @@ void EmuScreen::dialogFinished(const Screen *dialog, DialogResult result) {
 		UI::EnableFocusMovement(false);
 	RecreateViews();
 	SetExtraAssertInfo(extraAssertInfoStr_.c_str());
+
+	// Make sure we re-enable keyboard mode if it was disabled by the dialog, and if needed.
+	lastImguiEnabled_ = false;
 }
 
 static void AfterSaveStateAction(SaveState::Status status, std::string_view message, void *) {
@@ -1539,6 +1539,11 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 		}
 	}
 
+	// Running it early allows things like direct readbacks of buffers, things we can't do
+	// when we have started the final render pass. Well, technically we probably could with some manipulation
+	// of pass order in the render managers..
+	runImDebugger();
+
 	bool blockedExecution = Achievements::IsBlockingExecution();
 	uint32_t clearColor = 0;
 	if (!blockedExecution) {
@@ -1655,7 +1660,15 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 	return flags;
 }
 
-void EmuScreen::renderImDebugger() {
+void EmuScreen::runImDebugger() {
+	if (!lastImguiEnabled_ && g_Config.bShowImDebugger) {
+		System_NotifyUIEvent(UIEventNotification::TEXT_GOTFOCUS);
+		INFO_LOG(Log::System, "activating keyboard");
+	} else if (lastImguiEnabled_ && !g_Config.bShowImDebugger) {
+		System_NotifyUIEvent(UIEventNotification::TEXT_LOSTFOCUS);
+		INFO_LOG(Log::System, "deactivating keyboard");
+	}
+	lastImguiEnabled_ = g_Config.bShowImDebugger;
 	if (g_Config.bShowImDebugger) {
 		Draw::DrawContext *draw = screenManager()->getDrawContext();
 		if (!imguiInited_) {
@@ -1686,9 +1699,20 @@ void EmuScreen::renderImDebugger() {
 			io.AddKeyEvent(ImGuiMod_Alt, keyAltLeft_ || keyAltRight_);
 			// io.AddKeyEvent(ImGuiMod_Super, e.key.super);
 
-			imDebugger_->Frame(currentDebugMIPS, gpuDebug);
+			ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
 
+			imDebugger_->Frame(currentDebugMIPS, gpuDebug, draw);
+
+			// Convert to drawlists.
 			ImGui::Render();
+		}
+	}
+}
+
+void EmuScreen::renderImDebugger() {
+	if (g_Config.bShowImDebugger) {
+		Draw::DrawContext *draw = screenManager()->getDrawContext();
+		if (PSP_IsInited()) {
 			ImGui_ImplThin3d_RenderDrawData(ImGui::GetDrawData(), draw);
 		}
 	}

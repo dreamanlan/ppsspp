@@ -24,24 +24,20 @@
 #include <algorithm>
 #include <mutex>
 
-#include "Common/Common.h"
-#include "Common/MemoryUtil.h"
+#include "Common/CommonTypes.h"
 #include "Common/MemArena.h"
 #include "Common/Serialize/Serializer.h"
 #include "Common/Serialize/SerializeFuncs.h"
 
+#include "Core/System.h"
 #include "Core/Core.h"
-#include "Core/Config.h"
 #include "Core/ConfigValues.h"
-#include "Core/Debugger/SymbolMap.h"
 #include "Core/Debugger/MemBlockInfo.h"
 #include "Core/HDRemaster.h"
-#include "Core/HLE/HLE.h"
 #include "Core/HLE/ReplaceTables.h"
 #include "Core/MemMap.h"
 #include "Core/MemFault.h"
 #include "Core/MIPS/MIPS.h"
-#include "Core/MIPS/JitCommon/JitBlockCache.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
 #include "Common/Thread/ParallelLoop.h"
 
@@ -501,7 +497,9 @@ void Memset(const u32 _Address, const u8 _iValue, const u32 _iLength, const char
 			Write_U8(_iValue, (u32)(_Address + i));
 	}
 
-	NotifyMemInfo(MemBlockFlags::WRITE, _Address, _iLength, tag, strlen(tag));
+	if (tag) {
+		NotifyMemInfo(MemBlockFlags::WRITE, _Address, _iLength, tag, strlen(tag));
+	}
 }
 
 } // namespace

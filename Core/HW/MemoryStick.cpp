@@ -16,13 +16,11 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <algorithm>
-#include <condition_variable>
-#include <mutex>
-#include <thread>
-
+#include <string>
+#include <vector>
+#include <string_view>
 #include "Common/Serialize/Serializer.h"
 #include "Common/Serialize/SerializeFuncs.h"
-#include "Common/Thread/ThreadUtil.h"
 #include "Common/File/DiskFree.h"
 #include "Common/File/FileUtil.h"
 #include "Common/File/DirListing.h"
@@ -33,6 +31,7 @@
 #include "Core/HW/MemoryStick.h"
 #include "Core/System.h"
 #include "Common/CommonTypes.h"
+#include "Common/TimeUtil.h"
 #include "Common/Thread/Promise.h"
 
 // MS and FatMS states.
@@ -110,6 +109,7 @@ static uint64_t ComputeSizeOfSavedataForGame(const Path &saveFolder, const std::
 }
 
 u64 MemoryStick_FreeSpace(std::string gameID) {
+	double start = time_now_d();
 	INFO_LOG(Log::IO, "Calculating free disk space (%s)", gameID.c_str());
 
 	const CompatFlags &flags = PSP_CoreParameter().compat.flags();
@@ -145,6 +145,7 @@ u64 MemoryStick_FreeSpace(std::string gameID) {
 			realFreeSpace = memstickInitialFree - memstickCurrentUse;
 		}
 	}
+	INFO_LOG(Log::IO, "Done calculating free disk space (%0.3f s)", time_now_d() - start);
 
 	return std::min(simulatedFreeSpace, realFreeSpace);
 }

@@ -15,13 +15,11 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#if __linux__ || __APPLE__ || defined(__OpenBSD__)
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/mman.h>
-#include <fcntl.h>
-#endif
-
+#include <mutex>
+#include <string>
+#include <algorithm>
+#include "Common/Net/Resolve.h"
+#include "Common/Net/SocketCompat.h"
 #include "Common/Data/Text/Parsers.h"
 
 #include "Common/Serialize/Serializer.h"
@@ -32,20 +30,27 @@
 #include "Core/HLE/sceKernelMemory.h"
 #include "Core/MIPS/MIPS.h"
 #include "Core/Config.h"
+#include "Core/System.h"
+#include "Core/ELF/ParamSFO.h"
 #include "Core/MemMapHelpers.h"
 #include "Core/Reporting.h"
 #include "Core/Util/PortManager.h"
-
-#include "sceKernel.h"
-#include "sceKernelThread.h"
-#include "sceUtility.h"
-
-#include "Core/HLE/proAdhoc.h"
-#include "Core/HLE/sceNetAdhoc.h"
-#include "Core/HLE/sceNet.h"
-#include "Core/HLE/sceNp.h"
 #include "Core/CoreTiming.h"
 #include "Core/Instance.h"
+
+#include "Core/HLE/sceKernel.h"
+#include "Core/HLE/sceKernelThread.h"
+#include "Core/HLE/sceUtility.h"
+
+#include "Core/HLE/sceNetAdhoc.h"
+#include "Core/HLE/sceNetAdhocMatching.h"
+#include "Core/HLE/sceNet.h"
+#include "Core/HLE/sceNetApctl.h"
+#include "Core/HLE/sceNp.h"
+#include "Core/HLE/sceNp2.h"
+
+#include "Core/HLE/sceNetInet.h"
+#include "Core/HLE/sceNetResolver.h"
 
 #if PPSSPP_PLATFORM(SWITCH) && !defined(INADDR_NONE)
 // Missing toolchain define
@@ -53,7 +58,6 @@
 #endif
 
 bool netInited;
-bool netInetInited;
 
 u32 netDropRate = 0;
 u32 netDropDuration = 0;
@@ -63,12 +67,18 @@ u32 netThread2Addr = 0;
 
 static struct SceNetMallocStat netMallocStat;
 
+static std::map<int, NetResolver> netResolvers;
+
 static std::map<int, ApctlHandler> apctlHandlers;
 
+std::string defaultNetConfigName = "NetConf";
+std::string defaultNetSSID = "Wifi"; // fake AP/hotspot
+int netApctlInfoId = 0;
 SceNetApctlInfoInternal netApctlInfo;
 
 bool netApctlInited;
 u32 netApctlState;
+u32 apctlProdCodeAddr = 0;
 u32 apctlThreadHackAddr = 0;
 u32_le apctlThreadCode[3];
 SceUID apctlThreadID = 0;
@@ -79,7 +89,8 @@ std::deque<ApctlArgs> apctlEvents;
 
 u32 Net_Term();
 int NetApctl_Term();
-void NetApctl_InitInfo();
+void NetApctl_InitDefaultInfo();
+void NetApctl_InitInfo(int confId);
 
 void AfterApctlMipsCall::DoState(PointerWrap & p) {
 	auto s = p.Section("AfterApctlMipsCall", 1, 1);
@@ -130,6 +141,25 @@ void InitLocalhostIP() {
 	isLocalServer = (!strcasecmp(serverStr.c_str(), "localhost") || serverStr.find("127.") == 0);
 }
 
+static bool __PlatformNetInit() {
+#ifdef _WIN32
+	WSADATA wsaData;
+	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+		// TODO: log
+		return false;
+	}
+#endif
+	return true;
+}
+
+static bool __PlatformNetShutdown() {
+#ifdef _WIN32
+	return WSACleanup() == 0;
+#else
+	return true;
+#endif
+}
+
 static void __ApctlState(u64 userdata, int cyclesLate) {
 	SceUID threadID = userdata >> 32;
 	int uid = (int)(userdata & 0xFFFFFFFF);
@@ -175,7 +205,7 @@ void __NetApctlInit() {
 
 static void __ResetInitNetLib() {
 	netInited = false;
-	netInetInited = false;
+	netInetInited = false; // shouldn't this actually do something?
 
 	memset(&netMallocStat, 0, sizeof(netMallocStat));
 	memset(&parameter, 0, sizeof(parameter));
@@ -210,7 +240,8 @@ void __NetInit() {
 	SceNetEtherAddr mac;
 	getLocalMac(&mac);
 	INFO_LOG(Log::sceNet, "LocalHost IP will be %s [%s]", ip2str(g_localhostIP.in.sin_addr).c_str(), mac2str(&mac).c_str());
-	
+
+	__PlatformNetInit();
 	// TODO: May be we should initialize & cleanup somewhere else than here for PortManager to be used as general purpose for whatever port forwarding PPSSPP needed
 	__UPnPInit();
 
@@ -232,11 +263,15 @@ void __NetShutdown() {
 	// Network Cleanup
 	Net_Term();
 
+	SceNetResolver::Shutdown();
+	__NetInetShutdown();
 	__NetApctlShutdown();
 	__ResetInitNetLib();
 
 	// Since PortManager supposed to be general purpose for whatever port forwarding PPSSPP needed, may be we shouldn't clear & restore ports in here? it will be cleared and restored by PortManager's destructor when exiting PPSSPP anyway
 	__UPnPShutdown();
+
+	__PlatformNetShutdown();
 
 	free(dummyPeekBuf64k);
 }
@@ -262,7 +297,7 @@ void netValidateLoopMemory() {
 
 // This feels like a dubious proposition, mostly...
 void __NetDoState(PointerWrap &p) {
-	auto s = p.Section("sceNet", 1, 5);
+	auto s = p.Section("sceNet", 1, 6);
 	if (!s)
 		return;
 
@@ -300,8 +335,7 @@ void __NetDoState(PointerWrap &p) {
 		}
 		Do(p, apctlThreadHackAddr);
 		Do(p, apctlThreadID);
-	}
-	else {
+	} else {
 		actionAfterApctlMipsCall = -1;
 		apctlThreadHackAddr = 0;
 		apctlThreadID = 0;
@@ -312,6 +346,13 @@ void __NetDoState(PointerWrap &p) {
 		apctlStateEvent = -1;
 	}
 	CoreTiming::RestoreRegisterEvent(apctlStateEvent, "__ApctlState", __ApctlState);
+	if (s >= 6) {
+		Do(p, netApctlInfoId);
+		Do(p, netApctlInfo);
+	} else {
+		netApctlInfoId = 0;
+		NetApctl_InitDefaultInfo();
+	}
 
 	if (p.mode == p.MODE_READ) {
 		// Let's not change "Inited" value when Loading SaveState in the middle of multiplayer to prevent memory & port leaks
@@ -321,135 +362,32 @@ void __NetDoState(PointerWrap &p) {
 
 		// Discard leftover events
 		apctlEvents.clear();
+		// Discard created resolvers for now (since i'm not sure whether the information in the struct is sufficient or not, and we don't support multi-threading yet anyway)
+		SceNetResolver::Shutdown();
 	}
-}
-
-template <typename I> std::string num2hex(I w, size_t hex_len) {
-	static const char* digits = "0123456789ABCDEF";
-	std::string rc(hex_len, '0');
-	for (size_t i = 0, j = (hex_len - 1) * 4; i < hex_len; ++i, j -= 4)
-		rc[i] = digits[(w >> j) & 0x0f];
-	return rc;
-}
-
-std::string error2str(u32 errorCode) {
-	std::string str = "";
-	if (((errorCode >> 31) & 1) != 0)
-		str += "ERROR ";
-	if (((errorCode >> 30) & 1) != 0)
-		str += "CRITICAL ";
-	switch ((errorCode >> 16) & 0xfff) {
-	case 0x41:
-		str += "NET ";
-		break;
-	default:
-		str += "UNK"+num2hex(u16((errorCode >> 16) & 0xfff), 3)+" ";
-	}
-	switch ((errorCode >> 8) & 0xff) {
-	case 0x00:
-		str += "COMMON ";
-		break;
-	case 0x01:
-		str += "CORE ";
-		break;
-	case 0x02:
-		str += "INET ";
-		break;
-	case 0x03:
-		str += "POECLIENT ";
-		break;
-	case 0x04:
-		str += "RESOLVER ";
-		break;
-	case 0x05:
-		str += "DHCP ";
-		break;
-	case 0x06:
-		str += "ADHOC_AUTH ";
-		break;
-	case 0x07:
-		str += "ADHOC ";
-		break;
-	case 0x08:
-		str += "ADHOC_MATCHING ";
-		break;
-	case 0x09:
-		str += "NETCNF ";
-		break;
-	case 0x0a:
-		str += "APCTL ";
-		break;
-	case 0x0b:
-		str += "ADHOCCTL ";
-		break;
-	case 0x0c:
-		str += "UNKNOWN1 ";
-		break;
-	case 0x0d:
-		str += "WLAN ";
-		break;
-	case 0x0e:
-		str += "EAPOL ";
-		break;
-	case 0x0f:
-		str += "8021x ";
-		break;
-	case 0x10:
-		str += "WPA ";
-		break;
-	case 0x11:
-		str += "UNKNOWN2 ";
-		break;
-	case 0x12:
-		str += "TRANSFER ";
-		break;
-	case 0x13:
-		str += "ADHOC_DISCOVER ";
-		break;
-	case 0x14:
-		str += "ADHOC_DIALOG ";
-		break;
-	case 0x15:
-		str += "WISPR ";
-		break;
-	default:
-		str += "UNKNOWN"+num2hex(u8((errorCode >> 8) & 0xff))+" ";
-	}
-	str += num2hex(u8(errorCode & 0xff));
-	return str;
 }
 
 void __NetApctlCallbacks()
 {
 	std::lock_guard<std::recursive_mutex> apctlGuard(apctlEvtMtx);
+	std::lock_guard<std::recursive_mutex> npAuthGuard(npAuthEvtMtx);
+	std::lock_guard<std::recursive_mutex> npMatching2Guard(npMatching2EvtMtx);
 	hleSkipDeadbeef();
 	int delayus = 10000;
 
 	// We are temporarily borrowing APctl thread for NpAuth callbacks for testing to simulate authentication
-	if (!npAuthEvents.empty())
-	{
-		auto args = npAuthEvents.front();
-		auto& id = args.data[0];
-		auto& result = args.data[1];
-		auto& argAddr = args.data[2];
-		npAuthEvents.pop_front();
-
+	if (NpAuthProcessEvents()) {
 		delayus = (adhocEventDelay + adhocExtraDelay);
+	}
 
-		int handlerID = id - 1;
-		for (std::map<int, NpAuthHandler>::iterator it = npAuthHandlers.begin(); it != npAuthHandlers.end(); ++it) {
-			if (it->first == handlerID) {
-				DEBUG_LOG(Log::sceNet, "NpAuthCallback [HandlerID=%i][RequestID=%d][Result=%d][ArgsPtr=%08x]", it->first, id, result, it->second.argument);
-				// TODO: Update result / args.data[1] with the actual ticket length (or error code?)
-				hleEnqueueCall(it->second.entryPoint, 3, args.data);
-			}
-		}
+	// Temporarily borrowing APctl thread for NpMatching2 callbacks for testing purpose
+	if (NpMatching2ProcessEvents()) {
+		delayus = (adhocEventDelay + adhocExtraDelay);
 	}
 
 	// How AP works probably like this: Game use sceNetApctl function -> sceNetApctl let the hardware know and do their's thing and have a new State -> Let the game know the resulting State through Event on their handler
-	if (!apctlEvents.empty())
-	{
-		auto args = apctlEvents.front();
+	if (!apctlEvents.empty()) {
+		auto& args = apctlEvents.front();
 		auto& oldState = args.data[0];
 		auto& newState = args.data[1];
 		auto& event = args.data[2];
@@ -457,14 +395,17 @@ void __NetApctlCallbacks()
 		apctlEvents.pop_front();
 
 		// Adjust delay according to current event.
-		if (event == PSP_NET_APCTL_EVENT_CONNECT_REQUEST || event == PSP_NET_APCTL_EVENT_GET_IP || event == PSP_NET_APCTL_EVENT_SCAN_REQUEST)
+		if (event == PSP_NET_APCTL_EVENT_CONNECT_REQUEST || event == PSP_NET_APCTL_EVENT_GET_IP || event == PSP_NET_APCTL_EVENT_SCAN_REQUEST || event == PSP_NET_APCTL_EVENT_ESTABLISHED)
 			delayus = adhocEventDelay;
 		else
 			delayus = adhocEventPollDelay;
 
 		// Do we need to change the oldState? even if there was error?
-		//if (error == 0)
-		//	oldState = netApctlState;
+		if (error == 0)
+		{
+			//oldState = netApctlState;
+			netApctlState = newState;
+		}
 
 		// Need to make sure netApctlState is updated before calling the callback's mipscall so the game can GetState()/GetInfo() within their handler's subroutine and make use the new State/Info
 		// Should we update NewState & Error accordingly to Event before executing the mipscall ? sceNetApctl* functions might want to set the error value tho, so we probably should leave it untouched, right?
@@ -472,35 +413,43 @@ void __NetApctlCallbacks()
 		switch (event) {
 		case PSP_NET_APCTL_EVENT_CONNECT_REQUEST:
 			newState = PSP_NET_APCTL_STATE_JOINING; // Should we set the State to PSP_NET_APCTL_STATE_DISCONNECTED if there was error?
-			if (error == 0) 
-				apctlEvents.push_front({ newState, newState, PSP_NET_APCTL_EVENT_ESTABLISHED, 0 }); // Should we use PSP_NET_APCTL_EVENT_EAP_AUTH if securityType is not NONE?
+			if (error != 0)
+				apctlEvents.push_front({ oldState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
+			else
+				apctlEvents.push_front({ oldState, newState, PSP_NET_APCTL_EVENT_ESTABLISHED, 0 }); // Should we use PSP_NET_APCTL_EVENT_EAP_AUTH if securityType is not NONE?
 			break;
 
 		case PSP_NET_APCTL_EVENT_ESTABLISHED:
 			newState = PSP_NET_APCTL_STATE_GETTING_IP;
-			if (error == 0) 
-				apctlEvents.push_front({ newState, newState, PSP_NET_APCTL_EVENT_GET_IP, 0 });
+			// FIXME: Official prx seems to return ERROR 0x80410280 on the next event when using invalid connection profile to Connect?
+			if (error != 0)
+				apctlEvents.push_front({ oldState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
+			else
+				apctlEvents.push_front({ oldState, newState, PSP_NET_APCTL_EVENT_GET_IP, 0 });
 			break;
 
 		case PSP_NET_APCTL_EVENT_GET_IP:
 			newState = PSP_NET_APCTL_STATE_GOT_IP;
-			NetApctl_InitInfo();
+			NetApctl_InitInfo(netApctlInfoId);
 			break;
 
 		case PSP_NET_APCTL_EVENT_DISCONNECT_REQUEST:
 			newState = PSP_NET_APCTL_STATE_DISCONNECTED;
+			delayus = adhocDefaultDelay / 2; // FIXME: Similar to Adhocctl Disconnect, we probably need to change the state within a frame-time (or less to be safer)
 			break;
 
 		case PSP_NET_APCTL_EVENT_SCAN_REQUEST:
 			newState = PSP_NET_APCTL_STATE_SCANNING;
-			if (error == 0) 
-				apctlEvents.push_front({ newState, newState, PSP_NET_APCTL_EVENT_SCAN_COMPLETE, 0 });
+			if (error != 0)
+				apctlEvents.push_front({ oldState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
+			else
+				apctlEvents.push_front({ oldState, newState, PSP_NET_APCTL_EVENT_SCAN_COMPLETE, 0 });
 			break;
 
 		case PSP_NET_APCTL_EVENT_SCAN_COMPLETE:
 			newState = PSP_NET_APCTL_STATE_DISCONNECTED;
 			if (error == 0)
-				apctlEvents.push_front({ newState, newState, PSP_NET_APCTL_EVENT_SCAN_STOP, 0 });
+				apctlEvents.push_front({ oldState, newState, PSP_NET_APCTL_EVENT_SCAN_STOP, 0 });
 			break;
 
 		case PSP_NET_APCTL_EVENT_SCAN_STOP:
@@ -509,20 +458,30 @@ void __NetApctlCallbacks()
 
 		case PSP_NET_APCTL_EVENT_EAP_AUTH: // Is this suppose to happen between JOINING and ESTABLISHED ?
 			newState = PSP_NET_APCTL_STATE_EAP_AUTH;
-			if (error == 0) 
-				apctlEvents.push_front({ newState, newState, PSP_NET_APCTL_EVENT_KEY_EXCHANGE, 0 }); // not sure if KEY_EXCHANGE is the next step after AUTH or not tho
+			if (error != 0)
+				apctlEvents.push_front({ oldState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
+			else
+				apctlEvents.push_front({ oldState, newState, PSP_NET_APCTL_EVENT_KEY_EXCHANGE, 0 }); // not sure if KEY_EXCHANGE is the next step after AUTH or not tho
 			break;
 
 		case PSP_NET_APCTL_EVENT_KEY_EXCHANGE: // Is this suppose to happen between JOINING and ESTABLISHED ?
 			newState = PSP_NET_APCTL_STATE_KEY_EXCHANGE;
-			if (error == 0) 
-				apctlEvents.push_front({ newState, newState, PSP_NET_APCTL_EVENT_ESTABLISHED, 0 });
+			if (error != 0)
+				apctlEvents.push_front({ oldState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
+			else
+				apctlEvents.push_front({ oldState, newState, PSP_NET_APCTL_EVENT_ESTABLISHED, 0 });
 			break;
 
 		case PSP_NET_APCTL_EVENT_RECONNECT:
 			newState = PSP_NET_APCTL_STATE_DISCONNECTED;
-			if (error == 0) 
-				apctlEvents.push_front({ newState, newState, PSP_NET_APCTL_EVENT_CONNECT_REQUEST, 0 });
+			if (error != 0)
+				apctlEvents.push_front({ oldState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_ERROR, error });
+			else
+				apctlEvents.push_front({ oldState, newState, PSP_NET_APCTL_EVENT_CONNECT_REQUEST, 0 });
+			break;
+
+		case PSP_NET_APCTL_EVENT_ERROR:
+			newState = PSP_NET_APCTL_STATE_DISCONNECTED;
 			break;
 		}
 		// Do we need to change the newState? even if there were error?
@@ -567,8 +526,9 @@ static inline void FreeUser(u32 &addr) {
 u32 Net_Term() {
 	// May also need to Terminate netAdhocctl and netAdhoc to free some resources & threads, since the game (ie. GTA:VCS, Wipeout Pulse, etc) might not called them before calling sceNetTerm and causing them to behave strangely on the next sceNetInit & sceNetAdhocInit
 	NetAdhocctl_Term();
+	NetAdhocMatching_Term();
 	NetAdhoc_Term();
-
+	
 	// TODO: Not implemented yet
 	NetApctl_Term();
 	//NetInet_Term();
@@ -780,42 +740,41 @@ static void sceNetEtherStrton(u32 bufferPtr, u32 macPtr) {
 	}
 }
 
-
 // Write static data since we don't actually manage any memory for sceNet* yet.
 static int sceNetGetMallocStat(u32 statPtr) {
-	VERBOSE_LOG(Log::sceNet, "UNTESTED sceNetGetMallocStat(%x) at %08x", statPtr, currentMIPS->pc);
 	auto stat = PSPPointer<SceNetMallocStat>::Create(statPtr);
 	if (!stat.IsValid())
 		return hleLogError(Log::sceNet, 0, "invalid address");
 
 	*stat = netMallocStat;
 	stat.NotifyWrite("sceNetGetMallocStat");
-	return 0;
+	return hleLogSuccessVerboseI(Log::sceNet, 0);
 }
 
-static int sceNetInetInit() {
-	ERROR_LOG(Log::sceNet, "UNIMPL sceNetInetInit()");
-	if (netInetInited) return ERROR_NET_INET_ALREADY_INITIALIZED;
-	netInetInited = true;
-
-	return 0;
-}
-
-int sceNetInetTerm() {
-	ERROR_LOG(Log::sceNet, "UNIMPL sceNetInetTerm()");
-	netInetInited = false;
-
-	return 0;
-}
-
-void NetApctl_InitInfo() {
+void NetApctl_InitDefaultInfo() {
 	memset(&netApctlInfo, 0, sizeof(netApctlInfo));
-	// Set dummy/fake values, these probably not suppose to have valid info before connected to an AP, right?
-	std::string APname = "Wifi"; // fake AP/hotspot
-	truncate_cpy(netApctlInfo.name, sizeof(netApctlInfo.name), APname.c_str());
-	truncate_cpy(netApctlInfo.ssid, sizeof(netApctlInfo.ssid), APname.c_str());
+	// Set dummy/fake parameters, assuming this is the currently selected Network Configuration profile
+	// FIXME: Some of these info supposed to be taken from netConfInfo
+	int validConfId = std::max(1, netApctlInfoId); // Should be: sceUtilityGetNetParamLatestID(validConfId);
+	truncate_cpy(netApctlInfo.name, sizeof(netApctlInfo.name), (defaultNetConfigName + std::to_string(validConfId)).c_str());
+	truncate_cpy(netApctlInfo.ssid, sizeof(netApctlInfo.ssid), defaultNetSSID.c_str());
+	// Default IP Address
+	char ipstr[INET_ADDRSTRLEN] = "0.0.0.0"; // Driver 76 needs a dot formatted IP instead of a zeroed buffer
+	truncate_cpy(netApctlInfo.ip, sizeof(netApctlInfo.ip), ipstr);
+	truncate_cpy(netApctlInfo.gateway, sizeof(netApctlInfo.gateway), ipstr);
+	truncate_cpy(netApctlInfo.primaryDns, sizeof(netApctlInfo.primaryDns), ipstr);
+	truncate_cpy(netApctlInfo.secondaryDns, sizeof(netApctlInfo.secondaryDns), ipstr);
+	truncate_cpy(netApctlInfo.subNetMask, sizeof(netApctlInfo.subNetMask), ipstr);
+}
+
+void NetApctl_InitInfo(int confId) {
+	memset(&netApctlInfo, 0, sizeof(netApctlInfo));
+	// Set dummy/fake values, some of these (ie. IP set to Auto) probably not suppose to have valid info before connected to an AP, right?
+	// FIXME: Some of these info supposed to be taken from netConfInfo
+	truncate_cpy(netApctlInfo.name, sizeof(netApctlInfo.name), (defaultNetConfigName + std::to_string(confId)).c_str());
+	truncate_cpy(netApctlInfo.ssid, sizeof(netApctlInfo.ssid), defaultNetSSID.c_str());
 	memcpy(netApctlInfo.bssid, "\1\1\2\2\3\3", sizeof(netApctlInfo.bssid)); // fake AP's mac address
-	netApctlInfo.ssidLength = static_cast<unsigned int>(APname.length());
+	netApctlInfo.ssidLength = static_cast<unsigned int>(defaultNetSSID.length());
 	netApctlInfo.strength = 99;
 	netApctlInfo.channel = g_Config.iWlanAdhocChannel;
 	if (netApctlInfo.channel == PSP_SYSTEMPARAM_ADHOC_CHANNEL_AUTOMATIC) netApctlInfo.channel = defaultWlanChannel;
@@ -829,31 +788,25 @@ void NetApctl_InitInfo() {
 	((u8*)&sockAddr.sin_addr.s_addr)[3] = 1;
 	inet_ntop(AF_INET, &sockAddr.sin_addr, ipstr, sizeof(ipstr));
 	truncate_cpy(netApctlInfo.gateway, sizeof(netApctlInfo.gateway), ipstr);
-	truncate_cpy(netApctlInfo.primaryDns, sizeof(netApctlInfo.primaryDns), ipstr);
-	truncate_cpy(netApctlInfo.secondaryDns, sizeof(netApctlInfo.secondaryDns), "8.8.8.8");
+	// We should probably use public DNS Server instead of localhost IP since most people don't have DNS Server running on localhost (ie. Untold Legends The Warrior's Code is trying to lookup dns using the primary dns), but accessing public DNS Server from localhost may result to ENETUNREACH error if the gateway can't access the public server (ie. using SO_DONTROUTE)
+	//if (strcmp(ipstr, "127.0.0.1") == 0)
+		truncate_cpy(netApctlInfo.primaryDns, sizeof(netApctlInfo.primaryDns), g_Config.primaryDNSServer.c_str()); // Private Servers may need to use custom DNS Server
+	//else
+	//	truncate_cpy(netApctlInfo.primaryDns, sizeof(netApctlInfo.primaryDns), ipstr);
+	truncate_cpy(netApctlInfo.secondaryDns, sizeof(netApctlInfo.secondaryDns), g_Config.secondaryDNSServer.c_str()); // Fireteam Bravo 2 seems to try to use secondary DNS too if it's not 0.0.0.0
 	truncate_cpy(netApctlInfo.subNetMask, sizeof(netApctlInfo.subNetMask), "255.255.255.0");
 }
 
 static int sceNetApctlInit(int stackSize, int initPriority) {
-	WARN_LOG(Log::sceNet, "UNTESTED %s(%i, %i)", __FUNCTION__, stackSize, initPriority);
-	if (netApctlInited)
-		return ERROR_NET_APCTL_ALREADY_INITIALIZED;
+	if (netApctlInited) {
+		return hleLogError(Log::sceNet, ERROR_NET_APCTL_ALREADY_INITIALIZED);
+	}
 
 	apctlEvents.clear();
 	netApctlState = PSP_NET_APCTL_STATE_DISCONNECTED;
 
 	// Set default value before connected to an AP
-	memset(&netApctlInfo, 0, sizeof(netApctlInfo)); // NetApctl_InitInfo();
-	std::string APname = "Wifi"; // fake AP/hotspot
-	truncate_cpy(netApctlInfo.name, sizeof(netApctlInfo.name), APname.c_str());
-	truncate_cpy(netApctlInfo.ssid, sizeof(netApctlInfo.ssid), APname.c_str());
-	memcpy(netApctlInfo.bssid, "\1\1\2\2\3\3", sizeof(netApctlInfo.bssid)); // fake AP's mac address
-	netApctlInfo.ssidLength = static_cast<unsigned int>(APname.length());
-	truncate_cpy(netApctlInfo.ip, sizeof(netApctlInfo.ip), "0.0.0.0");
-	truncate_cpy(netApctlInfo.gateway, sizeof(netApctlInfo.gateway), "0.0.0.0");
-	truncate_cpy(netApctlInfo.primaryDns, sizeof(netApctlInfo.primaryDns), "0.0.0.0");
-	truncate_cpy(netApctlInfo.secondaryDns, sizeof(netApctlInfo.secondaryDns), "0.0.0.0");
-	truncate_cpy(netApctlInfo.subNetMask, sizeof(netApctlInfo.subNetMask), "0.0.0.0");
+	NetApctl_InitDefaultInfo();
 
 	// Create APctl fake-Thread
 	netValidateLoopMemory();
@@ -862,12 +815,35 @@ static int sceNetApctlInit(int stackSize, int initPriority) {
 		__KernelStartThread(apctlThreadID, 0, 0);
 	}
 
+	// Note: Borrowing AdhocServer for Grouping purpose
+	u32 structsz = sizeof(SceNetAdhocctlAdhocId);
+	if (apctlProdCodeAddr != 0) {
+		userMemory.Free(apctlProdCodeAddr);
+	}
+	apctlProdCodeAddr = userMemory.Alloc(structsz, false, "ApctlAdhocId");
+	SceNetAdhocctlAdhocId* prodCode = (SceNetAdhocctlAdhocId*)Memory::GetCharPointer(apctlProdCodeAddr);
+	if (prodCode) {
+		memset(prodCode, 0, structsz);
+		// TODO: Use a 9-characters product id instead of disc id (ie. not null-terminated(VT_UTF8_SPE) and shouldn't be variable size?)
+		std::string discID = g_paramSFO.GetDiscID();
+		prodCode->type = 1; // VT_UTF8 since we're using DiscID instead of product id
+		memcpy(prodCode->data, discID.c_str(), std::min(ADHOCCTL_ADHOCID_LEN, (int)discID.size()));
+	}
+	sceNetAdhocctlInit(stackSize, initPriority, apctlProdCodeAddr);
+
 	netApctlInited = true;
 
-	return 0;
+	return hleLogSuccessInfoI(Log::sceNet, 0);
 }
 
 int NetApctl_Term() {
+	// Note: Since we're borrowing AdhocServer for Grouping purpose, we should cleanup too
+	NetAdhocctl_Term();
+	if (apctlProdCodeAddr != 0) {
+		userMemory.Free(apctlProdCodeAddr);
+		apctlProdCodeAddr = 0;
+	}
+
 	// Cleanup Apctl resources
 	// Delete fake PSP Thread
 	if (apctlThreadID != 0) {
@@ -883,15 +859,13 @@ int NetApctl_Term() {
 }
 
 int sceNetApctlTerm() {
-	WARN_LOG(Log::sceNet, "UNTESTED %s()", __FUNCTION__);
-	return NetApctl_Term();
+	int retval = NetApctl_Term();
+	hleEatMicro(adhocDefaultDelay);
+	return hleLogSuccessInfoI(Log::sceNet, retval);
 }
 
 static int sceNetApctlGetInfo(int code, u32 pInfoAddr) {
-	WARN_LOG(Log::sceNet, "UNTESTED %s(%i, %08x)", __FUNCTION__, code, pInfoAddr);
-
-	if (!netApctlInited)
-		return hleLogError(Log::sceNet, ERROR_NET_APCTL_NOT_IN_BSS, "apctl not in bss"); // Only have valid info after joining an AP and got an IP, right?
+	DEBUG_LOG(Log::sceNet, "sceNetApctlGetInfo(%i, %08x) at %08x", code, pInfoAddr, currentMIPS->pc);
 
 	switch (code) {
 	case PSP_NET_APCTL_INFO_PROFILE_NAME:
@@ -983,6 +957,7 @@ static int sceNetApctlGetInfo(int code, u32 pInfoAddr) {
 		if (!Memory::IsValidRange(pInfoAddr, 4))
 			return hleLogError(Log::sceNet, -1, "apctl invalid arg");
 		Memory::WriteUnchecked_U32(netApctlInfo.useProxy, pInfoAddr);
+		// Memory::WriteUnchecked_U32(1, pInfoAddr);
 		NotifyMemInfo(MemBlockFlags::WRITE, pInfoAddr, 4, "NetApctlGetInfo");
 		break;
 	case PSP_NET_APCTL_INFO_PROXY_URL:
@@ -1082,121 +1057,37 @@ static int sceNetApctlDelHandler(u32 handlerID) {
 	return NetApctl_DelHandler(handlerID);
 }
 
-static int sceNetInetInetAton(const char *hostname, u32 addrPtr) {
-	ERROR_LOG(Log::sceNet, "UNIMPL sceNetInetInetAton(%s, %08x)", hostname, addrPtr);
-	return -1;
-}
+int sceNetApctlConnect(int confId) {
+	WARN_LOG(Log::sceNet, "sceNetApctlConnect(%i)", confId);
+	if (!g_Config.bEnableWlan)
+		return hleLogError(Log::sceNet, ERROR_NET_APCTL_WLAN_SWITCH_OFF, "apctl wlan off");
 
-int sceNetInetPoll(void *fds, u32 nfds, int timeout) { // timeout in miliseconds
-	DEBUG_LOG(Log::sceNet, "UNTESTED sceNetInetPoll(%p, %d, %i) at %08x", fds, nfds, timeout, currentMIPS->pc);
-	int retval = -1;
-	SceNetInetPollfd *fdarray = (SceNetInetPollfd *)fds; // SceNetInetPollfd/pollfd, sceNetInetPoll() have similarity to BSD poll() but pollfd have different size on 64bit
-//#ifdef _WIN32
-	//WSAPoll only available for Vista or newer, so we'll use an alternative way for XP since Windows doesn't have poll function like *NIX
-	if (nfds > FD_SETSIZE) return -1;
-	fd_set readfds, writefds, exceptfds;
-	FD_ZERO(&readfds); FD_ZERO(&writefds); FD_ZERO(&exceptfds);
-	for (int i = 0; i < (s32)nfds; i++) {
-		if (fdarray[i].events & (INET_POLLRDNORM)) FD_SET(fdarray[i].fd, &readfds); // (POLLRDNORM | POLLIN)
-		if (fdarray[i].events & (INET_POLLWRNORM)) FD_SET(fdarray[i].fd, &writefds); // (POLLWRNORM | POLLOUT)
-		//if (fdarray[i].events & (ADHOC_EV_ALERT)) // (POLLRDBAND | POLLPRI) // POLLERR 
-		FD_SET(fdarray[i].fd, &exceptfds); 
-		fdarray[i].revents = 0;
-	}
-	timeval tmout;
-	tmout.tv_sec = timeout / 1000; // seconds
-	tmout.tv_usec = (timeout % 1000) * 1000; // microseconds
-	retval = select(nfds, &readfds, &writefds, &exceptfds, &tmout);
-	if (retval < 0) return -1;
-	retval = 0;
-	for (int i = 0; i < (s32)nfds; i++) {
-		if (FD_ISSET(fdarray[i].fd, &readfds)) fdarray[i].revents |= INET_POLLRDNORM; //POLLIN
-		if (FD_ISSET(fdarray[i].fd, &writefds)) fdarray[i].revents |= INET_POLLWRNORM; //POLLOUT
-		fdarray[i].revents &= fdarray[i].events;
-		if (FD_ISSET(fdarray[i].fd, &exceptfds)) fdarray[i].revents |= ADHOC_EV_ALERT; // POLLPRI; // POLLERR; // can be raised on revents regardless of events bitmask?
-		if (fdarray[i].revents) retval++;
-	}
-//#else
-	/*
-	// Doesn't work properly yet
-	pollfd *fdtmp = (pollfd *)malloc(sizeof(pollfd) * nfds);
-	// Note: sizeof(pollfd) = 16bytes in 64bit and 8bytes in 32bit, while sizeof(SceNetInetPollfd) is always 8bytes
-	for (int i = 0; i < (s32)nfds; i++) {
-		fdtmp[i].fd = fdarray[i].fd;
-		fdtmp[i].events = 0;
-		if (fdarray[i].events & INET_POLLRDNORM) fdtmp[i].events |= (POLLIN | POLLRDNORM | POLLRDBAND | POLLPRI);
-		if (fdarray[i].events & INET_POLLWRNORM) fdtmp[i].events |= (POLLOUT | POLLWRNORM | POLLWRBAND);
-		fdtmp[i].revents = 0;
-		fdarray[i].revents = 0;
-	}
-	retval = poll(fdtmp, (nfds_t)nfds, timeout); //retval = WSAPoll(fdarray, nfds, timeout);
-	for (int i = 0; i < (s32)nfds; i++) {
-		if (fdtmp[i].revents & (POLLIN | POLLRDNORM | POLLRDBAND | POLLPRI)) fdarray[i].revents |= INET_POLLRDNORM;
-		if (fdtmp[i].revents & (POLLOUT | POLLWRNORM | POLLWRBAND)) fdarray[i].revents |= INET_POLLWRNORM;
-		fdarray[i].revents &= fdarray[i].events;
-		if (fdtmp[i].revents & POLLERR) fdarray[i].revents |= POLLERR; //INET_POLLERR // can be raised on revents regardless of events bitmask?
-	}
-	free(fdtmp);
-	*/
-//#endif
-	return retval;
-}
+	if (netApctlState != PSP_NET_APCTL_STATE_DISCONNECTED)
+		return hleLogError(Log::sceNet, ERROR_NET_APCTL_NOT_DISCONNECTED, "apctl not disconnected");
 
-static int sceNetInetRecv(int socket, u32 bufPtr, u32 bufLen, u32 flags) {
-	ERROR_LOG(Log::sceNet, "UNIMPL sceNetInetRecv(%i, %08x, %i, %08x)", socket, bufPtr, bufLen, flags);
-	return -1;
-}
+	// Is this confId is the index to the scanning's result data or sceNetApctlGetBSSDescIDListUser result?
+	netApctlInfoId = confId;
+	// Note: We're borrowing AdhocServer for Grouping purpose, so we can simulate Broadcast over the internet just like Adhoc's pro-online implementation
+	int ret = sceNetAdhocctlConnect("INFRA");
 
-static int sceNetInetSend(int socket, u32 bufPtr, u32 bufLen, u32 flags) {
-	ERROR_LOG(Log::sceNet, "UNIMPL sceNetInetSend(%i, %08x, %i, %08x)", socket, bufPtr, bufLen, flags);
-	return -1;
-}
-
-static int sceNetInetGetErrno() {
-	ERROR_LOG(Log::sceNet, "UNTESTED sceNetInetGetErrno()");
-	int error = errno;
-	switch (error) {
-	case ETIMEDOUT:		
-		return INET_ETIMEDOUT;
-	case EISCONN:		
-		return INET_EISCONN;
-	case EINPROGRESS:	
-		return INET_EINPROGRESS;
-	//case EAGAIN:
-	//	return INET_EAGAIN;
-	}
-	return error; //-1;
-}
-
-static int sceNetInetSocket(int domain, int type, int protocol) {
-	ERROR_LOG(Log::sceNet, "UNIMPL sceNetInetSocket(%i, %i, %i)", domain, type, protocol);
-	return -1;
-}
-
-static int sceNetInetSetsockopt(int socket, int level, int optname, u32 optvalPtr, int optlen) {
-	ERROR_LOG(Log::sceNet, "UNIMPL sceNetInetSetsockopt(%i, %i, %i, %08x, %i)", socket, level, optname, optvalPtr, optlen);
-	return -1;
-}
-
-static int sceNetInetConnect(int socket, u32 sockAddrInternetPtr, int addressLength) {
-	ERROR_LOG(Log::sceNet, "UNIMPL sceNetInetConnect(%i, %08x, %i)", socket, sockAddrInternetPtr, addressLength);
-	return -1;
-}
-
-int sceNetApctlConnect(int connIndex) {
-	WARN_LOG(Log::sceNet, "UNTESTED %s(%i)", __FUNCTION__, connIndex);
-	// Is this connIndex is the index to the scanning's result data or sceNetApctlGetBSSDescIDListUser result?
-	__UpdateApctlHandlers(0, 0, PSP_NET_APCTL_EVENT_CONNECT_REQUEST, 0);
+	if (netApctlState == PSP_NET_APCTL_STATE_DISCONNECTED)
+		__UpdateApctlHandlers(0, PSP_NET_APCTL_STATE_JOINING, PSP_NET_APCTL_EVENT_CONNECT_REQUEST, 0);
 	//hleDelayResult(0, "give time to init/cleanup", adhocEventDelayMS * 1000);
-	return 0;
+	// TODO: Blocks current thread and wait for a state change to prevent user-triggered connection attempt from causing events to piles up
+	return hleLogDebug(Log::sceNet, 0, "connect = %i", ret);
 }
 
-static int sceNetApctlDisconnect() {
-	ERROR_LOG(Log::sceNet, "UNIMPL %s()", __FUNCTION__);
+int sceNetApctlDisconnect() {
+	WARN_LOG(Log::sceNet, "UNTESTED %s()", __FUNCTION__);
 	// Like its 'sister' function sceNetAdhocctlDisconnect, we need to alert Apctl handlers that a disconnect took place
 	// or else games like Phantasy Star Portable 2 will hang at certain points (e.g. returning to the main menu after trying to connect to PSN).
+	// Note: Since we're borrowing AdhocServer for Grouping purpose, we should disconnect too
+	sceNetAdhocctlDisconnect();
 
-	__UpdateApctlHandlers(0, 0, PSP_NET_APCTL_EVENT_DISCONNECT_REQUEST, 0);
+	// Discards any pending events so we can disconnect immediately
+	apctlEvents.clear();
+	__UpdateApctlHandlers(netApctlState, PSP_NET_APCTL_STATE_DISCONNECTED, PSP_NET_APCTL_EVENT_DISCONNECT_REQUEST, 0);
+	// TODO: Blocks current thread and wait for a state change, but the state should probably need to be changed within 1 frame-time (~16ms) 
 	return 0;
 }
 
@@ -1219,11 +1110,14 @@ static int sceNetApctlGetState(u32 pStateAddr) {
 }
 
 int NetApctl_ScanUser() {
+	if (!g_Config.bEnableWlan)
+		return hleLogError(Log::sceNet, ERROR_NET_APCTL_WLAN_SWITCH_OFF, "apctl wlan off");
+
 	// Scan probably only works when not in connected state, right?
 	if (netApctlState != PSP_NET_APCTL_STATE_DISCONNECTED)
 		return hleLogError(Log::sceNet, ERROR_NET_APCTL_NOT_DISCONNECTED, "apctl not disconnected");
 
-	__UpdateApctlHandlers(0, 0, PSP_NET_APCTL_EVENT_SCAN_REQUEST, 0);
+	__UpdateApctlHandlers(0, PSP_NET_APCTL_STATE_SCANNING, PSP_NET_APCTL_EVENT_SCAN_REQUEST, 0);
 	return 0;
 }
 
@@ -1372,12 +1266,6 @@ static int sceNetApctlGetBSSDescEntry2(int entryId, int infoId, u32 resultAddr) 
 	return NetApctl_GetBSSDescEntryUser(entryId, infoId, resultAddr);
 }
 
-static int sceNetResolverInit()
-{
-	ERROR_LOG(Log::sceNet, "UNIMPL %s()", __FUNCTION__);
-	return 0;
-}
-
 static int sceNetApctlAddInternalHandler(u32 handlerPtr, u32 handlerArg) {
 	ERROR_LOG(Log::sceNet, "UNIMPL %s(%08x, %08x)", __FUNCTION__, handlerPtr, handlerArg);
 	// This seems to be a 2nd kind of handler
@@ -1431,46 +1319,38 @@ static int sceNetApctl_lib2_C20A144C(int connIndex, u32 ps3MacAddressPtr) {
 	return sceNetApctlConnect(connIndex);
 }
 
-
-static int sceNetUpnpInit(int unknown1,int unknown2)
-{
-	ERROR_LOG_REPORT_ONCE(sceNetUpnpInit, Log::sceNet, "UNIMPLsceNetUpnpInit %d,%d",unknown1,unknown2);
+static int sceNetUpnpInit(int unknown1,int unknown2) {
+	ERROR_LOG_REPORT_ONCE(sceNetUpnpInit, Log::sceNet, "UNIMPL sceNetUpnpInit %d,%d",unknown1,unknown2);
 	return 0;
 }
 
-static int sceNetUpnpStart()
-{
-	ERROR_LOG(Log::sceNet, "UNIMPLsceNetUpnpStart");
+static int sceNetUpnpStart() {
+	ERROR_LOG(Log::sceNet, "UNIMPL sceNetUpnpStart");
 	return 0;
 }
 
-static int sceNetUpnpStop()
-{
-	ERROR_LOG(Log::sceNet, "UNIMPLsceNetUpnpStop");
+static int sceNetUpnpStop() {
+	ERROR_LOG(Log::sceNet, "UNIMPL sceNetUpnpStop");
 	return 0;
 }
 
-static int sceNetUpnpTerm()
-{
-	ERROR_LOG(Log::sceNet, "UNIMPLsceNetUpnpTerm");
+static int sceNetUpnpTerm() {
+	ERROR_LOG(Log::sceNet, "UNIMPL sceNetUpnpTerm");
 	return 0;
 }
 
-static int sceNetUpnpGetNatInfo()
-{
-	ERROR_LOG(Log::sceNet, "UNIMPLsceNetUpnpGetNatInfo");
+static int sceNetUpnpGetNatInfo() {
+	ERROR_LOG(Log::sceNet, "UNIMPL sceNetUpnpGetNatInfo");
 	return 0;
 }
 
-static int sceNetGetDropRate(u32 dropRateAddr, u32 dropDurationAddr)
-{
+static int sceNetGetDropRate(u32 dropRateAddr, u32 dropDurationAddr) {
 	Memory::Write_U32(netDropRate, dropRateAddr);
 	Memory::Write_U32(netDropDuration, dropDurationAddr);
 	return hleLogSuccessInfoI(Log::sceNet, 0);
 }
 
-static int sceNetSetDropRate(u32 dropRate, u32 dropDuration)
-{
+static int sceNetSetDropRate(u32 dropRate, u32 dropDuration) {
 	netDropRate = dropRate;
 	netDropDuration = dropDuration;
 	return hleLogSuccessInfoI(Log::sceNet, 0);
@@ -1485,54 +1365,6 @@ const HLEFunction sceNet[] = {
 	{0X50647530, &WrapI_I<sceNetFreeThreadinfo>,     "sceNetFreeThreadinfo",            'i', "i"    },
 	{0XCC393E48, &WrapI_U<sceNetGetMallocStat>,      "sceNetGetMallocStat",             'i', "p"    },
 	{0XAD6844C6, &WrapI_I<sceNetThreadAbort>,        "sceNetThreadAbort",               'i', "i"    },
-};
-
-const HLEFunction sceNetResolver[] = {
-	{0X224C5F44, nullptr,                            "sceNetResolverStartNtoA",         '?', ""     },
-	{0X244172AF, nullptr,                            "sceNetResolverCreate",            '?', ""     },
-	{0X94523E09, nullptr,                            "sceNetResolverDelete",            '?', ""     },
-	{0XF3370E61, &WrapI_V<sceNetResolverInit>,       "sceNetResolverInit",              'i', ""     },
-	{0X808F6063, nullptr,                            "sceNetResolverStop",              '?', ""     },
-	{0X6138194A, nullptr,                            "sceNetResolverTerm",              '?', ""     },
-	{0X629E2FB7, nullptr,                            "sceNetResolverStartAtoN",         '?', ""     },
-	{0X14C17EF9, nullptr,                            "sceNetResolverStartNtoAAsync",    '?', ""     },
-	{0XAAC09184, nullptr,                            "sceNetResolverStartAtoNAsync",    '?', ""     },
-	{0X12748EB9, nullptr,                            "sceNetResolverWaitAsync",         '?', ""     },
-	{0X4EE99358, nullptr,                            "sceNetResolverPollAsync",         '?', ""     },
-};					 
-
-const HLEFunction sceNetInet[] = {
-	{0X17943399, &WrapI_V<sceNetInetInit>,           "sceNetInetInit",                  'i', ""     },
-	{0X4CFE4E56, nullptr,                            "sceNetInetShutdown",              '?', ""     },
-	{0XA9ED66B9, &WrapI_V<sceNetInetTerm>,           "sceNetInetTerm",                  'i', ""     },
-	{0X8B7B220F, &WrapI_III<sceNetInetSocket>,       "sceNetInetSocket",                'i', "iii"  },
-	{0X2FE71FE7, &WrapI_IIIUI<sceNetInetSetsockopt>, "sceNetInetSetsockopt",            'i', "iiixi"},
-	{0X4A114C7C, nullptr,                            "sceNetInetGetsockopt",            '?', ""     },
-	{0X410B34AA, &WrapI_IUI<sceNetInetConnect>,      "sceNetInetConnect",               'i', "ixi"  },
-	{0X805502DD, nullptr,                            "sceNetInetCloseWithRST",          '?', ""     },
-	{0XD10A1A7A, nullptr,                            "sceNetInetListen",                '?', ""     },
-	{0XDB094E1B, nullptr,                            "sceNetInetAccept",                '?', ""     },
-	{0XFAABB1DD, &WrapI_VUI<sceNetInetPoll>,         "sceNetInetPoll",                  'i', "pxi"  },
-	{0X5BE8D595, nullptr,                            "sceNetInetSelect",                '?', ""     },
-	{0X8D7284EA, nullptr,                            "sceNetInetClose",                 '?', ""     },
-	{0XCDA85C99, &WrapI_IUUU<sceNetInetRecv>,        "sceNetInetRecv",                  'i', "ixxx" },
-	{0XC91142E4, nullptr,                            "sceNetInetRecvfrom",              '?', ""     },
-	{0XEECE61D2, nullptr,                            "sceNetInetRecvmsg",               '?', ""     },
-	{0X7AA671BC, &WrapI_IUUU<sceNetInetSend>,        "sceNetInetSend",                  'i', "ixxx" },
-	{0X05038FC7, nullptr,                            "sceNetInetSendto",                '?', ""     },
-	{0X774E36F4, nullptr,                            "sceNetInetSendmsg",               '?', ""     },
-	{0XFBABE411, &WrapI_V<sceNetInetGetErrno>,       "sceNetInetGetErrno",              'i', ""     },
-	{0X1A33F9AE, nullptr,                            "sceNetInetBind",                  '?', ""     },
-	{0XB75D5B0A, nullptr,                            "sceNetInetInetAddr",              '?', ""     },
-	{0X1BDF5D13, &WrapI_CU<sceNetInetInetAton>,      "sceNetInetInetAton",              'i', "sx"   },
-	{0XD0792666, nullptr,                            "sceNetInetInetNtop",              '?', ""     },
-	{0XE30B8C19, nullptr,                            "sceNetInetInetPton",              '?', ""     },
-	{0X8CA3A97E, nullptr,                            "sceNetInetGetPspError",           '?', ""     },
-	{0XE247B6D6, nullptr,                            "sceNetInetGetpeername",           '?', ""     },
-	{0X162E6FD5, nullptr,                            "sceNetInetGetsockname",           '?', ""     },
-	{0X80A21ABD, nullptr,                            "sceNetInetSocketAbort",           '?', ""     },
-	{0X39B0C7D3, nullptr,                            "sceNetInetGetUdpcbstat",          '?', ""     },
-	{0XB3888AD4, nullptr,                            "sceNetInetGetTcpcbstat",          '?', ""     },
 };
 
 const HLEFunction sceNetApctl[] = {
@@ -1586,8 +1418,9 @@ const HLEFunction sceNetIfhandle[] = {
 
 void Register_sceNet() {
 	RegisterModule("sceNet", ARRAY_SIZE(sceNet), sceNet);
-	RegisterModule("sceNetResolver", ARRAY_SIZE(sceNetResolver), sceNetResolver);
-	RegisterModule("sceNetInet", ARRAY_SIZE(sceNetInet), sceNetInet);
+}
+
+void Register_sceNetApctl() {
 	RegisterModule("sceNetApctl", ARRAY_SIZE(sceNetApctl), sceNetApctl);
 }
 

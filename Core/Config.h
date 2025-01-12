@@ -174,6 +174,7 @@ public:
 	// Speedhacks (more will be moved here):
 	bool bSkipBufferEffects;
 	bool bDisableRangeCulling;
+	int iDepthRasterMode;
 
 	int iTexFiltering; // 1 = auto , 2 = nearest , 3 = linear , 4 = auto max quality
 	bool bSmart2DTexFiltering;
@@ -442,8 +443,9 @@ public:
 	bool bDiscardRegsOnJRRA;
 
 	// SystemParam
-	std::string sNickName;
+	std::string sNickName;  // AdHoc and system nickname
 	std::string sMACAddress;
+
 	int iLanguage;
 	int iTimeFormat;
 	int iDateFormat;
@@ -456,7 +458,11 @@ public:
 
 	// Networking
 	std::string proAdhocServer;
+	std::string primaryDNSServer;
+	std::string secondaryDNSServer;
+	std::string sInfrastructureUsername;  // Username used for Infrastructure play. Different restrictions.
 	bool bEnableWlan;
+	std::map<std::string, std::string> mHostToAlias; // TODO: mPostShaderSetting
 	bool bEnableAdhocServer;
 	bool bEnableUPnP;
 	bool bUPnPUseOriginalPort;
@@ -480,6 +486,7 @@ public:
 	int iPSPModel;
 	int iFirmwareVersion;
 	bool bBypassOSKWithKeyboard;
+
 
 	// Virtual reality
 	bool bEnableVR;

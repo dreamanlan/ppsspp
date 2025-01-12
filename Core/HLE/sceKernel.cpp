@@ -69,6 +69,7 @@
 #include "sceMpeg.h"
 #include "sceNet.h"
 #include "sceNetAdhoc.h"
+#include "sceNetAdhocMatching.h"
 #include "scePower.h"
 #include "sceUtility.h"
 #include "sceUmd.h"
@@ -87,7 +88,9 @@
 #include "sceDmac.h"
 #include "sceMp4.h"
 #include "sceOpenPSID.h"
+#include "sceHttp.h"
 #include "Core/Util/PPGeDraw.h"
+#include "sceHttp.h"
 
 /*
 17: [MIPS32 R4K 00000000 ]: Loader: Type: 1 Vaddr: 00000000 Filesz: 2856816 Memsz: 2856816 
@@ -145,6 +148,7 @@ void __KernelInit()
 	__FontInit();
 	__NetInit();
 	__NetAdhocInit();
+	__NetAdhocMatchingInit();
 	__VaudioInit();
 	__CheatInit();
 	__HeapInit();
@@ -155,6 +159,7 @@ void __KernelInit()
 	__UsbCamInit();
 	__UsbMicInit();
 	__OpenPSIDInit();
+	__HttpInit();
 	
 	SaveState::Init();  // Must be after IO, as it may create a directory
 	Reporting::Init();
@@ -179,6 +184,7 @@ void __KernelShutdown()
 	hleCurrentThreadName = NULL;
 	kernelObjects.Clear();
 
+	__HttpShutdown();
 	__OpenPSIDShutdown();
 	__UsbCamShutdown();
 	__UsbMicShutdown();
@@ -188,6 +194,7 @@ void __KernelShutdown()
 	__VideoPmpShutdown();
 	__AACShutdown();
 	__NetAdhocShutdown();
+	__NetAdhocMatchingShutdown();
 	__NetShutdown();
 	__FontShutdown();
 

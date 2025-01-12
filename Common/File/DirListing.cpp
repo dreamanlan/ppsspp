@@ -12,15 +12,15 @@
 #include <strings.h>
 #include <dirent.h>
 #include <unistd.h>
-#include <errno.h>
 #endif
+
 #include <cstring>
 #include <string>
 #include <set>
-#include <algorithm>
 #include <cstdio>
 #include <sys/stat.h>
-#include <ctype.h>
+#include <cctype>
+#include <algorithm>  // remove_if
 
 #include "Common/Data/Encoding/Utf8.h"
 #include "Common/StringUtils.h"

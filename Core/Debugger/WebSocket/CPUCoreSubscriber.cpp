@@ -17,6 +17,7 @@
 
 #include "Common/StringUtils.h"
 #include "Core/Core.h"
+#include "Core/System.h"
 #include "Core/CoreTiming.h"
 #include "Core/Debugger/Breakpoints.h"
 #include "Core/Debugger/WebSocket/CPUCoreSubscriber.h"
@@ -134,16 +135,16 @@ void WebSocketCPUGetAllRegs(DebuggerRequest &req) {
 	JsonWriter &json = req.Respond();
 
 	json.pushArray("categories");
-	for (int c = 0; c < cpuDebug->GetNumCategories(); ++c) {
+	for (int c = 0; c < MIPSDebugInterface::GetNumCategories(); ++c) {
 		json.pushDict();
 		json.writeInt("id", c);
-		json.writeString("name", cpuDebug->GetCategoryName(c));
+		json.writeString("name", MIPSDebugInterface::GetCategoryName(c));
 
-		int total = cpuDebug->GetNumRegsInCategory(c);
+		int total = MIPSDebugInterface::GetNumRegsInCategory(c);
 
 		json.pushArray("registerNames");
 		for (int r = 0; r < total; ++r)
-			json.writeString(cpuDebug->GetRegName(c, r));
+			json.writeString(MIPSDebugInterface::GetRegName(c, r));
 		if (c == 0) {
 			json.writeString("pc");
 			json.writeString("hi");
@@ -402,10 +403,10 @@ void WebSocketCPUEvaluate(DebuggerRequest &req) {
 
 	u32 val;
 	PostfixExpression postfix;
-	if (!cpuDebug->initExpression(exp.c_str(), postfix)) {
+	if (!initExpression(cpuDebug, exp.c_str(), postfix)) {
 		return req.Fail(StringFromFormat("Could not parse expression syntax: %s", getExpressionError()));
 	}
-	if (!cpuDebug->parseExpression(postfix, val)) {
+	if (!parseExpression(cpuDebug, postfix, val)) {
 		return req.Fail(StringFromFormat("Could not evaluate expression: %s", getExpressionError()));
 	}
 

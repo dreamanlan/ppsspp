@@ -781,7 +781,8 @@ add_library(Common STATIC
 	Common/Input/InputState.cpp
 	Common/Input/InputState.h
 	Common/Math/fast/fast_matrix.c
-	Common/Math/CrossSIMD.h
+	Common/Math/SIMDHeaders.h
+	Common/Math/SIMDHeaders.h
 	Common/Math/curves.cpp
 	Common/Math/curves.h
 	Common/Math/expression_parser.cpp
@@ -810,6 +811,7 @@ add_library(Common STATIC
 	Common/Net/Resolve.h
 	Common/Net/Sinks.cpp
 	Common/Net/Sinks.h
+	Common/Net/SocketCompat.h
 	Common/Net/URL.cpp
 	Common/Net/URL.h
 	Common/Net/WebsocketServer.cpp
@@ -891,8 +893,6 @@ add_library(Common STATIC
 	Common/Log.cpp
 	Common/Log/ConsoleListener.cpp
 	Common/Log/ConsoleListener.h
-	Common/Log/StdioListener.cpp
-	Common/Log/StdioListener.h
 	Common/Log/LogManager.cpp
 	Common/Log/LogManager.h
 	Common/LogReporting.cpp
@@ -1528,6 +1528,8 @@ list(APPEND NativeAppSource
 	UI/ImDebugger/ImGe.h
 	UI/ImDebugger/ImDisasmView.cpp
 	UI/ImDebugger/ImDisasmView.h
+	UI/ImDebugger/ImMemView.cpp
+	UI/ImDebugger/ImMemView.h
 	UI/ImDebugger/ImStructViewer.cpp
 	UI/ImDebugger/ImStructViewer.h
 	UI/DiscordIntegration.cpp
@@ -1905,6 +1907,8 @@ set(GPU_SOURCES
 	GPU/Common/Draw2D.cpp
 	GPU/Common/Draw2D.h
 	GPU/Common/DepthBufferCommon.cpp
+	GPU/Common/DepthRaster.cpp
+	GPU/Common/DepthRaster.h
 	GPU/Common/TextureShaderCommon.cpp
 	GPU/Common/TextureShaderCommon.h
 	GPU/Common/DepalettizeShaderCommon.cpp
@@ -2112,6 +2116,8 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/Dialog/PSPNpSigninDialog.h
 	Core/Dialog/PSPOskDialog.cpp
 	Core/Dialog/PSPOskDialog.h
+	Core/Dialog/PSPOskConstants.cpp
+	Core/Dialog/PSPOskConstants.h
 	Core/Dialog/PSPPlaceholderDialog.cpp
 	Core/Dialog/PSPPlaceholderDialog.h
 	Core/Dialog/PSPSaveDialog.cpp
@@ -2170,6 +2176,10 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/HLE/AtracCtx.h
 	Core/HLE/AtracCtx2.cpp
 	Core/HLE/AtracCtx2.h
+	Core/HLE/NetInetConstants.cpp
+	Core/HLE/NetInetConstants.h
+	Core/HLE/SocketManager.cpp
+	Core/HLE/SocketManager.h
 	Core/HLE/sceAtrac.cpp
 	Core/HLE/sceAtrac.h
 	Core/HLE/sceAudio.cpp
@@ -2244,6 +2254,14 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/HLE/sceNet.h
 	Core/HLE/sceNetAdhoc.cpp
 	Core/HLE/sceNetAdhoc.h
+	Core/HLE/sceNetAdhocMatching.cpp
+	Core/HLE/sceNetAdhocMatching.h
+	Core/HLE/sceNetInet.cpp
+	Core/HLE/sceNetInet.h
+	Core/HLE/sceNetApctl.cpp
+	Core/HLE/sceNetApctl.h
+	Core/HLE/sceNetResolver.cpp
+	Core/HLE/sceNetResolver.h
 	Core/HLE/proAdhoc.h
 	Core/HLE/proAdhoc.cpp
 	Core/HLE/proAdhocServer.h
@@ -2459,6 +2477,11 @@ include_directories(ext/libchdr/include)
 
 target_link_libraries(${CoreLibName} Common native chdr kirk cityhash sfmt19937 xbrz xxhash rcheevos minimp3 at3_standalone lua ${GlslangLibs}
 	${CoreExtraLibs} ${OPENGL_LIBRARIES} ${X11_LIBRARIES} ${CMAKE_DL_LIBS})
+
+# Winsock
+if(WIN32)
+	target_link_libraries(${CoreLibName} ws2_32 winhttp)
+endif()
 
 if(NOT HTTPS_NOT_AVAILABLE)
 	target_link_libraries(${CoreLibName} naett)

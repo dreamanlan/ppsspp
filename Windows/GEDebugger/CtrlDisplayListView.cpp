@@ -217,7 +217,7 @@ void CtrlDisplayListView::onPaint(WPARAM wParam, LPARAM lParam)
 		DeleteObject(backgroundPen);
 
 		// display address/symbol
-		if (GPUBreakpoints::IsAddressBreakpoint(address))
+		if (gpuDebug->GetBreakpoints()->IsAddressBreakpoint(address))
 		{
 			textColor = 0x0000FF;
 			int yOffset = std::max(-1,(rowHeight-14+1)/2);
@@ -269,12 +269,12 @@ void CtrlDisplayListView::toggleBreakpoint()
 
 void CtrlDisplayListView::PromptBreakpointCond() {
 	std::string expression;
-	GPUBreakpoints::GetAddressBreakpointCond(curAddress, &expression);
+	gpuDebug->GetBreakpoints()->GetAddressBreakpointCond(curAddress, &expression);
 	if (!InputBox_GetString(GetModuleHandle(NULL), wnd, L"Expression", expression, expression))
 		return;
 
 	std::string error;
-	if (!GPUBreakpoints::SetAddressBreakpointCond(curAddress, expression, &error))
+	if (!gpuDebug->GetBreakpoints()->SetAddressBreakpointCond(curAddress, expression, &error))
 		MessageBox(wnd, ConvertUTF8ToWString(error).c_str(), L"Invalid expression", MB_OK | MB_ICONEXCLAMATION);
 }
 
@@ -318,7 +318,7 @@ void CtrlDisplayListView::onMouseUp(WPARAM wParam, LPARAM lParam, int button)
 	if (button == 2)
 	{
 		HMENU menu = GetContextMenu(ContextMenuID::DISPLAYLISTVIEW);
-		EnableMenuItem(menu, ID_GEDBG_SETCOND, GPUBreakpoints::IsAddressBreakpoint(curAddress) ? MF_ENABLED : MF_GRAYED);
+		EnableMenuItem(menu, ID_GEDBG_SETCOND, gpuDebug->GetBreakpoints()->IsAddressBreakpoint(curAddress) ? MF_ENABLED : MF_GRAYED);
 
 		switch (TriggerContextMenu(ContextMenuID::DISPLAYLISTVIEW, wnd, ContextPoint::FromEvent(lParam)))
 		{
@@ -341,7 +341,8 @@ void CtrlDisplayListView::onMouseUp(WPARAM wParam, LPARAM lParam, int button)
 				char *p = temp, *end = temp + space;
 				for (u32 pos = selectRangeStart; pos < selectRangeEnd && p < end; pos += instructionSize)
 				{
-					GPUDebugOp op = gpuDebug->DisassembleOp(pos);
+					u32 opcode = Memory::Read_U32(pos);
+					GPUDebugOp op = gpuDebug->DisassembleOp(pos, opcode);
 					p += snprintf(p, end - p, "%s\r\n", op.desc.c_str());
 				}
 

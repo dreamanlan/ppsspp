@@ -50,10 +50,14 @@ enum class ImGuiPipeline {
 // Textures are unregistered again in RenderDrawData. This is just simpler.
 IMGUI_IMPL_API ImTextureID ImGui_ImplThin3d_AddTextureTemp(Draw::Texture *texture, ImGuiPipeline pipeline = ImGuiPipeline::TexturedAlphaBlend);
 IMGUI_IMPL_API ImTextureID ImGui_ImplThin3d_AddNativeTextureTemp(void *texture, ImGuiPipeline pipeline = ImGuiPipeline::TexturedAlphaBlend);
-IMGUI_IMPL_API ImTextureID ImGui_ImplThin3d_AddFBAsTextureTemp(Draw::Framebuffer *framebuffer, Draw::FBChannel aspect = Draw::FB_COLOR_BIT, ImGuiPipeline pipeline = ImGuiPipeline::TexturedAlphaBlend);
+IMGUI_IMPL_API ImTextureID ImGui_ImplThin3d_AddFBAsTextureTemp(Draw::Framebuffer *framebuffer, Draw::Aspect aspect = Draw::Aspect::COLOR_BIT, ImGuiPipeline pipeline = ImGuiPipeline::TexturedAlphaBlend);
 
 void ImGui_PushFixedFont();
 void ImGui_PopFont();
+
+// To get metrics etc.
+ImFont *ImGui_GetFixedFont();
+
 
 // Helper structure to hold the data needed by one rendering context into one OS window
 // (Used by example's main.cpp. Used by multi-viewport features. Probably NOT used by your own engine/app.)

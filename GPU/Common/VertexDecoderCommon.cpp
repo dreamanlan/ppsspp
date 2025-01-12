@@ -15,19 +15,18 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include <algorithm>
-#include <cstdio>
-
 #include "ppsspp_config.h"
 
+#include <algorithm>
+#include <vector>
+#include <string>
+
 #include "Common/CommonTypes.h"
-#include "Common/CPUDetect.h"
 #include "Common/Data/Convert/ColorConv.h"
 #include "Common/Log.h"
 #include "Common/LogReporting.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
-#include "Core/MemMap.h"
 #include "Core/HDRemaster.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
 #include "Core/Util/AudioFormat.h"  // for clamp_u8
@@ -186,7 +185,7 @@ void PrintDecodedVertex(const VertexReader &vtx) {
 	}
 	// Etc..
 	float pos[3];
-	vtx.ReadPos(pos);
+	vtx.ReadPosAuto(pos);
 	printf("P: %f %f %f\n", pos[0], pos[1], pos[2]);
 }
 
@@ -1125,7 +1124,7 @@ void VertexDecoder::SetVertexType(u32 fmt, const VertexDecoderOptions &options, 
 		DEBUG_LOG(Log::G3D, "VTYPE: THRU=%i TC=%i COL=%i POS=%i NRM=%i WT=%i NW=%i IDX=%i MC=%i", (int)throughmode, tc, col, pos, nrm, weighttype, nweights, idx, morphcount);
 	}
 
-	skinInDecode = weighttype != 0 && options.applySkinInDecode;
+	skinInDecode = weighttype != 0 && VertTypeIDSkinInDecode(fmt);
 
 	if (weighttype) { // && nweights?
 		weightoff = size;
@@ -1182,7 +1181,8 @@ void VertexDecoder::SetVertexType(u32 fmt, const VertexDecoderOptions &options, 
 
 		// NOTE: That we check getUVGenMode here means that we must include it in the decoder ID!
 		// throughmode is automatically included though, because it's part of the vertType.
-		if (!throughmode && (gstate.getUVGenMode() == GE_TEXMAP_TEXTURE_COORDS || gstate.getUVGenMode() == GE_TEXMAP_UNKNOWN)) {
+		GETexMapMode mode = VertTypeIDUVGenMode(fmt);
+		if (!throughmode && (mode == GE_TEXMAP_TEXTURE_COORDS || mode == GE_TEXMAP_UNKNOWN)) {
 			if (g_DoubleTextureCoordinates)
 				steps_[numSteps_++] = morphcount == 1 ? tcstep_prescale_remaster[tc] : tcstep_prescale_morph_remaster[tc];
 			else
@@ -1420,8 +1420,8 @@ static bool DecodedVertsAreSimilar(const VertexReader &vtx1, const VertexReader 
 			return false;
 		}
 	}
-	vtx1.ReadPos(vec1.AsArray());
-	vtx2.ReadPos(vec2.AsArray());
+	vtx1.ReadPosAuto(vec1.AsArray());
+	vtx2.ReadPosAuto(vec2.AsArray());
 	float diff = LargestAbsDiff(vec1, vec2, 3);
 	if (diff >= 1.0 / 512.0f) {
 		WARN_LOG(Log::G3D, "Pos diff %f", diff);

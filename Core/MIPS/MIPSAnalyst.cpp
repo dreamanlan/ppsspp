@@ -17,8 +17,6 @@
 
 #include "ppsspp_config.h"
 #include <algorithm>
-#include <map>
-#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <mutex>
@@ -1424,7 +1422,7 @@ skip:
 		return vec;
 	}
 
-	MipsOpcodeInfo GetOpcodeInfo(DebugInterface* cpu, u32 address) {
+	MipsOpcodeInfo GetOpcodeInfo(DebugInterface *cpu, u32 address) {
 		MipsOpcodeInfo info;
 		memset(&info, 0, sizeof(info));
 

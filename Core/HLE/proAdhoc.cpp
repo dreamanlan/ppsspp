@@ -23,37 +23,11 @@
 
 #include "ppsspp_config.h"
 
-#if defined(_WIN32)
-#include <WinSock2.h>
-#include "Common/CommonWindows.h"
-#endif
-
-#if !defined(_WIN32)
-#include <unistd.h>
-#include <netinet/tcp.h>
-#include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#if !PPSSPP_PLATFORM(SWITCH)
-#include <ifaddrs.h>
-#endif // !PPSSPP_PLATFORM(SWITCH)
-#endif
-
-#ifndef MSG_NOSIGNAL
-// Default value to 0x00 (do nothing) in systems where it's not supported.
-#define MSG_NOSIGNAL 0x00
-#endif
-
-#if defined(HAVE_LIBNX) || PPSSPP_PLATFORM(SWITCH)
-#undef __BSD_VISIBLE
-#define __BSD_VISIBLE 1
-#include <switch.h>
-#define TCP_MAXSEG 2
-#endif // defined(HAVE_LIBNX) || PPSSPP_PLATFORM(SWITCH)
-
 #include <algorithm>
 #include <mutex>
 #include <cstring>
+
+#include "Common/Net/SocketCompat.h"
 
 #include "Common/Data/Text/I18n.h"
 #include "Common/Data/Text/Parsers.h"
@@ -75,7 +49,6 @@
 #include "Core/CoreTiming.h"
 #include "Core/Core.h"
 #include "Core/HLE/sceKernelInterrupt.h"
-#include "Core/HLE/sceKernelThread.h"
 #include "Core/HLE/sceKernelMemory.h"
 #include "Core/HLE/sceNetAdhoc.h"
 #include "Core/Instance.h"
@@ -88,7 +61,8 @@
 
 uint16_t portOffset;
 uint32_t minSocketTimeoutUS;
-uint32_t fakePoolSize                 = 0;
+uint32_t fakePoolSize = 0;
+SceNetMallocStat netAdhocPoolStat = {};
 SceNetAdhocMatchingContext * contexts = NULL;
 char* dummyPeekBuf64k                 = NULL;
 int dummyPeekBuf64kSize               = 65536;
@@ -119,7 +93,9 @@ int actionAfterMatchingMipsCall;
 // Broadcast MAC
 uint8_t broadcastMAC[ETHER_ADDR_LEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
+// NOTE: This does not need to be managed by the socket manager - not exposed to the game.
 std::atomic<int> metasocket((int)INVALID_SOCKET);
+
 SceNetAdhocctlParameter parameter;
 SceNetAdhocctlAdhocId product_code;
 std::thread friendFinderThread;
@@ -306,6 +282,7 @@ SceNetAdhocctlPeerInfo* findFriendByIP(uint32_t ip) {
 	return peer;
 }
 
+// fd is a host socket
 int IsSocketReady(int fd, bool readfd, bool writefd, int* errorcode, int timeoutUS) {
 	fd_set readfds, writefds;
 	timeval tval;
@@ -338,7 +315,7 @@ int IsSocketReady(int fd, bool readfd, bool writefd, int* errorcode, int timeout
 	// Note: select will flags an unconnected TCP socket (ie. a freshly created socket without connecting first, or when connect failed with ECONNREFUSED on linux) as writeable/readable, thus can't be used to tell whether the connection has established or not.
 	int ret = select(fd + 1, readfd? &readfds: nullptr, writefd? &writefds: nullptr, nullptr, &tval);
 	if (errorcode != nullptr)
-		*errorcode = (ret < 0? errno: 0);
+		*errorcode = (ret < 0 ? socket_errno : 0);
 
 	return ret;
 }
@@ -1271,36 +1248,6 @@ void notifyAdhocctlHandlers(u32 flag, u32 error) {
 	__UpdateAdhocctlHandlers(flag, error);
 }
 
-// Matching callback is void function: typedef void(*SceNetAdhocMatchingHandler)(int id, int event, SceNetEtherAddr * peer, int optlen, void * opt);
-// Important! The MIPS call need to be fully executed before the next MIPS call invoked, as the game (ie. DBZ Tag Team) may need to prepare something for the next callback event to use
-// Note: Must not lock peerlock within this function to prevent race-condition with other thread whos owning peerlock and trying to lock context->eventlock owned by this thread
-void notifyMatchingHandler(SceNetAdhocMatchingContext * context, ThreadMessage * msg, void * opt, u32_le &bufAddr, u32_le &bufLen, u32_le * args) {
-	// Don't share buffer address space with other mipscall in the queue since mipscalls aren't immediately executed
-	MatchingArgs argsNew = { 0 };
-	u32_le dataBufLen = msg->optlen + 8; //max(bufLen, msg->optlen + 8);
-	u32_le dataBufAddr = userMemory.Alloc(dataBufLen); // We will free this memory after returning from mipscall. FIXME: Are these buffers supposed to be taken/pre-allocated from the memory pool during sceNetAdhocMatchingInit?
-	uint8_t *dataPtr = Memory::GetPointerWriteRange(dataBufAddr, dataBufLen);
-	if (dataPtr) {
-		memcpy(dataPtr, &msg->mac, sizeof(msg->mac));
-		if (msg->optlen > 0)
-			memcpy(dataPtr + 8, opt, msg->optlen);
-		
-		argsNew.data[1] = msg->opcode;
-		argsNew.data[2] = dataBufAddr;
-		argsNew.data[3] = msg->optlen;
-		argsNew.data[4] = dataBufAddr + 8; // OptData Addr
-	}
-	else {
-		argsNew.data[1] = PSP_ADHOC_MATCHING_EVENT_ERROR; // not sure where to put the error code for EVENT_ERROR tho
-		//argsNew.data[2] = dataBufAddr; // FIXME: Is the MAC address mandatory (ie. can't be null pointer) even for EVENT_ERROR? Where should we put this MAC data in the case we failed to allocate the memory? may be on the memory pool?
-	}
-	argsNew.data[0] = context->id;	
-	argsNew.data[5] = context->handler.entryPoint; //not part of callback argument, just borrowing a space to store callback address so i don't need to search the context first later
-	
-	// ScheduleEvent_Threadsafe_Immediate seems to get mixed up with interrupt (returning from mipscall inside an interrupt) and getting invalid address before returning from interrupt
-	__UpdateMatchingHandler(argsNew);
-}
-
 void freeFriendsRecursive(SceNetAdhocctlPeerInfo * node, int32_t* count) {
 	// End of List
 	if (node == NULL) return;
@@ -1327,7 +1274,7 @@ void timeoutFriendsRecursive(SceNetAdhocctlPeerInfo * node, int32_t* count) {
 }
 
 void sendChat(const std::string &chatString) {
-	SceNetAdhocctlChatPacketC2S chat;
+	SceNetAdhocctlChatPacketC2S chat{};
 	chat.base.opcode = OPCODE_CHAT;
 	//TODO check network inited, check send success or not, chatlog.pushback error on failed send, pushback error on not connected
 	if (friendFinderRunning) {
@@ -1373,7 +1320,7 @@ int GetChatMessageCount() {
 }
 
 // TODO: We should probably change this thread into PSPThread (or merging it into the existing AdhocThread PSPThread) as there are too many global vars being used here which also being used within some HLEs
-int friendFinder(){
+int friendFinder() {
 	SetCurrentThreadName("FriendFinder");
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
 	// Receive Buffer
@@ -1454,7 +1401,7 @@ int friendFinder(){
 				// Send Ping to Server, may failed with socket error 10054/10053 if someone else with the same IP already connected to AdHoc Server (the server might need to be modified to differentiate MAC instead of IP)
 				if (IsSocketReady((int)metasocket, false, true) > 0) {
 					int iResult = (int)send((int)metasocket, (const char*)&opcode, 1, MSG_NOSIGNAL);
-					int error = errno;
+					int error = socket_errno;
 					// KHBBS seems to be getting error 10053 often
 					if (iResult == SOCKET_ERROR) {
 						ERROR_LOG(Log::sceNet, "FriendFinder: Socket Error (%i) when sending OPCODE_PING", error);
@@ -1512,8 +1459,8 @@ int friendFinder(){
 						SceNetAdhocctlConnectBSSIDPacketS2C* packet = (SceNetAdhocctlConnectBSSIDPacketS2C*)rx;
 
 						INFO_LOG(Log::sceNet, "FriendFinder: Incoming OPCODE_CONNECT_BSSID [%s]", mac2str(&packet->mac).c_str());
-						// Update User BSSID
-						parameter.bssid.mac_addr = packet->mac; // This packet seems to contains Adhoc Group Creator's BSSID (similar to AP's BSSID) so it shouldn't get mixed up with local MAC address
+						// Update Group BSSID
+						parameter.bssid.mac_addr = packet->mac; // This packet seems to contains Adhoc Group Creator's BSSID (similar to AP's BSSID) so it shouldn't get mixed up with local MAC address. Note: On JPCSP + prx files params.bssid is hardcoded to "Jpcsp\0" and doesn't match to any of player's mac
 
 						// From JPCSP: Some games have problems when the PSP_ADHOCCTL_EVENT_CONNECTED is sent too quickly after connecting to a network. The connection will be set CONNECTED with a small delay (200ms or 200us?)
 						// Notify Event Handlers
@@ -1866,6 +1813,7 @@ int getLocalIp(sockaddr_in* SocketAddress) {
 	}
 
 #else // Alternative way
+	// Socket doesn't "leak" to the game.
 	int sock = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sock != SOCKET_ERROR) {
 		const char* kGoogleDnsIp = "8.8.8.8"; // Needs to be an IP string so it can be resolved as fast as possible to IP, doesn't need to be reachable
@@ -1932,8 +1880,20 @@ bool isPrivateIP(uint32_t ip) {
 	return false;
 }
 
+bool isAPIPA(uint32_t ip) {
+	return (((uint8_t*)&ip)[0] == 169 && ((uint8_t*)&ip)[1] == 254);
+}
+
 bool isLoopbackIP(uint32_t ip) {
 	return ((uint8_t*)&ip)[0] == 0x7f;
+}
+
+bool isMulticastIP(uint32_t ip) {
+	return ((ip & 0xF0) == 0xE0);
+}
+
+bool isBroadcastIP(uint32_t ip, const uint32_t subnetmask) {
+	return (ip == (ip | (~subnetmask)));
 }
 
 void getLocalMac(SceNetEtherAddr * addr){
@@ -1989,14 +1949,18 @@ int getSockMaxSize(int udpsock) {
 }
 
 int getSockBufferSize(int sock, int opt) { // opt = SO_RCVBUF/SO_SNDBUF
-	int n = PSP_ADHOC_PDP_MFS; // 16384;
+	int n = PSP_ADHOC_PDP_MFS*2; // 16384; // The value might be twice of the value being set using setsockopt
 	socklen_t m = sizeof(n);
-	getsockopt(sock, SOL_SOCKET, opt, (char *)&n, &m); // in linux the value is twice of the value being set using setsockopt
-	return (n/2);
+	getsockopt(sock, SOL_SOCKET, opt, (char *)&n, &m);
+	return (n);
 }
 
 int setSockBufferSize(int sock, int opt, int size) { // opt = SO_RCVBUF/SO_SNDBUF
-	int n = size; // 8192; //16384
+	int n = size; // 8192;
+	switch (opt) {
+		case SO_RCVBUF: n = std::max(size, 128); break; // FIXME: The minimum (doubled) value for SO_RCVBUF is 256 ? (2048+MTU+padding on newer OS? TCP_SKB_MIN_TRUESIZE)
+		case SO_SNDBUF: n = std::max(size, 1024); break; // FIXME: The minimum (doubled) value for SO_SNDBUF is 2048 ? (twice the minimum of SO_RCVBUF on newer OS? TCP_SKB_MIN_TRUESIZE * 2)
+	}
 	return setsockopt(sock, SOL_SOCKET, opt, (char *)&n, sizeof(n));
 }
 
@@ -2024,7 +1988,7 @@ int getSockError(int sock) {
 	int result = 0;
 	socklen_t result_len = sizeof(result);
 	if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&result, &result_len) < 0) {
-		result = errno;
+		result = socket_errno;
 	}
 	return result;
 }
@@ -2237,7 +2201,7 @@ int initNetwork(SceNetAdhocctlAdhocId *adhoc_id){
 	int cnt = 0;
 	DEBUG_LOG(Log::sceNet, "InitNetwork: Connecting to AdhocServer");
 	iResult = connect((int)metasocket, &g_adhocServerIP.addr, sizeof(g_adhocServerIP));
-	errorcode = errno;
+	errorcode = socket_errno;
 
 	if (iResult == SOCKET_ERROR && errorcode != EISCONN) {
 		u64 startTime = (u64)(time_now_d() * 1000000.0);
@@ -2369,23 +2333,23 @@ bool resolveMAC(SceNetEtherAddr* mac, uint32_t* ip, u16* port_offset) {
 	return false;
 }
 
-bool validNetworkName(const SceNetAdhocctlGroupName * group_name) {
+bool validNetworkName(const char *data) {
 	// Result
 	bool valid = true;
 
 	// Name given
-	if (group_name != NULL) {
+	if (data != NULL) {
 		// Iterate Name Characters
 		for (int i = 0; i < ADHOCCTL_GROUPNAME_LEN && valid; i++) {
 			// End of Name
-			if (group_name->data[i] == 0) break;
+			if (data[i] == 0) break;
 
 			// Not a digit
-			if (group_name->data[i] < '0' || group_name->data[i] > '9') {
+			if (data[i] < '0' || data[i] > '9') {
 				// Not 'A' to 'Z'
-				if (group_name->data[i] < 'A' || group_name->data[i] > 'Z') {
+				if (data[i] < 'A' || data[i] > 'Z') {
 					// Not 'a' to 'z'
-					if (group_name->data[i] < 'a' || group_name->data[i] > 'z') {
+					if (data[i] < 'a' || data[i] > 'z') {
 						// Invalid Name
 						valid = false;
 					}

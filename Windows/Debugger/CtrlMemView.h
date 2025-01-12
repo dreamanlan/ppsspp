@@ -1,16 +1,10 @@
 #pragma once
 
 //////////////////////////////////////////////////////////////////////////
-//CtrlDisAsmView
-// CtrlDisAsmView.cpp
+// CtrlMemView
 //////////////////////////////////////////////////////////////////////////
-//This Win32 control is made to be flexible and usable with
-//every kind of CPU architecture that has fixed width instruction words.
-//Just supply it an instance of a class derived from Debugger, with all methods
-//overridden for full functionality.
-//
 //To add to a dialog box, just draw a User Control in the dialog editor,
-//and set classname to "CtrlDisAsmView". you also need to call CtrlDisAsmView::init()
+//and set classname to "CtrlMemView". you also need to call CtrlMemView::init()
 //before opening this dialog, to register the window class.
 //
 //To get a class instance to be able to access it, just use getFrom(HWND wnd).
@@ -19,6 +13,7 @@
 #include <vector>
 #include "Core/Debugger/DebugInterface.h"
 #include "Core/Debugger/MemBlockInfo.h"
+#include "Core/MIPS/MIPSDebugInterface.h"
 
 enum OffsetSpacing {
 	offsetSpace = 3, // the number of blank lines that should be left to make space for the offsets
@@ -40,10 +35,10 @@ public:
 	static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 	static CtrlMemView *getFrom(HWND wnd);
 
-	void setDebugger(DebugInterface *deb) {
+	void setDebugger(MIPSDebugInterface *deb) {
 		debugger_ = deb;
 	}
-	DebugInterface *getDebugger() {
+	MIPSDebugInterface *getDebugger() {
 		return debugger_;
 	}
 	std::vector<u32> searchString(const std::string &searchQuery);
@@ -80,7 +75,7 @@ private:
 	void ScrollCursor(int bytes, GotoMode mdoe);
 
 	static wchar_t szClassName[];
-	DebugInterface *debugger_ = nullptr;
+	MIPSDebugInterface *debugger_ = nullptr;
 
 	HWND wnd;
 	HFONT font;

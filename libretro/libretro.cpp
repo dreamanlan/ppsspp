@@ -16,7 +16,6 @@
 #include "Common/TimeUtil.h"
 #include "Common/File/FileUtil.h"
 #include "Common/Serialize/Serializer.h"
-#include "Common/Log/StdioListener.h"
 #include "Common/Input/InputState.h"
 #include "Common/Thread/ThreadUtil.h"
 #include "Common/Thread/ThreadManager.h"
@@ -292,41 +291,27 @@ namespace Libretro
 
 using namespace Libretro;
 
-class PrintfLogger : public LogListener
-{
-   public:
-      PrintfLogger(retro_log_callback log) : log_(log.log) {}
-      void Log(const LogMessage &message)
-      {
-         switch (message.level)
-         {
-            case LogLevel::LVERBOSE:
-            case LogLevel::LDEBUG:
-               log_(RETRO_LOG_DEBUG, "[%s] %s",
-                     message.log, message.msg.c_str());
-               break;
+void RetroLogCallback(const LogMessage &message, void *userdata) {
+   retro_log_printf_t fn = (retro_log_printf_t)userdata;
+   switch (message.level) {
+   case LogLevel::LVERBOSE:
+   case LogLevel::LDEBUG:
+      (fn)(RETRO_LOG_DEBUG, "[%s] %s", message.log, message.msg.c_str());
+      break;
 
-            case LogLevel::LERROR:
-               log_(RETRO_LOG_ERROR, "[%s] %s",
-                     message.log, message.msg.c_str());
-               break;
-            case LogLevel::LNOTICE:
-            case LogLevel::LWARNING:
-               log_(RETRO_LOG_WARN, "[%s] %s",
-                     message.log, message.msg.c_str());
-               break;
-            case LogLevel::LINFO:
-            default:
-               log_(RETRO_LOG_INFO, "[%s] %s",
-                     message.log, message.msg.c_str());
-               break;
-         }
-      }
-
-   private:
-      retro_log_printf_t log_;
-};
-static PrintfLogger *printfLogger;
+   case LogLevel::LERROR:
+      (fn)(RETRO_LOG_ERROR, "[%s] %s", message.log, message.msg.c_str());
+      break;
+   case LogLevel::LNOTICE:
+   case LogLevel::LWARNING:
+      (fn)(RETRO_LOG_WARN, "[%s] %s", message.log, message.msg.c_str());
+      break;
+   case LogLevel::LINFO:
+   default:
+      (fn)(RETRO_LOG_INFO, "[%s] %s", message.log, message.msg.c_str());
+      break;
+   }
+}
 
 static bool set_variable_visibility(void)
 {
@@ -715,7 +700,6 @@ static void check_variables(CoreParameter &coreParam)
          g_Config.iInternalResolution = 1;
    }
 
-#if 0 // see issue #16786
    var.key = "ppsspp_mulitsample_level";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
@@ -730,7 +714,6 @@ static void check_variables(CoreParameter &coreParam)
       else if (!strcmp(var.value, "x8"))
          g_Config.iMultiSampleLevel = 3;
    }
-#endif
 
    var.key = "ppsspp_cropto16x9";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -787,11 +770,11 @@ static void check_variables(CoreParameter &coreParam)
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
       if (!strcmp(var.value, "No buffer"))
-         g_Config.iInflightFrames = 0;
-      else if (!strcmp(var.value, "Up to 1"))
          g_Config.iInflightFrames = 1;
-      else if (!strcmp(var.value, "Up to 2"))
+      else if (!strcmp(var.value, "Up to 1"))
          g_Config.iInflightFrames = 2;
+      else if (!strcmp(var.value, "Up to 2"))
+         g_Config.iInflightFrames = 3;
    }
 
    var.key = "ppsspp_skip_buffer_effects";
@@ -1158,7 +1141,6 @@ static void check_variables(CoreParameter &coreParam)
          gpu->NotifyDisplayResized();
    }
 
-#if 0 // see issue #16786
    if (g_Config.iMultiSampleLevel != iMultiSampleLevel_prev && PSP_IsInited())
    {
       if (gpu)
@@ -1166,7 +1148,6 @@ static void check_variables(CoreParameter &coreParam)
          gpu->NotifyRenderResized();
       }
    }
-#endif
 
    if (updateAvInfo)
    {
@@ -1211,11 +1192,8 @@ void retro_init(void)
    {
       log_cb = log.log;
       g_logManager.Init(&g_Config.bEnableLogging);
-      printfLogger = new PrintfLogger(log);
-      g_logManager.RemoveListener(g_logManager.GetStdioListener());
-      g_logManager.RemoveListener(g_logManager.GetDebuggerListener());
-      g_logManager.ChangeFileLog(nullptr);
-      g_logManager.AddListener(printfLogger);
+      g_logManager.SetOutputsEnabled(LogOutput::ExternalCallback);
+      g_logManager.SetExternalLogCallback(&RetroLogCallback, (void *)log_cb);
    }
 
    VsyncSwapIntervalReset();
@@ -1286,9 +1264,6 @@ void retro_deinit(void)
    g_threadManager.Teardown();
    g_logManager.Shutdown();
    log_cb = NULL;
-
-   delete printfLogger;
-   printfLogger = nullptr;
 
    libretro_supports_bitmasks = false;
 
@@ -1509,10 +1484,8 @@ bool retro_load_game(const struct retro_game_info *game)
 
    // Show/hide 'MSAA' and 'Texture Shader' options, Vulkan only
    option_display.visible = (g_Config.iGPUBackend == (int)GPUBackend::VULKAN);
-#if 0 // see issue #16786
    option_display.key = "ppsspp_mulitsample_level";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
-#endif
    option_display.key = "ppsspp_texture_shader";
    environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
 

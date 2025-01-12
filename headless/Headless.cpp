@@ -12,6 +12,8 @@
 #include <jni.h>
 #endif
 
+#include <algorithm>
+
 #include "Common/Profiler/Profiler.h"
 #include "Common/System/NativeApp.h"
 #include "Common/System/Request.h"
@@ -30,6 +32,7 @@
 #include "Common/File/FileUtil.h"
 #include "Common/GraphicsContext.h"
 #include "Common/TimeUtil.h"
+#include "Common/StringUtils.h"
 #include "Common/Thread/ThreadManager.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
@@ -65,33 +68,6 @@ jclass findClass(const char *name) {
 bool System_AudioRecordingIsAvailable() { return false; }
 bool System_AudioRecordingState() { return false; }
 #endif
-
-class PrintfLogger : public LogListener {
-public:
-	void Log(const LogMessage &message) override {
-		switch (message.level) {
-		case LogLevel::LVERBOSE:
-			fprintf(stderr, "V %s", message.msg.c_str());
-			break;
-		case LogLevel::LDEBUG:
-			fprintf(stderr, "D %s", message.msg.c_str());
-			break;
-		case LogLevel::LINFO:
-			fprintf(stderr, "I %s", message.msg.c_str());
-			break;
-		case LogLevel::LERROR:
-			fprintf(stderr, "E %s", message.msg.c_str());
-			break;
-		case LogLevel::LWARNING:
-			fprintf(stderr, "W %s", message.msg.c_str());
-			break;
-		case LogLevel::LNOTICE:
-		default:
-			fprintf(stderr, "N %s", message.msg.c_str());
-			break;
-		}
-	}
-};
 
 // Temporary hacks around annoying linking errors.
 void NativeFrame(GraphicsContext *graphicsContext) { }
@@ -320,6 +296,34 @@ std::vector<std::string> ReadFromListFile(const std::string &listFilename) {
 	return testFilenames;
 }
 
+static void AddRecursively(std::vector<std::string> *tests, Path actualPath) {
+	// TODO: Some file systems can optimize this.
+	std::vector<File::FileInfo> fileInfo;
+	if (!File::GetFilesInDir(actualPath, &fileInfo, "prx")) {
+		return;
+	}
+	for (const auto &file : fileInfo) {
+		if (file.isDirectory) {
+			AddRecursively(tests, actualPath / file.name);
+		} else if (file.name != "Makefile") {  // hack around filter problem
+			tests->push_back((actualPath / file.name).ToString());
+		}
+	}
+}
+
+static void AddTestsByPath(std::vector<std::string> *tests, std::string_view path) {
+	if (endsWith(path, "/...")) {
+		path = path.substr(0, path.size() - 4);
+		// Recurse for tests
+		AddRecursively(tests, Path(path));
+	} /* else if (File::IsDirectory(Path(path))) {
+		// Alternate syntax - just specify the path.
+		AddRecursively(tests, Path(path));
+	} */ else {
+		tests->push_back(std::string(path));
+	}
+}
+
 int main(int argc, const char* argv[])
 {
 	PROFILE_INIT();
@@ -348,6 +352,7 @@ int main(int argc, const char* argv[])
 	bool outputDebugStringLog = false;
 
 	std::vector<std::string> testFilenames;
+	std::vector<std::string> ignoredTests;
 	const char *mountIso = nullptr;
 	const char *mountRoot = nullptr;
 	const char *screenshotFilename = nullptr;
@@ -424,19 +429,33 @@ int main(int argc, const char* argv[])
 			stateToLoad = argv[i] + strlen("--state=");
 		else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h"))
 			return printUsage(argv[0], NULL);
-		else
-			testFilenames.push_back(argv[i]);
+		else if (!strcmp(argv[i], "--ignore")) {
+			if (++i >= argc)
+				return printUsage(argv[0], "Missing argument after --ignore");
+			ignoredTests.push_back(argv[i]);
+		} else {
+			AddTestsByPath(&testFilenames, argv[i]);
+		}
 	}
 
 	if (testFilenames.size() == 1 && testFilenames[0][0] == '@')
 		testFilenames = ReadFromListFile(testFilenames[0].substr(1));
+
+	// Remove any ignored tests.
+	testFilenames.erase(
+		std::remove_if(
+			testFilenames.begin(),
+			testFilenames.end(),
+			[&ignoredTests](const std::string& item) { return std::find(ignoredTests.begin(), ignoredTests.end(), item) != ignoredTests.end(); }
+		),
+		testFilenames.end()
+	);
 
 	if (testFilenames.empty())
 		return printUsage(argv[0], argc <= 1 ? NULL : "No executables specified");
 
 	g_Config.bEnableLogging = (fullLog || outputDebugStringLog);
 	g_logManager.Init(&g_Config.bEnableLogging, outputDebugStringLog);
-	PrintfLogger *printfLogger = new PrintfLogger();
 
 	for (int i = 0; i < (int)Log::NUMBER_OF_LOGS; i++) {
 		Log type = (Log)i;
@@ -445,7 +464,7 @@ int main(int argc, const char* argv[])
 	}
 	if (fullLog) {
 		// Only with --log, add the printfLogger.
-		g_logManager.AddListener(printfLogger);
+		g_logManager.EnableOutput(LogOutput::Printf);
 	}
 
 	// Needs to be after log so we don't interfere with test output.
@@ -629,7 +648,6 @@ int main(int argc, const char* argv[])
 
 	g_VFS.Clear();
 	g_logManager.Shutdown();
-	delete printfLogger;
 
 #if PPSSPP_PLATFORM(WINDOWS)
 	timeEndPeriod(1);

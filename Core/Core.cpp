@@ -17,17 +17,12 @@
 
 #include "ppsspp_config.h"
 
-#include <set>
-#include <chrono>
 #include <cstdint>
 #include <mutex>
+#include <set>
 #include <condition_variable>
 
-#include "Common/System/NativeApp.h"
 #include "Common/System/System.h"
-#include "Common/System/Display.h"
-#include "Common/TimeUtil.h"
-#include "Common/Thread/ThreadUtil.h"
 #include "Common/Profiler/Profiler.h"
 
 #include "Common/GraphicsContext.h"
@@ -166,6 +161,7 @@ bool Core_GetPowerSaving() {
 void Core_RunLoopUntil(u64 globalticks) {
 	while (true) {
 		switch (coreState) {
+		case CORE_POWERUP:
 		case CORE_POWERDOWN:
 		case CORE_BOOT_ERROR:
 		case CORE_RUNTIME_ERROR:
@@ -186,24 +182,22 @@ void Core_RunLoopUntil(u64 globalticks) {
 			break;  // Will loop around to go to RUNNING_GE or NEXTFRAME, which will exit.
 		case CORE_RUNNING_GE:
 			switch (gpu->ProcessDLQueue()) {
-			case DLResult::Break:
-				GPUStepping::EnterStepping();
+			case DLResult::DebugBreak:
+				GPUStepping::EnterStepping(coreState);
 				break;
 			case DLResult::Error:
-				// We should elegantly report the error, or I guess ignore it.
+				// We should elegantly report the error somehow, or I guess ignore it.
 				hleFinishSyscallAfterGe();
 				coreState = preGeCoreState;
 				break;
-			case DLResult::Stall:
 			case DLResult::Done:
 				// Done executing for now
 				hleFinishSyscallAfterGe();
 				coreState = preGeCoreState;
 				break;
 			default:
+				// Not a valid return value.
 				_dbg_assert_(false);
-				hleFinishSyscallAfterGe();
-				coreState = preGeCoreState;
 				break;
 			}
 			break;
@@ -395,8 +389,8 @@ void Core_Break(const char *reason, u32 relatedAddress) {
 		return;
 	}
 
-	// Stop the tracer
 	{
+		// Stop the tracer
 		std::lock_guard<std::mutex> lock(g_stepMutex);
 		if (!g_cpuStepCommand.empty() && Core_IsStepping()) {
 			// If we're in a failed step that uses a temp breakpoint, we need to be able to override it here.

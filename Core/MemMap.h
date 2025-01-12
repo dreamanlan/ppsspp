@@ -248,7 +248,16 @@ u8* GetPointerWrite(const u32 address);
 const u8* GetPointer(const u32 address);
 
 u8 *GetPointerWriteRange(const u32 address, const u32 size);
+template<typename T>
+T* GetTypedPointerWriteRange(const u32 address, const u32 size) {
+	return reinterpret_cast<T*>(GetPointerWriteRange(address, size));
+}
+
 const u8 *GetPointerRange(const u32 address, const u32 size);
+template<typename T>
+const T* GetTypedPointerRange(const u32 address, const u32 size) {
+	return reinterpret_cast<const T*>(GetPointerRange(address, size));
+}
 
 bool IsRAMAddress(const u32 address);
 inline bool IsVRAMAddress(const u32 address) {
@@ -488,6 +497,10 @@ struct PSPPointer
 
 	bool IsValid() const {
 		return Memory::IsValidRange(ptr, (u32)sizeof(T));
+	}
+
+	void FillWithZero() {
+		memset(Memory::GetPointerWrite(ptr), 0, sizeof(T));
 	}
 
 	T *PtrOrNull() {

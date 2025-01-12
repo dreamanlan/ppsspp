@@ -86,6 +86,9 @@
     <Filter Include="Ext\libzip">
       <UniqueIdentifier>{1ad7ee67-c496-4709-bf98-cad322fe5d97}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Net">
+      <UniqueIdentifier>{4341253d-564e-490a-9780-179786e7ab2a}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -457,6 +460,9 @@
       <Filter>HLE</Filter>
     </ClCompile>
     <ClCompile Include="..\..\Core\HLE\sceNetAdhoc.cpp">
+      <Filter>HLE</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\Core\HLE\sceNetAdhocMatching.cpp">
       <Filter>HLE</Filter>
     </ClCompile>
     <ClCompile Include="..\..\Core\HLE\sceNp.cpp">
@@ -1205,6 +1211,24 @@
     <ClCompile Include="..\..\Core\HLE\AtracCtx2.cpp">
       <Filter>HLE</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\Core\Dialog\PSPOskConstants.cpp">
+      <Filter>Dialog</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\Core\HLE\sceNetApctl.cpp">
+      <Filter>HLE</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\Core\HLE\sceNetInet.cpp">
+      <Filter>HLE</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\Core\HLE\sceNetResolver.cpp">
+      <Filter>HLE</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\Core\HLE\NetInetConstants.cpp">
+      <Filter>HLE</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\Core\HLE\SocketManager.cpp">
+      <Filter>HLE</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -1523,6 +1547,9 @@
       <Filter>HLE</Filter>
     </ClInclude>
     <ClInclude Include="..\..\Core\HLE\sceNetAdhoc.h">
+      <Filter>HLE</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Core\HLE\sceNetAdhocMatching.h">
       <Filter>HLE</Filter>
     </ClInclude>
     <ClInclude Include="..\..\Core\HLE\sceNp.h">
@@ -1895,6 +1922,24 @@
       <Filter>HLE</Filter>
     </ClInclude>
     <ClInclude Include="..\..\Core\HLE\AtracCtx2.h">
+      <Filter>HLE</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Core\Dialog\PSPOskConstants.h">
+      <Filter>Dialog</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Core\HLE\sceNetApctl.h">
+      <Filter>HLE</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Core\HLE\sceNetInet.h">
+      <Filter>HLE</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Core\HLE\sceNetResolver.h">
+      <Filter>HLE</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Core\HLE\NetInetConstants.h">
+      <Filter>HLE</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\Core\HLE\SocketManager.h">
       <Filter>HLE</Filter>
     </ClInclude>
   </ItemGroup>

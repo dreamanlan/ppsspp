@@ -79,6 +79,7 @@ private:
 	void bootComplete();
 	bool hasVisibleUI();
 	void renderUI();
+	void runImDebugger();
 	void renderImDebugger();
 
 	void onVKey(int virtualKeyCode, bool down);
@@ -141,6 +142,8 @@ private:
 	bool keyShiftRight_ = false;
 	bool keyAltLeft_ = false;
 	bool keyAltRight_ = false;
+
+	bool lastImguiEnabled_ = false;
 };
 
 bool MustRunBehind();

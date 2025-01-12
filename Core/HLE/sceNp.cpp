@@ -20,7 +20,10 @@
 
 #include <mutex>
 #include <deque>
-#include <StringUtils.h>
+
+#include "Common/System/OSD.h"
+#include "Common/Data/Text/I18n.h"
+#include "Common/StringUtils.h"
 #include "Core/MemMapHelpers.h"
 #include "Core/CoreTiming.h"
 #include "Core/Config.h"
@@ -35,25 +38,26 @@ SceNpAuthMemoryStat npAuthMemStat = {};
 PSPTimeval npSigninTimestamp{};
 
 // TODO: These should probably be grouped in a struct, since they're used to generate an auth ticket
-int npParentalControl = PARENTAL_CONTROL_ENABLED;
-int npUserAge = 24; // faking user Age to 24 yo
-int npChatRestriction = 0; // default/initial value on Patapon 3 is 1 (restricted boolean?)
-SceNpMyLanguages npMyLangList = { 1033, 2057, 1036 };
-char npCountryCode[3] = "fr"; // dummy data taken from https://www.psdevwiki.com/ps3/X-I-5-Ticket
-char npRegionCode[3] = "c9"; // not sure what "c9" meant, since it was close to country code data, might be region-related data?
+constexpr int npParentalControl = PARENTAL_CONTROL_ENABLED;
+constexpr int npUserAge = 24; // faking user Age to 24 yo
+constexpr int npChatRestriction = 0; // default/initial value on Patapon 3 is 1 (restricted boolean?)
+static const SceNpMyLanguages npMyLangList = { 1033, 2057, 1036 };  // Languages the user is assumed to know. No known games make use of this.
+// Fields are 4-sized, so the data needs to be too.
+static const char npCountryCode[4] = "us"; // dummy data taken from https://www.psdevwiki.com/ps3/X-I-5-Ticket. Mainly affects what EULA is downloaded.
+static const char npRegionCode[4] = "c9"; // not sure what "c9" meant, since it was close to country code data, might be region-related data?
 std::string npOnlineId = "DummyOnlineId"; // SceNpOnlineId struct?
 std::string npServiceId = ""; // UNO game uses EP2006-NPEH00020_00
 std::string npAvatarUrl = "http://DummyAvatarUrl"; // SceNpAvatarUrl struct?
 
+// Game-specific ID, I guess we can use this to auto-choose DNS?
 SceNpCommunicationId npTitleId;
 
 std::recursive_mutex npAuthEvtMtx;
 std::deque<NpAuthArgs> npAuthEvents;
 std::map<int, NpAuthHandler> npAuthHandlers;
 
-
 // Tickets data are in big-endian based on captured packets
-int writeTicketParam(u8* buffer, const u16_be type, const char* data = nullptr, const u16_be size = 0) {
+static int writeTicketParam(u8* buffer, const u16_be type, const char* data = nullptr, const u16_be size = 0) {
 	if (buffer == nullptr) return 0;
 
 	u16_be sz = (data == nullptr)? static_cast<u16_be>(0): size;
@@ -65,20 +69,23 @@ int writeTicketParam(u8* buffer, const u16_be type, const char* data = nullptr, 
 	return sz + 4;
 }
 
-int writeTicketStringParam(u8* buffer, const u16_be type, const char* data = nullptr, const u16_be size = 0) {
+static int writeTicketStringParam(u8* buffer, const u16_be type, const char* data = nullptr, const u16_be size = 0) {
 	if (buffer == nullptr) return 0;
 
 	u16_be sz = (data == nullptr) ? static_cast<u16_be>(0) : size;
 	memcpy(buffer, &type, 2);
 	memcpy(buffer + 2, &sz, 2);
 	if (sz > 0) {
-		memset(buffer + 4, 0, sz);
-		truncate_cpy((char*)buffer + 4, sz, data);
+		// Yes, we want to use strncpy. Do not change to truncate_cpy.
+		if (data)
+			strncpy((char *)buffer + 4, data, sz);
+		else
+			memset(buffer + 4, 0, sz);
 	}
 	return sz + 4;
 }
 
-int writeTicketU32Param(u8* buffer, const u16_be type, const u32_be data) {
+static int writeTicketU32Param(u8* buffer, const u16_be type, const u32_be data) {
 	if (buffer == nullptr) return 0;
 	
 	u16_be sz = 4;
@@ -89,7 +96,7 @@ int writeTicketU32Param(u8* buffer, const u16_be type, const u32_be data) {
 	return sz + 4;
 }
 
-int writeTicketU64Param(u8* buffer, const u16_be type, const u64_be data) {
+static int writeTicketU64Param(u8* buffer, const u16_be type, const u64_be data) {
 	if (buffer == nullptr) return 0;
 
 	u16_be sz = 8;
@@ -100,15 +107,45 @@ int writeTicketU64Param(u8* buffer, const u16_be type, const u64_be data) {
 	return sz + 4;
 }
 
-void notifyNpAuthHandlers(u32 id, u32 result, u32 argAddr) {
+static void notifyNpAuthHandlers(u32 id, u32 result, u32 argAddr) {
 	std::lock_guard<std::recursive_mutex> npAuthGuard(npAuthEvtMtx);
 	npAuthEvents.push_back({ { id, result, argAddr } });
+}
+
+bool NpAuthProcessEvents() {
+	if (npAuthEvents.empty()) {
+		return false;
+	}
+
+	auto& args = npAuthEvents.front();
+	auto& id = args.data[0];
+	auto& result = args.data[1];
+	auto& argAddr = args.data[2];
+	npAuthEvents.pop_front();
+
+	int handlerID = id - 1;
+	for (std::map<int, NpAuthHandler>::iterator it = npAuthHandlers.begin(); it != npAuthHandlers.end(); ++it) {
+		if (it->first == handlerID) {
+			DEBUG_LOG(Log::sceNet, "NpAuthCallback [HandlerID=%i][RequestID=%d][Result=%d][ArgsPtr=%08x]", it->first, id, result, it->second.argument);
+			// TODO: Update result / args.data[1] with the actual ticket length (or error code?)
+			hleEnqueueCall(it->second.entryPoint, 3, args.data);
+		}
+	}
+	return true;
 }
 
 static int sceNpInit()
 {
 	ERROR_LOG(Log::sceNet, "UNIMPL %s()", __FUNCTION__);
-	npOnlineId = g_Config.sNickName;
+
+	// We'll sanitize an extra time here, just to be safe from ini modifications.
+	if (g_Config.sInfrastructureUsername == SanitizeString(g_Config.sInfrastructureUsername, StringRestriction::AlphaNumDashUnderscore, 3, 16)) {
+		npOnlineId = g_Config.sInfrastructureUsername;
+	} else {
+		npOnlineId.clear();
+	}
+
+	// NOTE: Checking validity and returning -1 here doesn't seem to work. Instead, we will fail to generate a ticket.
 
 	return 0;
 }
@@ -158,8 +195,8 @@ static int sceNpGetOnlineId(u32 idPtr)
 	if (!id.IsValid())
 		return hleLogError(Log::sceNet, SCE_NP_ERROR_INVALID_ARGUMENT, "invalid arg");
 
-	memset((SceNpOnlineId *)id, 0, sizeof(SceNpOnlineId));
-	truncate_cpy(id->data, sizeof(id->data), npOnlineId.c_str());
+	id.FillWithZero();
+	strncpy(id->data, npOnlineId.c_str(), sizeof(id->data));
 	id.NotifyWrite("NpGetOnlineId");
 
 	INFO_LOG(Log::sceNet, "%s - Online ID: %s", __FUNCTION__, id->data);
@@ -169,7 +206,8 @@ static int sceNpGetOnlineId(u32 idPtr)
 
 int NpGetNpId(SceNpId* npid)
 {
-	truncate_cpy(npid->handle.data, sizeof(npid->handle.data), npOnlineId.c_str());
+	// Callers make sure that the rest of npid is zero filled, which takes care of the terminator.
+	strncpy(npid->handle.data, npOnlineId.c_str(), sizeof(npid->handle.data));
 	return 0;
 }
 
@@ -182,7 +220,7 @@ static int sceNpGetNpId(u32 idPtr)
 		return hleLogError(Log::sceNet, SCE_NP_ERROR_INVALID_ARGUMENT, "invalid arg");
 
 	SceNpId dummyNpId{};
-	memset((SceNpId *)id, 0, sizeof(SceNpId));
+	id.FillWithZero();
 	int retval = NpGetNpId(id);
 	if (retval < 0)
 		return hleLogError(Log::sceNet, retval);
@@ -205,9 +243,9 @@ static int sceNpGetAccountRegion(u32 countryCodePtr, u32 regionCodePtr)
 	if (!countryCode.IsValid() || !regionCode.IsValid())
 		return hleLogError(Log::sceNet, SCE_NP_ERROR_INVALID_ARGUMENT, "invalid arg");
 
-	memset((SceNpCountryCode *)countryCode, 0, sizeof(SceNpCountryCode));
+	countryCode.FillWithZero();
 	memcpy(countryCode->data, npCountryCode, sizeof(countryCode->data));
-	memset((SceNpCountryCode *)regionCode, 0, sizeof(SceNpCountryCode));
+	regionCode.FillWithZero();
 	memcpy(regionCode->data, npRegionCode, sizeof(regionCode->data));
 
 	INFO_LOG(Log::sceNet, "%s - Country Code: %s", __FUNCTION__, countryCode->data);
@@ -245,8 +283,8 @@ static int sceNpGetUserProfile(u32 profilePtr)
 	if (!Memory::IsValidAddress(profilePtr))
 		return hleLogError(Log::sceNet, SCE_NP_ERROR_INVALID_ARGUMENT, "invalid arg");
 
-	memset((SceNpUserInformation *)profile, 0, sizeof(SceNpUserInformation));
-	truncate_cpy(profile->userId.handle.data, sizeof(profile->userId.handle.data), npOnlineId.c_str());
+	profile.FillWithZero();
+	strncpy(profile->userId.handle.data, npOnlineId.c_str(), sizeof(profile->userId.handle.data));
 	truncate_cpy(profile->icon.data, sizeof(profile->icon.data), npAvatarUrl.c_str());
 
 	INFO_LOG(Log::sceNet, "%s - Online ID: %s", __FUNCTION__, profile->userId.handle.data);
@@ -393,6 +431,14 @@ int sceNpAuthGetTicket(u32 requestId, u32 bufferAddr, u32 length)
 	if (!Memory::IsValidAddress(bufferAddr))
 		return hleLogError(Log::sceNet, SCE_NP_AUTH_ERROR_INVALID_ARGUMENT, "invalid arg");
 
+	// We have validated, and this will be empty if the ID is bad.
+	if (npOnlineId.empty()) {
+		auto n = GetI18NCategory(I18NCat::NETWORKING);
+		// Temporary message.
+		g_OSD.Show(OSDType::MESSAGE_ERROR, n->T("To play in Infrastructure Mode, you must enter a username"), 5.0f);
+		return hleLogError(Log::sceNet, SCE_NP_AUTH_ERROR_UNKNOWN, "Missing npOnlineId");
+	}
+
 	int result = length;
 	Memory::Memset(bufferAddr, 0, length, "NpAuthGetTicket");
 	SceNpTicket ticket = {};
@@ -409,7 +455,7 @@ int sceNpAuthGetTicket(u32 requestId, u32 bufferAddr, u32 length)
 	ofs += writeTicketU64Param(buf + ofs, PARAM_TYPE_DATE, now);
 	ofs += writeTicketU64Param(buf + ofs, PARAM_TYPE_DATE, now + 10 * 60 * 1000); // now + 10 minutes, expired time?
 	ofs += writeTicketU64Param(buf + ofs, PARAM_TYPE_LONG, 0x592e71c546e86859); // seems to be consistent, 8-bytes password hash may be? or related to entitlement? or console id?
-	ofs += writeTicketStringParam(buf + ofs, PARAM_TYPE_STRING, npOnlineId.c_str(), 32); // username
+	ofs += writeTicketStringParam(buf + ofs, PARAM_TYPE_STRING, npOnlineId.c_str(), 32); // username (pre-cut to 16 chars)
 	ofs += writeTicketParam(buf + ofs, PARAM_TYPE_STRING_ASCII, npCountryCode, 4); // SceNpCountryCode ? ie. "fr" + 00 02
 	ofs += writeTicketStringParam(buf + ofs, PARAM_TYPE_STRING, npRegionCode, 4); // 2-char code? related to country/lang code? ie. "c9" + 00 00
 	ofs += writeTicketParam(buf + ofs, PARAM_TYPE_STRING_ASCII, npServiceId.c_str(), 24);
@@ -610,6 +656,12 @@ const HLEFunction sceNpService[] = {
 	{0X4E851B10, &WrapI_IUUUUUU<sceNpRosterGetFriendListEntry>,	"sceNpRosterGetFriendListEntry",		'i', "ixxxxxx"},
 	{0X5F5E32AF, &WrapI_I<sceNpRosterAbort>,					"sceNpRosterAbort",						'i', "i"      },
 	{0X66C64821, &WrapI_I<sceNpRosterDeleteRequest>,			"sceNpRosterDeleteRequest",				'i', "i"      },
+	{0X506C318D, nullptr,                                       "sceNpRosterGetBlockListEntry",         'i', "" },
+	{0X58251346, nullptr,                                       "sceNpRosterGetFriendListEntryCount",   'i', "" },
+	{0X788F2B5E, nullptr,                                       "sceNpRosterAddFriendListEntry",        'i', "" },
+	{0XA01443AA, nullptr,                                       "sceNpRosterGetBlockListEntryCount",    'i', "" },
+	{0X250488F9, nullptr,                                       "sceNpServiceGetMemoryStat",            'i', "" },
+	{0X4B4E4E71, nullptr,                                       "sceNpLookupAbortTransaction ",         'i', "" },
 };
 
 void Register_sceNpService()
@@ -617,7 +669,7 @@ void Register_sceNpService()
 	RegisterModule("sceNpService", ARRAY_SIZE(sceNpService), sceNpService);
 }
 
-// TODO: Moves NpCommerce2-related stuff to sceNpCommerce2.cpp
+// TODO: Move NpCommerce2-related stuff to sceNpCommerce2.cpp?
 const HLEFunction sceNpCommerce2[] = {
 	{0X005B5F20, nullptr,                            "sceNpCommerce2GetProductInfoStart",				'?', ""   },
 	{0X0E9956E3, nullptr,                            "sceNpCommerce2Init",								'?', ""   },

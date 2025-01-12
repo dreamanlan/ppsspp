@@ -105,13 +105,13 @@ struct CompatFlags {
 	bool Fontltn12Hack;
 	bool LoadCLUTFromCurrentFrameOnly;
 	bool ForceUMDReadSpeed;
-	bool AllowDelayedReadbacks;
 	bool KernelGetSystemTimeLowEatMoreCycles;
 	bool TacticsOgreEliminateDebugReadback;
 	bool FramebufferAllowLargeVerticalOffset;
 	bool DisableMemcpySlicing;
 	bool ForceEnableGPUReadback;
 	bool UseFFMPEGFindStreamInfo;
+	bool SoftwareRasterDepth;
 };
 
 struct VRCompat {
