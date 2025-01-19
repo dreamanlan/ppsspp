@@ -21,10 +21,13 @@
 #include "Common/Net/Resolve.h"
 #include "Common/Net/SocketCompat.h"
 #include "Common/Data/Text/Parsers.h"
-
+#include "Common/Data/Text/I18n.h"
+#include "Common/File/VFS/VFS.h"
+#include "Common/System/OSD.h"
 #include "Common/Serialize/Serializer.h"
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Common/Serialize/SerializeMap.h"
+#include "Common/Data/Format/JSONReader.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/HLE/sceKernelMemory.h"
@@ -37,25 +40,17 @@
 #include "Core/Util/PortManager.h"
 #include "Core/CoreTiming.h"
 #include "Core/Instance.h"
-
 #include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceKernelThread.h"
 #include "Core/HLE/sceUtility.h"
-
 #include "Core/HLE/sceNetAdhoc.h"
 #include "Core/HLE/sceNetAdhocMatching.h"
 #include "Core/HLE/sceNet.h"
 #include "Core/HLE/sceNetApctl.h"
 #include "Core/HLE/sceNp.h"
 #include "Core/HLE/sceNp2.h"
-
 #include "Core/HLE/sceNetInet.h"
 #include "Core/HLE/sceNetResolver.h"
-
-#if PPSSPP_PLATFORM(SWITCH) && !defined(INADDR_NONE)
-// Missing toolchain define
-#define INADDR_NONE 0xFFFFFFFF
-#endif
 
 bool netInited;
 
@@ -66,8 +61,6 @@ u32 netThread1Addr = 0;
 u32 netThread2Addr = 0;
 
 static struct SceNetMallocStat netMallocStat;
-
-static std::map<int, NetResolver> netResolvers;
 
 static std::map<int, ApctlHandler> apctlHandlers;
 
@@ -87,10 +80,41 @@ int actionAfterApctlMipsCall;
 std::recursive_mutex apctlEvtMtx;
 std::deque<ApctlArgs> apctlEvents;
 
+// Loaded auto-config
+InfraDNSConfig g_infraDNSConfig;
+
 u32 Net_Term();
 int NetApctl_Term();
 void NetApctl_InitDefaultInfo();
 void NetApctl_InitInfo(int confId);
+
+bool NetworkWarnUserIfOnlineAndCantSavestate() {
+	if (netInited && !g_Config.bAllowSavestateWhileConnected) {
+		auto nw = GetI18NCategory(I18NCat::NETWORKING);
+		g_OSD.Show(OSDType::MESSAGE_INFO, nw->T("Save states are not available when online"), 3.0f, "saveonline");
+		return true;
+	} else {
+		return false;
+	}
+}
+
+bool NetworkWarnUserIfOnlineAndCantSpeed() {
+	if (netInited) {
+		auto nw = GetI18NCategory(I18NCat::NETWORKING);
+		g_OSD.Show(OSDType::MESSAGE_INFO, nw->T("Speed controls are not available when online"), 3.0f, "speedonline");
+		return true;
+	} else {
+		return false;
+	}
+}
+
+bool NetworkAllowSpeedControl() {
+	return !netInited;
+}
+
+bool NetworkAllowSaveState() {
+	return !netInited || g_Config.bAllowSavestateWhileConnected;
+}
 
 void AfterApctlMipsCall::DoState(PointerWrap & p) {
 	auto s = p.Section("AfterApctlMipsCall", 1, 1);
@@ -127,6 +151,119 @@ void AfterApctlMipsCall::SetData(int HandlerID, int OldState, int NewState, int 
 	event = Event;
 	error = Error;
 	argsAddr = ArgsAddr;
+}
+
+bool LoadDNSForGameID(std::string_view gameID, InfraDNSConfig *dns) {
+	using namespace json;
+
+	*dns = {};
+
+	// TODO: Load from cache instead of zip (if possible), and sometimes update it.
+	size_t jsonSize;
+	std::unique_ptr<uint8_t[]> data(g_VFS.ReadFile("infra-dns.json", &jsonSize));
+	if (!data) {
+		return false;
+	}
+
+	std::string_view jsonStr = std::string_view((const char *)data.get(), jsonSize);
+	json::JsonReader reader(jsonStr.data(), jsonStr.length());
+	if (!reader.ok() || !reader.root()) {
+		ERROR_LOG(Log::IO, "Error parsing DNS JSON");
+		return false;
+	}
+
+	const JsonGet root = reader.root();
+	const JsonGet def = root.getDict("default");
+
+	// Load the default DNS.
+	if (def) {
+		dns->dns = def.getStringOr("dns", "");
+		if (def.hasChild("revival_credits", JSON_OBJECT)) {
+			const JsonGet revived = def.getDict("revival_credits");
+			if (revived) {
+				dns->revivalTeam = revived.getStringOr("group", "");
+				dns->revivalTeamURL = revived.getStringOr("url", "");
+			}
+		}
+	}
+
+	const JsonNode *games = root.getArray("games");
+	for (const JsonNode *iter : games->value) {
+		JsonGet game = iter->value;
+		// Goddamn I have to change the json reader we're using. So ugly.
+		const JsonNode *workingIdsNode = game.getArray("known_working_ids");
+		const JsonNode *otherIdsNode = game.getArray("other_ids");
+		const JsonNode *notWorkingIdsNode = game.getArray("not_working_ids");
+		if (!workingIdsNode && !otherIdsNode && !notWorkingIdsNode) {
+			// We ignore this game.
+			continue;
+		}
+
+		bool found = false;
+
+		std::vector<std::string> ids;
+		if (workingIdsNode) {
+			JsonGet(workingIdsNode->value).getStringVector(&ids);
+			for (auto &id : ids) {
+				if (id == gameID) {
+					found = true;
+					dns->state = InfraGameState::Working;
+					break;
+				}
+			}
+		}
+		if (!found && notWorkingIdsNode) {
+			// Check the non working array
+			JsonGet(notWorkingIdsNode->value).getStringVector(&ids);
+			for (auto &id : ids) {
+				if (id == gameID) {
+					found = true;
+					dns->state = InfraGameState::NotWorking;
+					break;
+				}
+			}
+		}
+		if (!found && otherIdsNode) {
+			// Check the "other" array, we're gonna try this, but less confidently :P
+			JsonGet(otherIdsNode->value).getStringVector(&ids);
+			for (auto &id : ids) {
+				if (id == gameID) {
+					found = true;
+					dns->state = InfraGameState::Unknown;
+					break;
+				}
+			}
+		}
+
+		if (!found) {
+			continue;
+		}
+
+		dns->gameName = game.getStringOr("name", "");
+		dns->dns = game.getStringOr("dns", dns->dns.c_str());
+		dns->dyn_dns = game.getStringOr("dyn_dns", "");
+		if (game.hasChild("domains", JSON_OBJECT)) {
+			const JsonGet domains = game.getDict("domains");
+			for (auto iter : domains.value_) {
+				std::string domain = std::string(iter->key);
+				std::string ipAddr = std::string(iter->value.toString());
+				dns->fixedDNS[domain] = ipAddr;
+			}
+		}
+
+		if (game.hasChild("revival_credits", JSON_OBJECT)) {
+			const JsonGet revived = game.getDict("revival_credits");
+			if (revived) {
+				dns->revivalTeam = revived.getStringOr("group", "");
+				dns->revivalTeamURL = revived.getStringOr("url", "");
+			}
+		}
+
+		// TODO: Check for not working platforms
+		break;
+	}
+
+	return true;
 }
 
 void InitLocalhostIP() {
@@ -263,7 +400,7 @@ void __NetShutdown() {
 	// Network Cleanup
 	Net_Term();
 
-	SceNetResolver::Shutdown();
+	__NetResolverShutdown();
 	__NetInetShutdown();
 	__NetApctlShutdown();
 	__ResetInitNetLib();
@@ -279,11 +416,6 @@ void __NetShutdown() {
 static void __UpdateApctlHandlers(u32 oldState, u32 newState, u32 flag, u32 error) {
 	std::lock_guard<std::recursive_mutex> apctlGuard(apctlEvtMtx);
 	apctlEvents.push_back({ oldState, newState, flag, error });
-}
-
-// Make sure MIPS calls have been fully executed before the next notifyApctlHandlers
-void notifyApctlHandlers(int oldState, int newState, int flag, int error) {
-	__UpdateApctlHandlers(oldState, newState, flag, error);
 }
 
 void netValidateLoopMemory() {
@@ -363,7 +495,7 @@ void __NetDoState(PointerWrap &p) {
 		// Discard leftover events
 		apctlEvents.clear();
 		// Discard created resolvers for now (since i'm not sure whether the information in the struct is sufficient or not, and we don't support multi-threading yet anyway)
-		SceNetResolver::Shutdown();
+		__NetResolverShutdown();
 	}
 }
 
@@ -524,7 +656,8 @@ static inline void FreeUser(u32 &addr) {
 }
 
 u32 Net_Term() {
-	// May also need to Terminate netAdhocctl and netAdhoc to free some resources & threads, since the game (ie. GTA:VCS, Wipeout Pulse, etc) might not called them before calling sceNetTerm and causing them to behave strangely on the next sceNetInit & sceNetAdhocInit
+	// May also need to Terminate netAdhocctl and netAdhoc to free some resources & threads, since the game (ie. GTA:VCS, Wipeout Pulse, etc) might not have called
+	// them before calling sceNetTerm and causing them to behave strangely on the next sceNetInit & sceNetAdhocInit
 	NetAdhocctl_Term();
 	NetAdhocMatching_Term();
 	NetAdhoc_Term();
@@ -554,10 +687,14 @@ u32 Net_Term() {
 	FreeUser(netThread2Addr);
 	netInited = false;
 
+	g_infraDNSConfig = {};
 	return 0;
 }
 
 static u32 sceNetTerm() {
+	auto n = GetI18NCategory(I18NCat::NETWORKING);
+	g_OSD.Show(OSDType::MESSAGE_INFO, n->T("Network shutdown"), 2.0, "networkinit");
+
 	WARN_LOG(Log::sceNet, "sceNetTerm() at %08x", currentMIPS->pc);
 	int retval = Net_Term();
 
@@ -578,8 +715,11 @@ static int sceNetInit(u32 poolSize, u32 calloutPri, u32 calloutStack, u32 netini
 	// TODO: Create Network Threads using given priority & stack
 	// TODO: The correct behavior is actually to allocate more and leak the other threads/pool.
 	// But we reset here for historic reasons (GTA:VCS potentially triggers this.)
-	if (netInited)
-		Net_Term(); // This cleanup attempt might not worked when SaveState were loaded in the middle of multiplayer game and re-entering multiplayer, thus causing memory leaks & wasting binded ports. May be we shouldn't save/load "Inited" vars on SaveState?
+	if (netInited) {
+		// This cleanup attempt might not worked when SaveState were loaded in the middle of multiplayer game and re-entering multiplayer, thus causing memory leaks & wasting binded ports.
+		// Maybe we shouldn't save/load "Inited" vars on SaveState?
+		Net_Term();
+	}
 
 	if (poolSize == 0) {
 		return hleLogError(Log::sceNet, SCE_KERNEL_ERROR_ILLEGAL_MEMSIZE, "invalid pool size");
@@ -618,7 +758,62 @@ static int sceNetInit(u32 poolSize, u32 calloutPri, u32 calloutStack, u32 netini
 	// Clear Socket Translator Memory
 	memset(&adhocSockets, 0, sizeof(adhocSockets));
 
+	if (g_Config.bInfrastructureAutoDNS) {
+		// Load the automatic DNS config for this game - or the defaults.
+		std::string discID = g_paramSFO.GetDiscID();
+		LoadDNSForGameID(discID, &g_infraDNSConfig);
+
+		// If dyn_dns is non-empty, try to use it to replace the specified DNS.
+		// If fails, we just use the dns. TODO: Do this in the background somehow...
+		const auto &dns = g_infraDNSConfig.dns;
+		const auto &dyn_dns = g_infraDNSConfig.dyn_dns;
+		if (!dyn_dns.empty()) {
+			// Try to look it up in system DNS
+			INFO_LOG(Log::sceNet, "DynDNS requested, trying to resolve '%s'...", dyn_dns.c_str());
+			addrinfo *resolved = nullptr;
+			std::string err;
+			if (!net::DNSResolve(dyn_dns, "", &resolved, err)) {
+				ERROR_LOG(Log::sceNet, "Error resolving, falling back to '%s'", dns.c_str());
+			} else if (resolved) {
+				bool found = false;
+				for (auto ptr = resolved; ptr && !found; ptr = ptr->ai_next) {
+					switch (ptr->ai_family) {
+					case AF_INET:
+					{
+						char ipstr[256];
+						if (inet_ntop(ptr->ai_family, &(((struct sockaddr_in*)ptr->ai_addr)->sin_addr), ipstr, sizeof(ipstr)) != 0) {
+							INFO_LOG(Log::sceNet, "Successfully resolved '%s' to '%s', overriding DNS.", dyn_dns.c_str(), ipstr);
+							if (g_infraDNSConfig.dns != ipstr) {
+								WARN_LOG(Log::sceNet, "Replacing specified DNS IP %s with dyndns %s!", g_infraDNSConfig.dns.c_str(), ipstr);
+								g_infraDNSConfig.dns = ipstr;
+							} else {
+								INFO_LOG(Log::sceNet, "DynDNS: %s already up to date", g_infraDNSConfig.dns.c_str());
+							}
+							found = true;
+						}
+						break;
+					}
+					}
+				}
+				net::DNSResolveFree(resolved);
+			}
+		}
+	}
+
 	netInited = true;
+
+	auto n = GetI18NCategory(I18NCat::NETWORKING);
+
+	std::string msg(n->T("Network initialized"));
+	if (g_Config.bInfrastructureAutoDNS) {
+		msg += ": ";
+		msg += n->T("Auto DNS");
+		if (!g_infraDNSConfig.gameName.empty()) {
+			msg += " (" + g_infraDNSConfig.gameName + ")";
+		}
+	}
+
+	g_OSD.Show(OSDType::MESSAGE_INFO, msg, 2.0, "networkinit");
 	return hleLogSuccessI(Log::sceNet, 0);
 }
 
@@ -756,8 +951,8 @@ void NetApctl_InitDefaultInfo() {
 	// Set dummy/fake parameters, assuming this is the currently selected Network Configuration profile
 	// FIXME: Some of these info supposed to be taken from netConfInfo
 	int validConfId = std::max(1, netApctlInfoId); // Should be: sceUtilityGetNetParamLatestID(validConfId);
-	truncate_cpy(netApctlInfo.name, sizeof(netApctlInfo.name), (defaultNetConfigName + std::to_string(validConfId)).c_str());
-	truncate_cpy(netApctlInfo.ssid, sizeof(netApctlInfo.ssid), defaultNetSSID.c_str());
+	truncate_cpy(netApctlInfo.name, sizeof(netApctlInfo.name), defaultNetConfigName + std::to_string(validConfId));
+	truncate_cpy(netApctlInfo.ssid, sizeof(netApctlInfo.ssid), defaultNetSSID);
 	// Default IP Address
 	char ipstr[INET_ADDRSTRLEN] = "0.0.0.0"; // Driver 76 needs a dot formatted IP instead of a zeroed buffer
 	truncate_cpy(netApctlInfo.ip, sizeof(netApctlInfo.ip), ipstr);
@@ -771,8 +966,8 @@ void NetApctl_InitInfo(int confId) {
 	memset(&netApctlInfo, 0, sizeof(netApctlInfo));
 	// Set dummy/fake values, some of these (ie. IP set to Auto) probably not suppose to have valid info before connected to an AP, right?
 	// FIXME: Some of these info supposed to be taken from netConfInfo
-	truncate_cpy(netApctlInfo.name, sizeof(netApctlInfo.name), (defaultNetConfigName + std::to_string(confId)).c_str());
-	truncate_cpy(netApctlInfo.ssid, sizeof(netApctlInfo.ssid), defaultNetSSID.c_str());
+	truncate_cpy(netApctlInfo.name, sizeof(netApctlInfo.name), defaultNetConfigName + std::to_string(confId));
+	truncate_cpy(netApctlInfo.ssid, sizeof(netApctlInfo.ssid), defaultNetSSID);
 	memcpy(netApctlInfo.bssid, "\1\1\2\2\3\3", sizeof(netApctlInfo.bssid)); // fake AP's mac address
 	netApctlInfo.ssidLength = static_cast<unsigned int>(defaultNetSSID.length());
 	netApctlInfo.strength = 99;
@@ -788,12 +983,22 @@ void NetApctl_InitInfo(int confId) {
 	((u8*)&sockAddr.sin_addr.s_addr)[3] = 1;
 	inet_ntop(AF_INET, &sockAddr.sin_addr, ipstr, sizeof(ipstr));
 	truncate_cpy(netApctlInfo.gateway, sizeof(netApctlInfo.gateway), ipstr);
-	// We should probably use public DNS Server instead of localhost IP since most people don't have DNS Server running on localhost (ie. Untold Legends The Warrior's Code is trying to lookup dns using the primary dns), but accessing public DNS Server from localhost may result to ENETUNREACH error if the gateway can't access the public server (ie. using SO_DONTROUTE)
-	//if (strcmp(ipstr, "127.0.0.1") == 0)
-		truncate_cpy(netApctlInfo.primaryDns, sizeof(netApctlInfo.primaryDns), g_Config.primaryDNSServer.c_str()); // Private Servers may need to use custom DNS Server
-	//else
-	//	truncate_cpy(netApctlInfo.primaryDns, sizeof(netApctlInfo.primaryDns), ipstr);
-	truncate_cpy(netApctlInfo.secondaryDns, sizeof(netApctlInfo.secondaryDns), g_Config.secondaryDNSServer.c_str()); // Fireteam Bravo 2 seems to try to use secondary DNS too if it's not 0.0.0.0
+
+	// We use the configured DNS server, whether manually or auto configured.
+	// Games (for example, Wipeout Pulse) often use this to perform their own DNS lookups through UDP, so we need to pass in the configured server.
+	// The reason we need autoconfig is that private Servers may need to use custom DNS Server - and most games are now
+	// best played on private servers (only a few official ones remain, if any).
+	if (g_Config.bInfrastructureAutoDNS) {
+		INFO_LOG(Log::sceNet, "Responding to game query with AutoDNS address: %s", g_infraDNSConfig.dns.c_str());
+		truncate_cpy(netApctlInfo.primaryDns, sizeof(netApctlInfo.primaryDns), g_infraDNSConfig.dns);
+	} else {
+		INFO_LOG(Log::sceNet, "Responding to game query with manual DNS address: %s", g_Config.sInfrastructureDNSServer.c_str());
+		truncate_cpy(netApctlInfo.primaryDns, sizeof(netApctlInfo.primaryDns), g_Config.sInfrastructureDNSServer);
+	}
+
+	// We don't bother with a secondary DNS.
+	truncate_cpy(netApctlInfo.secondaryDns, sizeof(netApctlInfo.secondaryDns), "0.0.0.0"); // Fireteam Bravo 2 seems to try to use secondary DNS too if it's not 0.0.0.0
+
 	truncate_cpy(netApctlInfo.subNetMask, sizeof(netApctlInfo.subNetMask), "255.255.255.0");
 }
 

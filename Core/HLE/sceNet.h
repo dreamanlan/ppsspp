@@ -121,7 +121,6 @@ void Register_sceWlanDrv();
 void Register_sceNetUpnp();
 void Register_sceNetIfhandle();
 
-
 void __NetInit();
 void __NetShutdown();
 void __NetDoState(PointerWrap &p);
@@ -129,5 +128,33 @@ void __NetDoState(PointerWrap &p);
 int NetApctl_GetState();
 
 int sceNetApctlConnect(int connIndex);
-int sceNetInetPoll(void *fds, u32 nfds, int timeout);
 int sceNetApctlTerm();
+
+// These return false if allowed to be consistent with the similar function for achievements.
+bool NetworkWarnUserIfOnlineAndCantSavestate();
+bool NetworkWarnUserIfOnlineAndCantSpeed();
+
+bool NetworkAllowSaveState();
+bool NetworkAllowSpeedControl();
+
+enum class InfraGameState {
+	Unknown,
+	Working,
+	NotWorking,
+};
+
+// Loaded an interpreted for a specific game from the JSON - doesn't represent the entire JSON.
+struct InfraDNSConfig {
+	std::string gameName;
+	std::string dns;
+	std::string dyn_dns;
+	InfraGameState state;
+	std::map<std::string, std::string> fixedDNS;
+	int score;
+	std::string comment;
+
+	std::string revivalTeam;
+	std::string revivalTeamURL;
+};
+
+extern InfraDNSConfig g_infraDNSConfig;

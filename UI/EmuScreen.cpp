@@ -67,6 +67,7 @@ using namespace std::placeholders;
 #include "Core/MIPS/MIPS.h"
 #include "Core/HLE/sceCtrl.h"
 #include "Core/HLE/sceSas.h"
+#include "Core/HLE/sceNet.h"
 #include "Core/HLE/sceNetAdhoc.h"
 #include "Core/Debugger/SymbolMap.h"
 #include "Core/RetroAchievements.h"
@@ -678,7 +679,7 @@ void EmuScreen::onVKey(int virtualKeyCode, bool down) {
 		}
 		break;
 	case VIRTKEY_FASTFORWARD:
-		if (down) {
+		if (down && !NetworkWarnUserIfOnlineAndCantSpeed()) {
 			if (coreState == CORE_STEPPING_CPU) {
 				Core_Resume();
 			}
@@ -689,7 +690,7 @@ void EmuScreen::onVKey(int virtualKeyCode, bool down) {
 		break;
 
 	case VIRTKEY_SPEED_TOGGLE:
-		if (down) {
+		if (down && !NetworkWarnUserIfOnlineAndCantSpeed()) {
 			// Cycle through enabled speeds.
 			if (PSP_CoreParameter().fpsLimit == FPSLimit::NORMAL && g_Config.iFpsLimit1 >= 0) {
 				PSP_CoreParameter().fpsLimit = FPSLimit::CUSTOM1;
@@ -705,7 +706,7 @@ void EmuScreen::onVKey(int virtualKeyCode, bool down) {
 		break;
 
 	case VIRTKEY_SPEED_CUSTOM1:
-		if (down) {
+		if (down && !NetworkWarnUserIfOnlineAndCantSpeed()) {
 			if (PSP_CoreParameter().fpsLimit == FPSLimit::NORMAL) {
 				PSP_CoreParameter().fpsLimit = FPSLimit::CUSTOM1;
 				g_OSD.Show(OSDType::MESSAGE_INFO, sc->T("fixed", "Speed: alternate"), 1.0, "altspeed");
@@ -718,7 +719,7 @@ void EmuScreen::onVKey(int virtualKeyCode, bool down) {
 		}
 		break;
 	case VIRTKEY_SPEED_CUSTOM2:
-		if (down) {
+		if (down && !NetworkWarnUserIfOnlineAndCantSpeed()) {
 			if (PSP_CoreParameter().fpsLimit == FPSLimit::NORMAL) {
 				PSP_CoreParameter().fpsLimit = FPSLimit::CUSTOM2;
 				g_OSD.Show(OSDType::MESSAGE_INFO, sc->T("SpeedCustom2", "Speed: alternate 2"), 1.0, "altspeed");
@@ -741,9 +742,21 @@ void EmuScreen::onVKey(int virtualKeyCode, bool down) {
 		}
 		break;
 
+	case VIRTKEY_PAUSE_NO_MENU:
+		if (down && !NetworkWarnUserIfOnlineAndCantSpeed()) {
+			// We re-use debug break/resume to implement pause/resume without a menu.
+			if (coreState == CORE_STEPPING_CPU) {
+				Core_Resume();
+			} else {
+				Core_Break("user-pause");
+			}
+		}
+		break;
+
 	case VIRTKEY_FRAME_ADVANCE:
 		// Can't do this reliably in an async fashion, so we just set a variable.
-		if (down) {
+		// Is this used by anyone? There's no good way to resume, other than PAUSE_NO_MENU or the debugger.
+		if (down && !NetworkWarnUserIfOnlineAndCantSpeed()) {
 			doFrameAdvance_.store(true);
 		}
 		break;
@@ -797,7 +810,7 @@ void EmuScreen::onVKey(int virtualKeyCode, bool down) {
 #endif
 
 	case VIRTKEY_REWIND:
-		if (down && !Achievements::WarnUserIfHardcoreModeActive(false)) {
+		if (down && !Achievements::WarnUserIfHardcoreModeActive(false) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
 			if (SaveState::CanRewind()) {
 				SaveState::Rewind(&AfterSaveStateAction);
 			} else {
@@ -806,23 +819,23 @@ void EmuScreen::onVKey(int virtualKeyCode, bool down) {
 		}
 		break;
 	case VIRTKEY_SAVE_STATE:
-		if (down && !Achievements::WarnUserIfHardcoreModeActive(true)) {
+		if (down && !Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
 			SaveState::SaveSlot(gamePath_, g_Config.iCurrentStateSlot, &AfterSaveStateAction);
 		}
 		break;
 	case VIRTKEY_LOAD_STATE:
-		if (down && !Achievements::WarnUserIfHardcoreModeActive(false)) {
+		if (down && !Achievements::WarnUserIfHardcoreModeActive(false) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
 			SaveState::LoadSlot(gamePath_, g_Config.iCurrentStateSlot, &AfterSaveStateAction);
 		}
 		break;
 	case VIRTKEY_PREVIOUS_SLOT:
-		if (down && !Achievements::WarnUserIfHardcoreModeActive(true)) {
+		if (down && !Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
 			SaveState::PrevSlot();
 			System_PostUIMessage(UIMessage::SAVESTATE_DISPLAY_SLOT);
 		}
 		break;
 	case VIRTKEY_NEXT_SLOT:
-		if (down && !Achievements::WarnUserIfHardcoreModeActive(true)) {
+		if (down && !Achievements::WarnUserIfHardcoreModeActive(true) && NetworkWarnUserIfOnlineAndCantSavestate()) {
 			SaveState::NextSlot();
 			System_PostUIMessage(UIMessage::SAVESTATE_DISPLAY_SLOT);
 		}
@@ -904,7 +917,8 @@ void EmuScreen::onVKey(int virtualKeyCode, bool down) {
 			g_Config.iInternalScreenRotation = ROTATION_LOCKED_HORIZONTAL180;
 		break;
 	case VIRTKEY_TOGGLE_WLAN:
-		if (down) {
+		// Let's not allow the user to toggle wlan while connected, could get confusing.
+		if (down && !netInited) {
 			auto n = GetI18NCategory(I18NCat::NETWORKING);
 			auto di = GetI18NCategory(I18NCat::DIALOG);
 			g_Config.bEnableWlan = !g_Config.bEnableWlan;
@@ -1841,7 +1855,7 @@ void EmuScreen::resized() {
 }
 
 bool MustRunBehind() {
-	return __NetAdhocConnected();
+	return netInited || __NetAdhocConnected();
 }
 
 bool ShouldRunBehind() {
