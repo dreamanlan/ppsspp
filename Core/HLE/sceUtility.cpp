@@ -394,11 +394,11 @@ static int UtilityWorkUs(int us) {
 	// Simulate this by allowing a reschedule.
 	if (us > 1000) {
 		hleEatMicro(1000);
-		return hleDelayResult(0, "utility work", us - 1000);
+		return hleDelayResult(hleNoLog(0), "utility work", us - 1000);
 	}
 	hleEatMicro(us);
 	hleReSchedule("utility work");
-	return 0;
+	return hleNoLog(0);
 }
 
 static int UtilityInitDialog(int type) {
@@ -478,26 +478,21 @@ static int sceUtilitySavedataUpdate(int animSpeed) {
 	return result;
 }
 
-static u32 sceUtilityLoadAvModule(u32 module)
-{
-	if (module > 7)
-	{
+static u32 sceUtilityLoadAvModule(u32 module) {
+	if (module > 7) {
 		ERROR_LOG_REPORT(Log::sceUtility, "sceUtilityLoadAvModule(%i): invalid module id", module);
 		return SCE_ERROR_AV_MODULE_BAD_ID;
 	}
 	
-	INFO_LOG(Log::sceUtility, "0=sceUtilityLoadAvModule(%i)", module);
 	if (module == 0)
 		JpegNotifyLoadStatus(1);
-	return hleDelayResult(0, "utility av module loaded", 25000);
+	return hleDelayResult(hleLogSuccessInfoI(Log::sceUtility, 0), "utility av module loaded", 25000);
 }
 
-static u32 sceUtilityUnloadAvModule(u32 module)
-{
-	INFO_LOG(Log::sceUtility,"0=sceUtilityUnloadAvModule(%i)", module);
+static u32 sceUtilityUnloadAvModule(u32 module) {
 	if (module == 0)
 		JpegNotifyLoadStatus(-1);
-	return hleDelayResult(0, "utility av module unloaded", 800);
+	return hleDelayResult(hleLogSuccessInfoI(Log::sceUtility, 0), "utility av module unloaded", 800);
 }
 
 static const ModuleLoadInfo *__UtilityModuleInfo(int module) {
@@ -523,13 +518,12 @@ static u32 sceUtilityLoadModule(u32 module) {
 	// Some games, like Kamen Rider Climax Heroes OOO, require an error if dependencies aren't loaded yet.
 	for (const int *dep = info->dependencies; *dep != 0; ++dep) {
 		if (currentlyLoadedModules.find(*dep) == currentlyLoadedModules.end()) {
-			u32 result = hleLogError(Log::sceUtility, SCE_KERNEL_ERROR_LIBRARY_NOTFOUND, "dependent module %04x not loaded", *dep);
-			return hleDelayResult(result, "utility module load attempt", 25000);
+			return hleDelayResult(hleLogError(Log::sceUtility, SCE_KERNEL_ERROR_LIBRARY_NOTFOUND, "dependent module %04x not loaded", *dep), "utility module load attempt", 25000);
 		}
 	}
 
 	u32 allocSize = info->size;
-	char name[64];
+	char name[128];
 	snprintf(name, sizeof(name), "UtilityModule/%x", module);
 	if (allocSize != 0) {
 		currentlyLoadedModules[module] = userMemory.Alloc(allocSize, false, name);
@@ -594,10 +588,11 @@ static int sceUtilityMsgDialogUpdate(int animSpeed) {
 		return hleLogWarning(Log::sceUtility, SCE_ERROR_UTILITY_WRONG_TYPE, "wrong dialog type");
 	}
 	
-	int ret = hleLogSuccessX(Log::sceUtility, msgDialog->Update(animSpeed));
+	int ret = msgDialog->Update(animSpeed);
 	if (ret >= 0)
-		return hleDelayResult(ret, "msgdialog update", 800);
-	return ret;
+		return hleDelayResult(hleLogSuccessX(Log::sceUtility, ret), "msgdialog update", 800);
+	else
+		return hleLogSuccessX(Log::sceUtility, ret);
 }
 
 static int sceUtilityMsgDialogGetStatus() {
@@ -737,10 +732,15 @@ static int sceUtilityCheckNetParam(int id)
 * @param data - parameter data
 * @return 0 on success
 */
+// Let's figure out what games use this.
 static int sceUtilityGetNetParam(int id, int param, u32 dataAddr) {
-	DEBUG_LOG(Log::sceUtility, "sceUtilityGetNetParam(%d, %d, %08x)", id, param, dataAddr);
 	if (id < 0 || id > 24) {
 		return hleLogWarning(Log::sceUtility, SCE_ERROR_NETPARAM_BAD_NETCONF, "invalid id=%d", id);
+	}
+
+	if (!g_netApctlInited) {
+		// Is this allowed?
+		WARN_LOG_REPORT_ONCE(getnetparam_early, Log::sceNet, "sceUtilityGetNetParam called before initializing netApctl!");
 	}
 
 	// TODO: Replace the temporary netApctlInfo with netConfInfo, since some of netApctlInfo contents supposed to be taken from netConfInfo during ApctlInit, while sceUtilityGetNetParam can be used before Apctl Initialized
@@ -938,7 +938,7 @@ static int sceUtilityGetNetParam(int id, int param, u32 dataAddr) {
 		return hleLogWarning(Log::sceUtility, SCE_ERROR_NETPARAM_BAD_PARAM, "invalid param=%d", param);
 	}
 
-	return 0;
+	return hleLogDebug(Log::sceUtility, 0);
 }
 
 /**

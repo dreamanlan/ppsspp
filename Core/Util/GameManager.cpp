@@ -107,7 +107,7 @@ bool GameManager::DownloadAndInstall(const std::string &storeFileUrl) {
 
 	Path filename = GetTempFilename();
 	const char *acceptMime = "application/zip, application/x-cso, application/x-iso9660-image, application/octet-stream; q=0.9, */*; q=0.8";
-	curDownload_ = g_DownloadManager.StartDownload(storeFileUrl, filename, http::ProgressBarMode::VISIBLE, acceptMime);
+	curDownload_ = g_DownloadManager.StartDownload(storeFileUrl, filename, http::RequestFlags::ProgressBar, acceptMime);
 	return true;
 }
 
@@ -163,7 +163,7 @@ void GameManager::UninstallGame(const std::string &name) {
 void GameManager::Update() {
 	if (curDownload_.get() && curDownload_->Done()) {
 		INFO_LOG(Log::HLE, "Download completed! Status = %d", curDownload_->ResultCode());
-		Path fileName = curDownload_->outfile();
+		Path fileName = curDownload_->OutFile();
 		if (curDownload_->ResultCode() == 200) {
 			if (!File::Exists(fileName)) {
 				ERROR_LOG(Log::HLE, "Downloaded file '%s' does not exist :(", fileName.c_str());

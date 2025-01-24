@@ -108,12 +108,12 @@ private:
 	u32_le argsAddr = 0;
 };
 
-extern bool netInited;
-extern bool netApctlInited;
+extern bool g_netInited;
+extern bool g_netApctlInited;
 extern u32 netApctlState;
 extern SceNetApctlInfoInternal netApctlInfo;
-extern std::string defaultNetConfigName;
-extern std::string defaultNetSSID;
+extern const char * const defaultNetConfigName;
+extern const char * const defaultNetSSID;
 
 void Register_sceNet();
 void Register_sceNetApctl();
@@ -127,8 +127,17 @@ void __NetDoState(PointerWrap &p);
 
 int NetApctl_GetState();
 
+bool __NetApctlConnected();
+
 int sceNetApctlConnect(int connIndex);
-int sceNetApctlTerm();
+
+// Are we connected - for the purpose of disabling speed consoles and savestates etc.
+bool IsNetworkConnected();
+
+// Kicks off a fetch of the json download, unless it's cached and new enough.
+void StartInfraJsonDownload();
+// Polls the fetch, if returns true, jsonOutput should be looked at. If it's empty, something went very wrong as we fallback on the asset file.
+bool PollInfraJsonDownload(std::string *jsonOutput);
 
 // These return false if allowed to be consistent with the similar function for achievements.
 bool NetworkWarnUserIfOnlineAndCantSavestate();
@@ -145,6 +154,7 @@ enum class InfraGameState {
 
 // Loaded an interpreted for a specific game from the JSON - doesn't represent the entire JSON.
 struct InfraDNSConfig {
+	bool loaded;
 	std::string gameName;
 	std::string dns;
 	std::string dyn_dns;
@@ -155,6 +165,11 @@ struct InfraDNSConfig {
 
 	std::string revivalTeam;
 	std::string revivalTeamURL;
+
+	// PPSSPP can suggest other version of the game if one is known not to work.
+	std::vector<std::string> workingIDs;
+
+	bool connectAdHocForGrouping;
 };
 
 extern InfraDNSConfig g_infraDNSConfig;

@@ -20,7 +20,6 @@
 #include <deque>
 #include "Core/HLE/proAdhoc.h"
 
-
 #ifdef _MSC_VER
 #pragma pack(push,1)
 #endif
@@ -106,7 +105,8 @@ void __UpdateAdhocctlHandlers(u32 flags, u32 error);
 
 bool __NetAdhocConnected();
 
-// I have to call this from netdialog
+// Called from netdialog (and from sceNetApctl)
+// NOTE: use hleCall for sceNet* ones!
 int sceNetAdhocctlGetState(u32 ptrToStatus);
 int sceNetAdhocctlCreate(const char * groupName);
 int sceNetAdhocctlConnect(const char* groupName);
@@ -115,6 +115,7 @@ int sceNetAdhocctlScan();
 int sceNetAdhocctlGetScanInfo(u32 sizeAddr, u32 bufAddr);
 int sceNetAdhocctlDisconnect();
 int sceNetAdhocctlInit(int stackSize, int prio, u32 productAddr);
+int sceNetAdhocctlTerm();
 
 int NetAdhocctl_Term();
 int NetAdhocctl_GetState();
@@ -124,8 +125,10 @@ int NetAdhoc_Term();
 // May need to use these from sceNet.cpp
 extern bool netAdhocInited;
 extern bool netAdhocctlInited;
-extern bool networkInited;
+extern bool g_adhocServerConnected;
 extern bool netAdhocGameModeEntered;
+extern s32 netAdhocDiscoverStatus;
+
 extern int netAdhocEnterGameModeTimeout;
 extern int adhocDefaultTimeout; //3000000 usec
 extern int adhocDefaultDelay; //10000
@@ -142,8 +145,10 @@ extern u32 matchingThreadHackAddr;
 extern u32_le matchingThreadCode[3];
 
 // Exposing those for the matching routines
+// NOTE: use hleCall for sceNet* ones!
 int sceNetAdhocPdpSend(int id, const char* mac, u32 port, void* data, int len, int timeout, int flag);
 int sceNetAdhocPdpRecv(int id, void* addr, void* port, void* buf, void* dataLength, u32 timeout, int flag);
 int sceNetAdhocPdpCreate(const char* mac, int port, int bufferSize, u32 flag);
+
 int NetAdhoc_SetSocketAlert(int id, s32_le flag);
 int NetAdhocPdp_Delete(int id, int unknown);

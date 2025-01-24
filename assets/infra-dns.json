@@ -133,7 +133,7 @@
 		},
 		{
 			"name": "Ratchet & Clank - Size Matters",
-			"dns": "67.222.156.251",
+			"dns": "67.222.156.250",
 			"other_ids": [
 				"UCES00420",
 				"UCUS98633"
@@ -151,6 +151,114 @@
 			"revival_credits": {
 				"group": "OutRun2006Tweaks"
 			}
+		},
+		{
+			"name": "SOCOM Fireteam Bravo",
+			"known_working_ids": [
+				"UCUS98615"
+			],
+			"not_working_ids": [
+				"UCKS45021",
+				"UCES00038"
+			],
+			"score": 4,
+			"domains": {
+				"socomftb.online.scee.com": "67.222.156.251",
+				"socomftb2.psp.online.scea.com": "67.222.156.251",
+				"socompsp-prod.muis.pdonline.scea.com": "67.222.156.251",
+				"socom-ftb-prod-muis.pdonline.scek.co.kr": "67.222.156.251"
+			}
+		},
+		{
+			"name": "SOCOM Fireteam Bravo Public Beta",
+			"known_working_ids": [
+				"UCUS98637"
+			],
+			"score": 4,
+			"domains": {
+				"socompsp-pubeta.muis.pdonline.scea.com": "67.222.156.251"
+			}
+		},
+		{
+			"name": "SOCOM Fireteam Bravo 2",
+			"known_working_ids": [
+				"UCUS98645"
+			],
+			"not_working_ids": [
+				"UCES00543",
+				"UCKS45043",
+				"UCUS80171"
+			],
+			"score": 4,
+			"domains": {
+				"socomftb2.online.scee.com": "67.222.156.251",
+				"socomftb2.psp.online.scea.com": "67.222.156.251",
+				"socompsp-prod.muis.pdonline.scea.com": "67.222.156.251"
+			}
+		},
+		{
+			"name": "SOCOM Tactical Strike",
+			"known_working_ids": [
+				"UCUS98649"
+			],
+			"not_working_ids": [
+				"NPUG80220",
+				"UCES00855"
+			],
+			"score": 3,
+			"domains": {
+				"socomftb2.psp.online.scea.com": "67.222.156.251",
+				"socompsp-prod.muis.pdonline.scea.com": "67.222.156.251"
+			}
+		},
+		{
+			"name": "Syphon Filter: Dark Mirror",
+			"known_working_ids": [
+				"UCUS98641"
+			],
+			"score": 5
+		},
+		{
+			"name": "Driver '76",
+			"known_working_ids": [
+				"ULUS10235",
+				"ULES00740"
+			],
+			"score": 5,
+			"connect_adhoc_for_grouping": true
+		},
+		{
+			"name": "Rocky Balboa",
+			"other_ids": [
+				"ULES00670"
+			],
+			"score": 0,
+			"connect_adhoc_for_grouping": true
+		},
+		{
+			"name": "Onore no Shinzuru",
+			"other_ids": [
+				"ULJM05465"
+			],
+			"score": 0,
+			"connect_adhoc_for_grouping": true
+		},
+		{
+			"name": "Patapon 3",
+			"comment": {
+				"en_US": "Not working yet"
+			},
+			"not_working_ids": [
+				"UCUS98751",
+				"UCES01421",
+				"UCAS40318",
+				"UCKS45169",
+				"UCJS10113",
+				"UCJS18048",
+				"NPJG00122",
+				"UCJS18059"
+			],
+			"score": 0
 		}
 	]
 }

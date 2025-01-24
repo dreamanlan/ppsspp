@@ -299,13 +299,14 @@ int Client::GET(const RequestParams &req, Buffer *output, net::RequestProgress *
 	return code;
 }
 
-int Client::POST(const RequestParams &req, const std::string &data, const std::string &mime, Buffer *output, net::RequestProgress *progress) {
+int Client::POST(const RequestParams &req, std::string_view data, std::string_view mime, Buffer *output, net::RequestProgress *progress) {
 	char otherHeaders[2048];
 	if (mime.empty()) {
 		snprintf(otherHeaders, sizeof(otherHeaders), "Content-Length: %lld\r\n", (long long)data.size());
 	} else {
-		snprintf(otherHeaders, sizeof(otherHeaders), "Content-Length: %lld\r\nContent-Type: %s\r\n", (long long)data.size(), mime.c_str());
+		snprintf(otherHeaders, sizeof(otherHeaders), "Content-Length: %lld\r\nContent-Type: %.*s\r\n", (long long)data.size(), (int)mime.size(), mime.data());
 	}
+
 	int err = SendRequestWithData("POST", req, data, otherHeaders, progress);
 	if (err < 0) {
 		return err;
@@ -325,7 +326,7 @@ int Client::POST(const RequestParams &req, const std::string &data, const std::s
 	return code;
 }
 
-int Client::POST(const RequestParams &req, const std::string &data, Buffer *output, net::RequestProgress *progress) {
+int Client::POST(const RequestParams &req, std::string_view data, Buffer *output, net::RequestProgress *progress) {
 	return POST(req, data, "", output, progress);
 }
 
@@ -333,7 +334,7 @@ int Client::SendRequest(const char *method, const RequestParams &req, const char
 	return SendRequestWithData(method, req, "", otherHeaders, progress);
 }
 
-int Client::SendRequestWithData(const char *method, const RequestParams &req, const std::string &data, const char *otherHeaders, net::RequestProgress *progress) {
+int Client::SendRequestWithData(const char *method, const RequestParams &req, std::string_view data, const char *otherHeaders, net::RequestProgress *progress) {
 	progress->Update(0, 0, false);
 
 	net::Buffer buffer;
@@ -485,14 +486,17 @@ int Client::ReadResponseEntity(net::Buffer *readbuf, const std::vector<std::stri
 	return 0;
 }
 
-HTTPRequest::HTTPRequest(RequestMethod method, const std::string &url, const std::string &postData, const std::string &postMime, const Path &outfile, ProgressBarMode progressBarMode, std::string_view name)
-	: Request(method, url, name, &cancelled_, progressBarMode), postData_(postData), postMime_(postMime), outfile_(outfile) {
+HTTPRequest::HTTPRequest(RequestMethod method, std::string_view url, std::string_view postData, std::string_view postMime, const Path &outfile, RequestFlags flags, std::string_view name)
+	: Request(method, url, name, &cancelled_, flags), postData_(postData), postMime_(postMime) {
+	outfile_ = outfile;
 }
 
 HTTPRequest::~HTTPRequest() {
 	g_OSD.RemoveProgressBar(url_, !failed_, 0.5f);
 
-	_assert_msg_(joined_, "Download destructed without join");
+	if (thread_.joinable()) {
+		_dbg_assert_msg_(false, "Download destructed without join");
+	}
 }
 
 void HTTPRequest::Start() {
@@ -500,11 +504,11 @@ void HTTPRequest::Start() {
 }
 
 void HTTPRequest::Join() {
-	if (joined_) {
+	if (!thread_.joinable()) {
 		ERROR_LOG(Log::HTTP, "Already joined thread!");
+		_dbg_assert_(false);
 	}
 	thread_.join();
-	joined_ = true;
 }
 
 void HTTPRequest::SetFailed(int code) {
@@ -597,7 +601,8 @@ void HTTPRequest::Do() {
 
 		if (resultCode == 200) {
 			INFO_LOG(Log::HTTP, "Completed requesting %s (storing result to %s)", url_.c_str(), outfile_.empty() ? "memory" : outfile_.c_str());
-			if (!outfile_.empty() && !buffer_.FlushToFile(outfile_)) {
+			bool clear = !(flags_ & RequestFlags::KeepInMemory);
+			if (!outfile_.empty() && !buffer_.FlushToFile(outfile_, clear)) {
 				ERROR_LOG(Log::HTTP, "Failed writing download to '%s'", outfile_.c_str());
 			}
 		} else {
@@ -611,4 +616,4 @@ void HTTPRequest::Do() {
 	completed_ = true;
 }
 
-}	// http
+}  // namespace http

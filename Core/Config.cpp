@@ -315,6 +315,7 @@ static const ConfigSetting generalSettings[] = {
 
 	ConfigSetting("MemStickInserted", &g_Config.bMemStickInserted, true, CfgFlag::PER_GAME | CfgFlag::REPORT),
 	ConfigSetting("LoadPlugins", &g_Config.bLoadPlugins, true, CfgFlag::PER_GAME),
+	ConfigSetting("NotificationPos", &g_Config.iNotificationPos, (int)ScreenEdgePosition::TOP_CENTER, CfgFlag::DEFAULT),
 
 	ConfigSetting("IgnoreCompatSettings", &g_Config.sIgnoreCompatSettings, "", CfgFlag::PER_GAME | CfgFlag::REPORT),
 
@@ -1308,7 +1309,7 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
 	if (iRunCount % 10 == 0 && bCheckForNewVersion) {
 		const char *versionUrl = "http://www.ppsspp.org/version.json";
 		const char *acceptMime = "application/json, text/*; q=0.9, */*; q=0.8";
-		g_DownloadManager.StartDownloadWithCallback(versionUrl, Path(), http::ProgressBarMode::NONE, &DownloadCompletedCallback, "version", acceptMime);
+		g_DownloadManager.StartDownloadWithCallback(versionUrl, Path(), http::RequestFlags::Default, &DownloadCompletedCallback, "version", acceptMime);
 	}
 
 	INFO_LOG(Log::Loader, "Loading controller config: %s", controllerIniFilename_.c_str());

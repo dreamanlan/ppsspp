@@ -1,12 +1,5 @@
 #include "ppsspp_config.h"
 
-#ifdef __MINGW32__
-#include <unistd.h>
-#ifndef _POSIX_THREAD_SAFE_FUNCTIONS
-#define _POSIX_THREAD_SAFE_FUNCTIONS 200112L
-#endif
-#endif
-
 #if PPSSPP_PLATFORM(WINDOWS)
 #define WIN32_LEAN_AND_MEAN
 #include "Common/CommonWindows.h"
@@ -142,6 +135,17 @@ bool GetFileInfo(const Path &path, FileInfo * fileInfo) {
 		fileInfo->isWritable = true;
 #endif
 	return true;
+}
+
+bool GetModifTimeT(const Path &filename, time_t *return_time) {
+	FileInfo info;
+	if (GetFileInfo(filename, &info)) {
+		*return_time = info.mtime;
+		return true;
+	} else {
+		*return_time = 0;
+		return false;
+	}
 }
 
 bool GetModifTime(const Path &filename, tm & return_time) {

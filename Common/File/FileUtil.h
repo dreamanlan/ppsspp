@@ -27,7 +27,7 @@
 
 // Some functions here support Android content URIs. These are marked as such.
 
-#ifdef _MSC_VER
+#ifdef _WIN32
 inline struct tm* localtime_r(const time_t *clock, struct tm *result) {
 	if (localtime_s(result, clock) == 0)
 		return result;
@@ -70,6 +70,8 @@ bool IsDirectory(const Path &filename);
 
 // Returns struct with modification date of file
 bool GetModifTime(const Path &filename, tm &return_time);
+// Same but with unix timestamp
+bool GetModifTimeT(const Path &filename, time_t *return_time);  // the time_t, of course, matches time_now_unix_utc().
 
 // Returns the size of filename (64bit)
 uint64_t GetFileSize(const Path &filename);

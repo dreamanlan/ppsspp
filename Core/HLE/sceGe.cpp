@@ -332,18 +332,17 @@ bool __GeTriggerWait(GPUSyncType type, SceUID waitId) {
 	return false;
 }
 
+// Some games spam this, like MediEvil.
 static u32 sceGeEdramGetAddr() {
 	u32 retVal = 0x04000000;
-	DEBUG_LOG(Log::sceGe, "%08x = sceGeEdramGetAddr", retVal);
 	hleEatCycles(150);
-	return retVal;
+	return hleLogVerbose(Log::sceGe, retVal);
 }
 
 // TODO: Return a different value for the PS3 enhanced-emulator games?
 static u32 sceGeEdramGetSize() {
 	const u32 retVal = 0x00200000;
-	DEBUG_LOG(Log::sceGe, "%08x = sceGeEdramGetSize()", retVal);
-	return retVal;
+	return hleLogVerbose(Log::sceGe, retVal);
 }
 
 static int __GeSubIntrBase(int callbackId) {
@@ -351,9 +350,6 @@ static int __GeSubIntrBase(int callbackId) {
 }
 
 u32 sceGeListEnQueue(u32 listAddress, u32 stallAddress, int callbackId, u32 optParamAddr) {
-	DEBUG_LOG(Log::sceGe,
-		"sceGeListEnQueue(addr=%08x, stall=%08x, cbid=%08x, param=%08x) ticks=%d",
-		listAddress, stallAddress, callbackId, optParamAddr, (int)CoreTiming::GetTicks());
 	auto optParam = PSPPointer<PspGeListArgs>::Create(optParamAddr);
 
 	bool runList;
@@ -369,13 +365,16 @@ u32 sceGeListEnQueue(u32 listAddress, u32 stallAddress, int callbackId, u32 optP
 	}
 	hleEatCycles(490);
 	hleCoreTimingForceCheck();
-	return listID; // We already logged above, logs get confusing if we use hleLogSuccess.
+	DEBUG_LOG(Log::sceGe,
+		"%08x=sceGeListEnQueue(addr=%08x, stall=%08x, cbid=%08x, param=%08x) ticks=%lld", listID,
+		listAddress, stallAddress, callbackId, optParamAddr, (long long)CoreTiming::GetTicks());
+	return hleNoLog(listID); // We already logged above, logs get confusing if we use hleLogSuccess.
 }
 
 u32 sceGeListEnQueueHead(u32 listAddress, u32 stallAddress, int callbackId, u32 optParamAddr) {
 	DEBUG_LOG(Log::sceGe,
-		"sceGeListEnQueueHead(addr=%08x, stall=%08x, cbid=%08x, param=%08x) ticks=%d",
-		listAddress, stallAddress, callbackId, optParamAddr, (int)CoreTiming::GetTicks());
+		"sceGeListEnQueueHead(addr=%08x, stall=%08x, cbid=%08x, param=%08x) ticks=%lld",
+		listAddress, stallAddress, callbackId, optParamAddr, (long long)CoreTiming::GetTicks());
 	auto optParam = PSPPointer<PspGeListArgs>::Create(optParamAddr);
 
 	bool runList;
@@ -391,14 +390,14 @@ u32 sceGeListEnQueueHead(u32 listAddress, u32 stallAddress, int callbackId, u32 
 	}
 	hleEatCycles(480);
 	hleCoreTimingForceCheck();
-	return listID; // We already logged above, logs get confusing if we use hleLogSuccess.
+	return hleNoLog(listID); // We already logged above, logs get confusing if we use hleLogSuccess.
 }
 
 static int sceGeListDeQueue(u32 listID) {
 	WARN_LOG(Log::sceGe, "sceGeListDeQueue(%08x)", listID);
 	int result = gpu->DequeueList(LIST_ID_MAGIC ^ listID);
 	hleReSchedule("dlist dequeued");
-	return result;
+	return hleNoLog(result);
 }
 
 static int sceGeListUpdateStallAddr(u32 displayListID, u32 stallAddress) {
@@ -417,14 +416,13 @@ static int sceGeListUpdateStallAddr(u32 displayListID, u32 stallAddress) {
 			gpu->ProcessDLQueue();
 		}
 	}
-	return retval;
+	return hleNoLog(retval);
 }
 
 // 0 : wait for completion. 1:check and return
 int sceGeListSync(u32 displayListID, u32 mode) {
-	DEBUG_LOG(Log::sceGe, "sceGeListSync(dlid=%08x, mode=%08x)", displayListID, mode);
 	hleEatCycles(220);  // Fudged without measuring, copying sceGeContinue.
-	return gpu->ListSync(LIST_ID_MAGIC ^ displayListID, mode);
+	return hleLogDebug(Log::sceGe, gpu->ListSync(LIST_ID_MAGIC ^ displayListID, mode));
 }
 
 static u32 sceGeDrawSync(u32 mode) {
@@ -433,12 +431,10 @@ static u32 sceGeDrawSync(u32 mode) {
 		hleEatCycles(500000); //HACK(?) : Potential fix for Crash Tag Team Racing and a few Gundam games
 	else if (!PSP_CoreParameter().compat.flags().DrawSyncInstant)
 		hleEatCycles(1240);
-	DEBUG_LOG(Log::sceGe, "sceGeDrawSync(mode=%d)  (0=wait for completion, 1=peek)", mode);
-	return gpu->DrawSync(mode);
+	return hleLogDebug(Log::sceGe, gpu->DrawSync(mode));
 }
 
 static int sceGeContinue() {
-	DEBUG_LOG(Log::sceGe, "sceGeContinue()");
 	bool runList;
 	int ret = gpu->Continue(&runList);
 	if (runList) {
@@ -450,13 +446,12 @@ static int sceGeContinue() {
 	}
 	hleEatCycles(220);
 	hleReSchedule("ge continue");
-	return ret;
+	return hleLogDebug(Log::sceGe, ret);
 }
 
 static int sceGeBreak(u32 mode, u32 unknownPtr) {
 	if (mode > 1) {
-		WARN_LOG(Log::sceGe, "sceGeBreak(mode=%d, unknown=%08x): invalid mode", mode, unknownPtr);
-		return SCE_KERNEL_ERROR_INVALID_MODE;
+		return hleLogWarning(Log::sceGe, SCE_KERNEL_ERROR_INVALID_MODE, "invalid mode");
 	}
 	// Not sure what this is supposed to be for...
 	if ((int)unknownPtr < 0 || (int)(unknownPtr + 16) < 0) {
@@ -470,9 +465,9 @@ static int sceGeBreak(u32 mode, u32 unknownPtr) {
 	DEBUG_LOG(Log::sceGe, "sceGeBreak(mode=%d, unknown=%08x)", mode, unknownPtr);
 	int result = gpu->Break(mode);
 	if (result >= 0 && mode == 0) {
-		return LIST_ID_MAGIC ^ result;
+		return hleNoLog(LIST_ID_MAGIC ^ result);
 	}
-	return result;
+	return hleNoLog(result);
 }
 
 static u32 sceGeSetCallback(u32 structAddr) {
@@ -495,15 +490,17 @@ static u32 sceGeSetCallback(u32 structAddr) {
 
 	int subIntrBase = __GeSubIntrBase(cbID);
 
+	// TODO: Maybe don't ignore return values of the hleCalls?
+
 	if (ge_callback_data[cbID].finish_func != 0) {
-		sceKernelRegisterSubIntrHandler(PSP_GE_INTR, subIntrBase | PSP_GE_SUBINTR_FINISH,
+		hleCall(InterruptManager, u32, sceKernelRegisterSubIntrHandler, PSP_GE_INTR, subIntrBase | PSP_GE_SUBINTR_FINISH,
 				ge_callback_data[cbID].finish_func, ge_callback_data[cbID].finish_arg);
-		sceKernelEnableSubIntr(PSP_GE_INTR, subIntrBase | PSP_GE_SUBINTR_FINISH);
+		hleCall(InterruptManager, u32, sceKernelEnableSubIntr, PSP_GE_INTR, subIntrBase | PSP_GE_SUBINTR_FINISH);
 	}
 	if (ge_callback_data[cbID].signal_func != 0) {
-		sceKernelRegisterSubIntrHandler(PSP_GE_INTR, subIntrBase | PSP_GE_SUBINTR_SIGNAL,
+		hleCall(InterruptManager, u32, sceKernelRegisterSubIntrHandler, PSP_GE_INTR, subIntrBase | PSP_GE_SUBINTR_SIGNAL,
 				ge_callback_data[cbID].signal_func, ge_callback_data[cbID].signal_arg);
-		sceKernelEnableSubIntr(PSP_GE_INTR, subIntrBase | PSP_GE_SUBINTR_SIGNAL);
+		hleCall(InterruptManager, u32, sceKernelEnableSubIntr, PSP_GE_INTR, subIntrBase | PSP_GE_SUBINTR_SIGNAL);
 	}
 
 	return hleLogSuccessI(Log::sceGe, cbID);
@@ -520,8 +517,9 @@ static int sceGeUnsetCallback(u32 cbID) {
 	if (ge_used_callbacks[cbID]) {
 		int subIntrBase = __GeSubIntrBase(cbID);
 
-		sceKernelReleaseSubIntrHandler(PSP_GE_INTR, subIntrBase | PSP_GE_SUBINTR_FINISH);
-		sceKernelReleaseSubIntrHandler(PSP_GE_INTR, subIntrBase | PSP_GE_SUBINTR_SIGNAL);
+		// TODO: Maybe don't ignore return values?
+		hleCall(InterruptManager, u32, sceKernelReleaseSubIntrHandler, PSP_GE_INTR, subIntrBase | PSP_GE_SUBINTR_FINISH);
+		hleCall(InterruptManager, u32, sceKernelReleaseSubIntrHandler, PSP_GE_INTR, subIntrBase | PSP_GE_SUBINTR_SIGNAL);
 	} else {
 		WARN_LOG(Log::sceGe, "sceGeUnsetCallback(cbid=%08x): ignoring unregistered callback id", cbID);
 	}
@@ -615,8 +613,7 @@ static u32 sceGeGetCmd(int cmd) {
 }
 
 static int sceGeGetStack(int index, u32 stackPtr) {
-	WARN_LOG_REPORT(Log::sceGe, "sceGeGetStack(%i, %08x)", index, stackPtr);
-	return gpu->GetStack(index, stackPtr);
+	return hleReportWarning(Log::sceGe, gpu->GetStack(index, stackPtr));
 }
 
 static u32 sceGeEdramSetAddrTranslation(u32 new_size) {
@@ -629,7 +626,7 @@ static u32 sceGeEdramSetAddrTranslation(u32 new_size) {
 		return hleLogError(Log::sceGe, -1, "GPUInterface not available");
 	}
 
-	return hleReportDebug(Log::sceGe, gpu->SetAddrTranslation(new_size));
+	return hleLogDebug(Log::sceGe, gpu->SetAddrTranslation(new_size));
 }
 
 const HLEFunction sceGe_user[] = {

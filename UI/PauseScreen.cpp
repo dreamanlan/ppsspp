@@ -44,6 +44,7 @@
 #include "Core/HLE/sceUmd.h"
 #include "Core/HLE/sceNet.h"
 #include "Core/HLE/sceNetInet.h"
+#include "Core/HLE/sceNetAdhoc.h"
 
 #include "GPU/GPUCommon.h"
 #include "GPU/GPUState.h"
@@ -277,14 +278,18 @@ void GamePauseScreen::update() {
 		finishNextFrame_ = false;
 	}
 
-	if (netInited != lastNetInited_ || netInetInited != lastNetInetInited_) {
+	const bool networkConnected = IsNetworkConnected();
+	if (g_netInited != lastNetInited_ || netInetInited != lastNetInetInited_ || lastAdhocServerConnected_ != g_adhocServerConnected || lastOnline_ != networkConnected || lastDNSConfigLoaded_ != g_infraDNSConfig.loaded) {
 		INFO_LOG(Log::sceNet, "Network status changed, recreating views");
 		RecreateViews();
 		lastNetInetInited_ = netInetInited;
-		lastNetInited_ = netInited;
+		lastNetInited_ = g_netInited;
+		lastAdhocServerConnected_ = g_adhocServerConnected;
+		lastOnline_ = networkConnected;
+		lastDNSConfigLoaded_ = g_infraDNSConfig.loaded;
 	}
 
-	bool mustRunBehind = MustRunBehind();
+	const bool mustRunBehind = MustRunBehind();
 	playButton_->SetVisibility(mustRunBehind ? UI::V_GONE : UI::V_VISIBLE);
 
 	SetVRAppMode(VRAppMode::VR_MENU_MODE);
@@ -384,26 +389,48 @@ void GamePauseScreen::CreateViews() {
 		}
 	}
 
-	if (netInited) {
+	if (IsNetworkConnected()) {
 		leftColumnItems->Add(new NoticeView(NoticeLevel::INFO, nw->T("Network connected"), ""));
 
-		if (!g_infraDNSConfig.revivalTeam.empty() && netInetInited) {
-			leftColumnItems->Add(new TextView(std::string(nw->T("Infrastructure Mode server by")) + ":"));
-			leftColumnItems->Add(new TextView(g_infraDNSConfig.revivalTeam));
-			if (!g_infraDNSConfig.revivalTeamURL.empty()) {
-				leftColumnItems->Add(new Button(g_infraDNSConfig.revivalTeamURL))->OnClick.Add([](UI::EventParams &e) {
-					if (!g_infraDNSConfig.revivalTeamURL.empty()) {
-						System_LaunchUrl(LaunchUrlType::BROWSER_URL, g_infraDNSConfig.revivalTeamURL.c_str());
+		if (g_infraDNSConfig.loaded && __NetApctlConnected()) {
+			leftColumnItems->Add(new NoticeView(NoticeLevel::INFO, nw->T("Infrastructure"), ""));
+
+			if (g_infraDNSConfig.state == InfraGameState::NotWorking) {
+				leftColumnItems->Add(new NoticeView(NoticeLevel::WARN, nw->T("Some network functionality in this game is not working"), ""));
+				if (!g_infraDNSConfig.workingIDs.empty()) {
+					std::string str(nw->T("Other versions of this game that should work:"));
+					for (auto &id : g_infraDNSConfig.workingIDs) {
+						str.append("\n - ");
+						str += id;
 					}
-					return UI::EVENT_DONE;
-				});
+					leftColumnItems->Add(new TextView(str));
+				}
+			} else if (g_infraDNSConfig.state == InfraGameState::Unknown) {
+				leftColumnItems->Add(new NoticeView(NoticeLevel::WARN, nw->T("Network functionality in this game is not guaranteed"), ""));
 			}
+			if (!g_infraDNSConfig.revivalTeam.empty()) {
+				leftColumnItems->Add(new TextView(std::string(nw->T("Infrastructure server provided by:"))));
+				leftColumnItems->Add(new TextView(g_infraDNSConfig.revivalTeam));
+				if (!g_infraDNSConfig.revivalTeamURL.empty()) {
+					leftColumnItems->Add(new Button(g_infraDNSConfig.revivalTeamURL))->OnClick.Add([](UI::EventParams &e) {
+						if (!g_infraDNSConfig.revivalTeamURL.empty()) {
+							System_LaunchUrl(LaunchUrlType::BROWSER_URL, g_infraDNSConfig.revivalTeamURL.c_str());
+						}
+						return UI::EVENT_DONE;
+					});
+				}
+			}
+		}
+
+		if (NetAdhocctl_GetState() >= ADHOCCTL_STATE_CONNECTED) {
+			// Awkwardly re-using a string here
+			leftColumnItems->Add(new TextView(std::string(nw->T("AdHoc Server")) + ": " + std::string(nw->T("Connected"))));
 		}
 	}
 
 	bool achievementsAllowSavestates = !Achievements::HardcoreModeActive() || g_Config.bAchievementsSaveStateInHardcoreMode;
 	bool showSavestateControls = achievementsAllowSavestates;
-	if (netInited && !g_Config.bAllowSavestateWhileConnected) {
+	if (IsNetworkConnected() && !g_Config.bAllowSavestateWhileConnected) {
 		showSavestateControls = false;
 	}
 

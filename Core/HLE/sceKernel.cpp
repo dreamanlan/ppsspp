@@ -68,6 +68,7 @@
 #include "sceMp3.h"
 #include "sceMpeg.h"
 #include "sceNet.h"
+#include "sceNp.h"
 #include "sceNetAdhoc.h"
 #include "sceNetAdhocMatching.h"
 #include "scePower.h"
@@ -160,6 +161,7 @@ void __KernelInit()
 	__UsbMicInit();
 	__OpenPSIDInit();
 	__HttpInit();
+	__NpInit();
 	
 	SaveState::Init();  // Must be after IO, as it may create a directory
 	Reporting::Init();
@@ -349,20 +351,15 @@ u32 sceKernelDevkitVersion()
 	int revision = firmwareVersion % 10;
 	int devkitVersion = (major << 24) | (minor << 16) | (revision << 8) | 0x10;
 
-	DEBUG_LOG(Log::sceKernel, "%08x=sceKernelDevkitVersion()", devkitVersion);
-	return devkitVersion;
+	return hleLogDebug(Log::sceKernel, devkitVersion, "%d.%d.%d", major, minor, revision);
 }
 
-u32 sceKernelRegisterKprintfHandler()
-{
-	ERROR_LOG(Log::sceKernel, "UNIMPL sceKernelRegisterKprintfHandler()");
-	return 0;
+u32 sceKernelRegisterKprintfHandler() {
+	return hleLogError(Log::sceKernel, 0, "UNIMPL");
 }
 
-int sceKernelRegisterDefaultExceptionHandler()
-{
-	ERROR_LOG(Log::sceKernel, "UNIMPL sceKernelRegisterDefaultExceptionHandler()");
-	return 0;
+int sceKernelRegisterDefaultExceptionHandler() {
+	return hleLogError(Log::sceKernel, 0, "UNIMPL");
 }
 
 void sceKernelSetGPO(u32 ledBits)
@@ -376,8 +373,7 @@ u32 sceKernelGetGPI()
 {
 	// Always returns 0 on production systems.
 	// On developer systems, there are 8 switches that control the lower 8 bits of the return value.
-	DEBUG_LOG(Log::sceKernel, "%d=sceKernelGetGPI()", g_GPIBits);
-	return g_GPIBits;
+	return hleLogDebug(Log::sceKernel, g_GPIBits);
 }
 
 // #define LOG_CACHE
@@ -392,25 +388,24 @@ int sceKernelDcacheInvalidateRange(u32 addr, int size)
 	NOTICE_LOG(Log::CPU,"sceKernelDcacheInvalidateRange(%08x, %i)", addr, size);
 #endif
 	if (size < 0 || (int) addr + size < 0)
-		return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+		return hleNoLog(SCE_KERNEL_ERROR_ILLEGAL_ADDR);
 
 	if (size > 0)
 	{
 		if ((addr % 64) != 0 || (size % 64) != 0)
-			return SCE_KERNEL_ERROR_CACHE_ALIGNMENT;
+			return hleNoLog(SCE_KERNEL_ERROR_CACHE_ALIGNMENT);
 
 		if (addr != 0)
 			gpu->InvalidateCache(addr, size, GPU_INVALIDATE_HINT);
 	}
 	hleEatCycles(190);
-	return 0;
+	return hleNoLog(0);
 }
 
 int sceKernelIcacheInvalidateRange(u32 addr, int size) {
-	DEBUG_LOG(Log::CPU, "sceKernelIcacheInvalidateRange(%08x, %i)", addr, size);
 	if (size != 0)
 		currentMIPS->InvalidateICache(addr, size);
-	return 0;
+	return hleLogDebug(Log::CPU, 0);
 }
 
 int sceKernelDcacheWritebackAll()
@@ -464,7 +459,7 @@ int sceKernelDcacheWritebackInvalidateAll()
 	gpu->InvalidateCache(0, -1, GPU_INVALIDATE_ALL);
 	hleEatCycles(1165);
 	hleReSchedule("dcache invalidate all");
-	return 0;
+	return hleLogDebug(Log::CPU, 0, "Dcache invalidated");
 }
 
 u32 sceKernelIcacheInvalidateAll()
@@ -474,7 +469,7 @@ u32 sceKernelIcacheInvalidateAll()
 #endif
 	// Note that this doesn't actually fully invalidate all with such a large range.
 	currentMIPS->InvalidateICache(0, 0x3FFFFFFF);
-	return 0;
+	return hleLogDebug(Log::CPU, 0, "Icache invalidated");
 }
 
 u32 sceKernelIcacheClearAll()
@@ -482,10 +477,9 @@ u32 sceKernelIcacheClearAll()
 #ifdef LOG_CACHE
 	NOTICE_LOG(Log::CPU, "Icache cleared - should clear JIT someday");
 #endif
-	DEBUG_LOG(Log::CPU, "Icache cleared - should clear JIT someday");
 	// Note that this doesn't actually fully invalidate all with such a large range.
 	currentMIPS->InvalidateICache(0, 0x3FFFFFFF);
-	return 0;
+	return hleLogDebug(Log::CPU, 0, "Icache cleared");
 }
 
 void KernelObject::GetQuickInfo(char *ptr, int size) {
@@ -692,16 +686,14 @@ static u32 sceKernelReferThreadProfiler() {
 	// This seems to simply has no parameter:
 	// https://pspdev.github.io/pspsdk/group__ThreadMan.html#ga8fd30da51b9dc0507ac4dae04a7e4a17
 	// In testing it just returns null in around 140-150 cycles.  See issue #17623.
-	DEBUG_LOG(Log::sceKernel, "0=sceKernelReferThreadProfiler()");
 	hleEatCycles(140);
-	return 0;
+	return hleLogDebug(Log::sceKernel, 0);
 }
 
 static int sceKernelReferGlobalProfiler() {
-	DEBUG_LOG(Log::sceKernel, "0=sceKernelReferGlobalProfiler()");
 	// See sceKernelReferThreadProfiler(), similar.
 	hleEatCycles(140);
-	return 0;
+	return hleLogDebug(Log::sceKernel, 0);
 }
 
 const HLEFunction ThreadManForUser[] =
