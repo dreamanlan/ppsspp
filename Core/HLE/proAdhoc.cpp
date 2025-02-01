@@ -1374,6 +1374,7 @@ int friendFinder() {
 		// Reconnect when disconnected while Adhocctl is still inited
 		if (metasocket == (int)INVALID_SOCKET && netAdhocctlInited && isAdhocctlNeedLogin) {
 			if (g_Config.bEnableWlan) {
+				// Not really initNetwork.
 				if (initNetwork(&product_code) == 0) {
 					g_adhocServerConnected = true;
 					INFO_LOG(Log::sceNet, "FriendFinder: Network [RE]Initialized");
@@ -1390,6 +1391,7 @@ int friendFinder() {
 				}
 			}
 		}
+
 		// Prevent retrying to Login again unless it was on demand
 		isAdhocctlNeedLogin = false;
 
@@ -1795,7 +1797,7 @@ int getLocalIp(sockaddr_in* SocketAddress) {
 
 // Fallback if not connected to AdhocServer
 // getifaddrs first appeared in glibc 2.3, On Android officially supported since __ANDROID_API__ >= 24
-#if defined(_IFADDRS_H_) || (__GLIBC__ > 2) || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 3) || (__ANDROID_API__ >= 24)
+#if (defined(_IFADDRS_H_) || (__GLIBC__ > 2) || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 3) || (__ANDROID_API__ >= 24))
 	struct ifaddrs* ifAddrStruct = NULL;
 	struct ifaddrs* ifa = NULL;
 
@@ -1808,7 +1810,11 @@ int getLocalIp(sockaddr_in* SocketAddress) {
 			if (ifa->ifa_addr->sa_family == AF_INET) { // check it is IP4
 				// is a valid IP4 Address
 				SocketAddress->sin_addr = ((struct sockaddr_in*)ifa->ifa_addr)->sin_addr;
-				break;
+				u32 addr = ((struct sockaddr_in*)ifa->ifa_addr)->sin_addr.s_addr;
+				if (addr != 0x0100007f) {  // 127.0.0.1
+					// Found a plausible one
+					break;
+				}
 			}
 		}
 		freeifaddrs(ifAddrStruct);

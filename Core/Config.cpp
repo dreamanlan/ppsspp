@@ -140,10 +140,21 @@ std::string DefaultLangRegion() {
 }
 
 static int DefaultDepthRaster() {
+
+// For 64-bit ARM and x86 with SIMD, enable depth raster.
+#if PPSSPP_ARCH(ARM64_NEON) || PPSSPP_ARCH(SSE2)
+
 #if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
 	return (int)DepthRasterMode::LOW_QUALITY;
 #else
 	return (int)DepthRasterMode::DEFAULT;
+#endif
+
+#else
+
+	// 32-bit ARM or no SIMD, the depth raster will be too slow.
+	return (int)DepthRasterMode::OFF;
+
 #endif
 }
 
@@ -911,6 +922,7 @@ static const ConfigSetting networkSettings[] = {
 	ConfigSetting("InfrastructureUsername", &g_Config.sInfrastructureUsername, &DefaultInfrastructureUsername, CfgFlag::PER_GAME),
 	ConfigSetting("InfrastructureAutoDNS", &g_Config.bInfrastructureAutoDNS, true, CfgFlag::PER_GAME),
 	ConfigSetting("AllowSavestateWhileConnected", &g_Config.bAllowSavestateWhileConnected, false, CfgFlag::DONT_SAVE),
+	ConfigSetting("DontDownloadInfraJson", &g_Config.bDontDownloadInfraJson, false, CfgFlag::DONT_SAVE),
 
 	ConfigSetting("EnableNetworkChat", &g_Config.bEnableNetworkChat, false, CfgFlag::PER_GAME),
 	ConfigSetting("ChatButtonPosition", &g_Config.iChatButtonPosition, (int)ScreenEdgePosition::BOTTOM_LEFT, CfgFlag::PER_GAME),

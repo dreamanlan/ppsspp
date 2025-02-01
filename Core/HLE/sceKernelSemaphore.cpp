@@ -198,8 +198,7 @@ int sceKernelCancelSema(SceUID id, int newCount, u32 numWaitThreadsPtr)
 	}
 	else
 	{
-		DEBUG_LOG(Log::sceKernel, "sceKernelCancelSema(%i, %i, %08x): invalid semaphore", id, newCount, numWaitThreadsPtr);
-		return error;
+		return hleLogError(Log::sceKernel, error, "invalid semaphore");
 	}
 }
 
@@ -232,7 +231,7 @@ int sceKernelCreateSema(const char* name, u32 attr, int initVal, int maxVal, u32
 		else if (Memory::Read_U32(optionPtr) > 4)
 			return hleLogDebug(Log::sceKernel, id, "invalid options parameter size");
 	}
-	return hleLogSuccessX(Log::sceKernel, id);
+	return hleLogDebug(Log::sceKernel, id);
 }
 
 int sceKernelDeleteSema(SceUID id)
@@ -271,7 +270,7 @@ int sceKernelReferSemaStatus(SceUID id, u32 infoPtr) {
 			*info = s->ns;
 			info.NotifyWrite("SemaStatus");
 		}
-		return hleLogSuccessI(Log::sceKernel, 0);
+		return hleLogDebug(Log::sceKernel, 0);
 	} else {
 		return hleLogError(Log::sceKernel, error);
 	}

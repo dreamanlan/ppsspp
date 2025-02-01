@@ -772,7 +772,7 @@ void hleLagSync(u64 userdata, int cyclesLate) {
 }
 
 static u32 sceDisplayIsVblank() {
-	return hleLogSuccessI(Log::sceDisplay, DisplayIsVblank());
+	return hleLogDebug(Log::sceDisplay, DisplayIsVblank());
 }
 
 void __DisplayWaitForVblanks(const char *reason, int vblanks, bool callbacks) {
@@ -807,7 +807,7 @@ static u32 sceDisplaySetMode(int displayMode, int displayWidth, int displayHeigh
 
 	// On success, this implicitly waits for a vblank start.
 	__DisplayWaitForVblanks("display mode", 1);
-	return hleLogSuccessI(Log::sceDisplay, 0);
+	return hleLogDebug(Log::sceDisplay, 0);
 }
 
 void __DisplaySetFramebuf(u32 topaddr, int linesize, int pixelFormat, int sync) {
@@ -844,7 +844,7 @@ void __DisplaySetFramebuf(u32 topaddr, int linesize, int pixelFormat, int sync) 
 }
 
 // Some games (GTA) never call this during gameplay, so bad place to put a framerate counter.
-u32 sceDisplaySetFramebuf(u32 topaddr, int linesize, int pixelformat, int sync) {
+int sceDisplaySetFramebuf(u32 topaddr, int linesize, int pixelformat, int sync) {
 	if (sync != PSP_DISPLAY_SETBUF_IMMEDIATE && sync != PSP_DISPLAY_SETBUF_NEXTFRAME) {
 		return hleLogError(Log::sceDisplay, SCE_KERNEL_ERROR_INVALID_MODE, "invalid sync mode");
 	}
@@ -910,12 +910,12 @@ u32 sceDisplaySetFramebuf(u32 topaddr, int linesize, int pixelformat, int sync) 
 		// Okay, the game is going at too high a frame rate.  God of War and Fat Princess both do this.
 		// Simply eating the cycles works and is fast, but breaks other games (like Jeanne d'Arc.)
 		// So, instead, we delay this HLE thread only (a small deviation from correct behavior.)
-		return hleDelayResult(hleLogSuccessI(Log::sceDisplay, 0, "delaying frame thread"), "set framebuf", cyclesToUs(delayCycles));
+		return hleDelayResult(hleLogDebug(Log::sceDisplay, 0, "delaying frame thread"), "set framebuf", cyclesToUs(delayCycles));
 	} else {
 		if (topaddr == 0) {
-			return hleLogSuccessI(Log::sceDisplay, 0, "disabling display");
+			return hleLogDebug(Log::sceDisplay, 0, "disabling display");
 		} else {
-			return hleLogSuccessI(Log::sceDisplay, 0);
+			return hleLogDebug(Log::sceDisplay, 0);
 		}
 	}
 }
@@ -942,30 +942,30 @@ static u32 sceDisplayGetFramebuf(u32 topaddrPtr, u32 linesizePtr, u32 pixelForma
 	if (Memory::IsValidAddress(pixelFormatPtr))
 		Memory::Write_U32(fbState.fmt, pixelFormatPtr);
 
-	return hleLogSuccessI(Log::sceDisplay, 0);
+	return hleLogDebug(Log::sceDisplay, 0);
 }
 
 static void __DisplayWaitForVblanksCB(const char *reason, int vblanks) {
 	__DisplayWaitForVblanks(reason, vblanks, true);
 }
 
-static u32 sceDisplayWaitVblankStart() {
+static int sceDisplayWaitVblankStart() {
 	__DisplayWaitForVblanks("vblank start waited", 1);
-	return hleLogSuccessI(Log::sceDisplay, 0);
+	return hleLogDebug(Log::sceDisplay, 0);
 }
 
-static u32 sceDisplayWaitVblank() {
+static int sceDisplayWaitVblank() {
 	if (!DisplayIsVblank()) {
 		__DisplayWaitForVblanks("vblank waited", 1);
-		return hleLogSuccessI(Log::sceDisplay, 0);
+		return hleLogDebug(Log::sceDisplay, 0);
 	} else {
 		hleEatCycles(1110);
 		hleReSchedule("vblank wait skipped");
-		return hleLogSuccessI(Log::sceDisplay, 1, "not waiting since in vblank");
+		return hleLogDebug(Log::sceDisplay, 1, "not waiting since in vblank");
 	}
 }
 
-static u32 sceDisplayWaitVblankStartMulti(int vblanks) {
+static int sceDisplayWaitVblankStartMulti(int vblanks) {
 	if (vblanks <= 0) {
 		return hleLogWarning(Log::sceDisplay, SCE_KERNEL_ERROR_INVALID_VALUE, "invalid number of vblanks");
 	}
@@ -975,26 +975,26 @@ static u32 sceDisplayWaitVblankStartMulti(int vblanks) {
 		return hleLogWarning(Log::sceDisplay, SCE_KERNEL_ERROR_ILLEGAL_CONTEXT, "in interrupt");
 
 	__DisplayWaitForVblanks("vblank start multi waited", vblanks);
-	return hleLogSuccessI(Log::sceDisplay, 0);
+	return hleLogDebug(Log::sceDisplay, 0);
 }
 
-static u32 sceDisplayWaitVblankCB() {
+static int sceDisplayWaitVblankCB() {
 	if (!DisplayIsVblank()) {
 		__DisplayWaitForVblanksCB("vblank waited", 1);
-		return hleLogSuccessI(Log::sceDisplay, 0);
+		return hleLogDebug(Log::sceDisplay, 0);
 	} else {
 		hleEatCycles(1110);
 		hleReSchedule("vblank wait skipped");
-		return hleLogSuccessI(Log::sceDisplay, 1, "not waiting since in vblank");
+		return hleLogDebug(Log::sceDisplay, 1, "not waiting since in vblank");
 	}
 }
 
-static u32 sceDisplayWaitVblankStartCB() {
+static int sceDisplayWaitVblankStartCB() {
 	__DisplayWaitForVblanksCB("vblank start waited", 1);
-	return hleLogSuccessI(Log::sceDisplay, 0);
+	return hleLogDebug(Log::sceDisplay, 0);
 }
 
-static u32 sceDisplayWaitVblankStartMultiCB(int vblanks) {
+static int sceDisplayWaitVblankStartMultiCB(int vblanks) {
 	if (vblanks <= 0) {
 		return hleLogWarning(Log::sceDisplay, SCE_KERNEL_ERROR_INVALID_VALUE, "invalid number of vblanks");
 	}
@@ -1004,18 +1004,18 @@ static u32 sceDisplayWaitVblankStartMultiCB(int vblanks) {
 		return hleLogWarning(Log::sceDisplay, SCE_KERNEL_ERROR_ILLEGAL_CONTEXT, "in interrupt");
 
 	__DisplayWaitForVblanksCB("vblank start multi waited", vblanks);
-	return hleLogSuccessI(Log::sceDisplay, 0);
+	return hleLogDebug(Log::sceDisplay, 0);
 }
 
-static u32 sceDisplayGetVcount() {
+static int sceDisplayGetVcount() {
 	hleEatCycles(150);
 	hleReSchedule("get vcount");
-	return hleLogSuccessVerboseI(Log::sceDisplay, __DisplayGetVCount());
+	return hleLogVerbose(Log::sceDisplay, __DisplayGetVCount());
 }
 
-static u32 sceDisplayGetCurrentHcount() {
+static int sceDisplayGetCurrentHcount() {
 	hleEatCycles(275);
-	return hleLogSuccessI(Log::sceDisplay, __DisplayGetCurrentHcount());
+	return hleLogDebug(Log::sceDisplay, __DisplayGetCurrentHcount());
 }
 
 static int sceDisplayAdjustAccumulatedHcount(int value) {
@@ -1028,13 +1028,13 @@ static int sceDisplayAdjustAccumulatedHcount(int value) {
 	int diff = value - accumHCount;
 	DisplayAdjustAccumulatedHcount(diff);
 
-	return hleLogSuccessI(Log::sceDisplay, 0);
+	return hleLogDebug(Log::sceDisplay, 0);
 }
 
 static int sceDisplayGetAccumulatedHcount() {
 	u32 accumHCount = __DisplayGetAccumulatedHcount();
 	hleEatCycles(235);
-	return hleLogSuccessI(Log::sceDisplay, accumHCount);
+	return hleLogDebug(Log::sceDisplay, accumHCount);
 }
 
 static float sceDisplayGetFramePerSec() {
@@ -1044,7 +1044,7 @@ static float sceDisplayGetFramePerSec() {
 
 static u32 sceDisplayIsForeground() {
 	int result = hasSetMode && framebuf.topaddr != 0 ? 1 : 0;
-	return hleLogSuccessI(Log::sceDisplay, result);
+	return hleLogDebug(Log::sceDisplay, result);
 }
 
 static u32 sceDisplayGetMode(u32 modeAddr, u32 widthAddr, u32 heightAddr) {
@@ -1054,7 +1054,7 @@ static u32 sceDisplayGetMode(u32 modeAddr, u32 widthAddr, u32 heightAddr) {
 		Memory::Write_U32(width, widthAddr);
 	if (Memory::IsValidAddress(heightAddr))
 		Memory::Write_U32(height, heightAddr);
-	return hleLogSuccessI(Log::sceDisplay, 0);
+	return hleLogDebug(Log::sceDisplay, 0);
 }
 
 static u32 sceDisplayIsVsync() {
@@ -1062,13 +1062,13 @@ static u32 sceDisplayIsVsync() {
 	u64 start = DisplayFrameStartTicks() + msToCycles(vsyncStartMs);
 	u64 end = DisplayFrameStartTicks() + msToCycles(vsyncEndMs);
 
-	return hleLogSuccessI(Log::sceDisplay, now >= start && now <= end ? 1 : 0);
+	return hleLogDebug(Log::sceDisplay, now >= start && now <= end ? 1 : 0);
 }
 
 static u32 sceDisplayGetResumeMode(u32 resumeModeAddr) {
 	if (Memory::IsValidAddress(resumeModeAddr))
 		Memory::Write_U32(resumeMode, resumeModeAddr);
-	return hleLogSuccessI(Log::sceDisplay, 0);
+	return hleLogDebug(Log::sceDisplay, 0);
 }
 
 static u32 sceDisplaySetResumeMode(u32 rMode) {
@@ -1104,19 +1104,19 @@ static u32 sceDisplaySetHoldMode(u32 hMode) {
 
 const HLEFunction sceDisplay[] = {
 	{0X0E20F177, &WrapU_III<sceDisplaySetMode>,               "sceDisplaySetMode",                 'x', "iii" },
-	{0X289D82FE, &WrapU_UIII<sceDisplaySetFramebuf>,          "sceDisplaySetFrameBuf",             'x', "xiii"},
+	{0X289D82FE, &WrapI_UIII<sceDisplaySetFramebuf>,          "sceDisplaySetFrameBuf",             'i', "xiii"},
 	{0XEEDA2E54, &WrapU_UUUI<sceDisplayGetFramebuf>,          "sceDisplayGetFrameBuf",             'x', "pppi"},
-	{0X36CDFADE, &WrapU_V<sceDisplayWaitVblank>,              "sceDisplayWaitVblank",              'x', "",   HLE_NOT_DISPATCH_SUSPENDED },
-	{0X984C27E7, &WrapU_V<sceDisplayWaitVblankStart>,         "sceDisplayWaitVblankStart",         'x', "",   HLE_NOT_IN_INTERRUPT | HLE_NOT_DISPATCH_SUSPENDED },
-	{0X40F1469C, &WrapU_I<sceDisplayWaitVblankStartMulti>,    "sceDisplayWaitVblankStartMulti",    'x', "i"   },
-	{0X8EB9EC49, &WrapU_V<sceDisplayWaitVblankCB>,            "sceDisplayWaitVblankCB",            'x', "",   HLE_NOT_DISPATCH_SUSPENDED },
-	{0X46F186C3, &WrapU_V<sceDisplayWaitVblankStartCB>,       "sceDisplayWaitVblankStartCB",       'x', "",   HLE_NOT_IN_INTERRUPT | HLE_NOT_DISPATCH_SUSPENDED },
-	{0X77ED8B3A, &WrapU_I<sceDisplayWaitVblankStartMultiCB>,  "sceDisplayWaitVblankStartMultiCB",  'x', "i"   },
+	{0X36CDFADE, &WrapI_V<sceDisplayWaitVblank>,              "sceDisplayWaitVblank",              'i', "",   HLE_NOT_DISPATCH_SUSPENDED },
+	{0X984C27E7, &WrapI_V<sceDisplayWaitVblankStart>,         "sceDisplayWaitVblankStart",         'i', "",   HLE_NOT_IN_INTERRUPT | HLE_NOT_DISPATCH_SUSPENDED },
+	{0X40F1469C, &WrapI_I<sceDisplayWaitVblankStartMulti>,    "sceDisplayWaitVblankStartMulti",    'i', "i"   },
+	{0X8EB9EC49, &WrapI_V<sceDisplayWaitVblankCB>,            "sceDisplayWaitVblankCB",            'i', "",   HLE_NOT_DISPATCH_SUSPENDED },
+	{0X46F186C3, &WrapI_V<sceDisplayWaitVblankStartCB>,       "sceDisplayWaitVblankStartCB",       'i', "",   HLE_NOT_IN_INTERRUPT | HLE_NOT_DISPATCH_SUSPENDED },
+	{0X77ED8B3A, &WrapI_I<sceDisplayWaitVblankStartMultiCB>,  "sceDisplayWaitVblankStartMultiCB",  'i', "i"   },
 	{0XDBA6C4C4, &WrapF_V<sceDisplayGetFramePerSec>,          "sceDisplayGetFramePerSec",          'f', ""    },
-	{0X773DD3A3, &WrapU_V<sceDisplayGetCurrentHcount>,        "sceDisplayGetCurrentHcount",        'x', ""    },
+	{0X773DD3A3, &WrapI_V<sceDisplayGetCurrentHcount>,        "sceDisplayGetCurrentHcount",        'i', ""    },
 	{0X210EAB3A, &WrapI_V<sceDisplayGetAccumulatedHcount>,    "sceDisplayGetAccumulatedHcount",    'i', ""    },
 	{0XA83EF139, &WrapI_I<sceDisplayAdjustAccumulatedHcount>, "sceDisplayAdjustAccumulatedHcount", 'i', "i"   },
-	{0X9C6EAAD7, &WrapU_V<sceDisplayGetVcount>,               "sceDisplayGetVcount",               'x', ""    },
+	{0X9C6EAAD7, &WrapI_V<sceDisplayGetVcount>,               "sceDisplayGetVcount",               'i', ""    },
 	{0XDEA197D4, &WrapU_UUU<sceDisplayGetMode>,               "sceDisplayGetMode",                 'x', "ppp" },
 	{0X7ED59BC4, &WrapU_U<sceDisplaySetHoldMode>,             "sceDisplaySetHoldMode",             'x', "x"   },
 	{0XA544C486, &WrapU_U<sceDisplaySetResumeMode>,           "sceDisplaySetResumeMode",           'x', "x"   },
