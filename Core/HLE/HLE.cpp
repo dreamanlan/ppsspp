@@ -1026,6 +1026,7 @@ void hleDoLogInternal(Log t, LogLevel level, u64 res, const char *file, int line
 			fmt = "%sSCE_KERNEL_ERROR_%s=%s(%s)%s";
 		} else {
 			fmt = "%s%08llx=%s(%s)%s";
+			errStr = nullptr;  // We check errstr later to determine which format to use.
 		}
 		break;
 	case 'i':
@@ -1035,6 +1036,7 @@ void hleDoLogInternal(Log t, LogLevel level, u64 res, const char *file, int line
 			fmt = "%sSCE_KERNEL_ERROR_%s=%s(%s)%s";
 		} else {
 			fmt = "%s%lld=%s(%s)%s";
+			errStr = nullptr;  // We check errstr later to determine which format to use.
 		}
 		break;
 	case 'f':
@@ -1042,8 +1044,8 @@ void hleDoLogInternal(Log t, LogLevel level, u64 res, const char *file, int line
 		fmt = "%s%08llx=%s(%s)%s";
 		break;
 	case 'v':
-		// Void. Return value should not be shown.
-		fmt = "%s=%s(%s)%s";
+		// Void. Return value should not be shown. (the first %s is the "K " string, see below).
+		fmt = "%s%s(%s)%s";
 		break;
 	default:
 		_dbg_assert_msg_(false, "Invalid return format: %c", retmask);
@@ -1068,11 +1070,21 @@ void hleDoLogInternal(Log t, LogLevel level, u64 res, const char *file, int line
 		if (reportTag[0] == '\0' || Reporting::ShouldLogNTimes(reportTag, 1)) {
 			// Here we want the original key, so that different args, etc. group together.
 			std::string key = std::string(kernelFlag) + std::string("%08x=") + funcName + "(%s)";
-			if (reason != nullptr)
-				key += std::string(": ") + reason;
+			if (reason != nullptr) {
+				key += ": ";
+				key += reason;
+			}
 
 			char formatted_message[8192];
-			snprintf(formatted_message, sizeof(formatted_message), fmt, kernelFlag, res, funcName, formatted_args, formatted_reason);
+			if (retmask != 'v') {
+				if (errStr) {
+					snprintf(formatted_message, sizeof(formatted_message), fmt, kernelFlag, errStr, funcName, formatted_args, formatted_reason);
+				} else {
+					snprintf(formatted_message, sizeof(formatted_message), fmt, kernelFlag, res, funcName, formatted_args, formatted_reason);
+				}
+			} else {
+				snprintf(formatted_message, sizeof(formatted_message), fmt, kernelFlag, funcName, formatted_args, formatted_reason);
+			}
 			Reporting::ReportMessageFormatted(key.c_str(), formatted_message);
 		}
 	}
