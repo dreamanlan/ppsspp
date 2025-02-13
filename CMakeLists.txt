@@ -69,6 +69,8 @@ if(CMAKE_SYSTEM_PROCESSOR)
 		set(RISCV64_DEVICE ON)
 	elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^loongarch64")
 		set(LOONGARCH64_DEVICE ON)
+		add_compile_options(-mlsx)
+		add_compile_options(-mlasx)
 	else()
 		message("Unknown CMAKE_SYSTEM_PROCESSOR: ${CMAKE_SYSTEM_PROCESSOR}")
 	endif()
@@ -924,7 +926,6 @@ add_library(Common STATIC
 	Common/SysError.cpp
 	Common/TimeUtil.cpp
 	Common/TimeUtil.h
-	Common/Battery/Battery.h
 )
 
 include_directories(Common)
@@ -2251,6 +2252,8 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/HLE/sceMpeg.h
 	Core/HLE/sceNet.cpp
 	Core/HLE/sceNet.h
+	Core/HLE/sceNet_lib.cpp
+	Core/HLE/sceNet_lib.h
 	Core/HLE/sceNetAdhoc.cpp
 	Core/HLE/sceNetAdhoc.h
 	Core/HLE/sceNetAdhocMatching.cpp

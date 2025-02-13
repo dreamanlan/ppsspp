@@ -279,10 +279,19 @@ public:
 	// Sound
 	bool bEnableSound;
 	int iAudioBackend;
-	int iGlobalVolume;
+
+	// Legacy volume settings, 0-10. These get auto-upgraded and should not be used.
+	int iLegacyGameVolume;
+	int iLegacyReverbVolume;
+	int iLegacyAchievementVolume;
+
+	// Newer volume settings, 0-100
+	int iGameVolume;
 	int iReverbVolume;
+	int iUIVolume;
+	int iAchievementVolume;
 	int iAltSpeedVolume;
-	int iAchievementSoundVolume;
+
 	bool bExtraAudioBuffering;  // For bluetooth
 	std::string sAudioDevice;
 	bool bAutoAudioDevice;

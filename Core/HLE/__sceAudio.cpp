@@ -17,7 +17,7 @@
 
 #include <atomic>
 #include <mutex>
-
+#include <algorithm>
 #include "Common/Common.h"
 #include "Common/File/Path.h"
 #include "Common/Serialize/Serializer.h"
@@ -414,7 +414,16 @@ void __AudioUpdate(bool resetRecording) {
 	}
 
 	if (g_Config.bEnableSound) {
-		System_AudioPushSamples(mixBuffer, hwBlockSize);
+		float multiplier = Volume100ToMultiplier(std::clamp(g_Config.iGameVolume, 0, VOLUMEHI_FULL));
+		if (PSP_CoreParameter().fpsLimit != FPSLimit::NORMAL || PSP_CoreParameter().fastForward) {
+			if (g_Config.iAltSpeedVolume != -1) {
+				// Multiply in the alt speed volume instead of replacing like before.
+				multiplier *= Volume100ToMultiplier(g_Config.iAltSpeedVolume);
+			}
+		}
+
+		System_AudioPushSamples(mixBuffer, hwBlockSize, multiplier);
+
 #ifndef MOBILE_DEVICE
 		if (g_Config.bSaveLoadResetsAVdumping && resetRecording) {
 			__StopLogAudio();

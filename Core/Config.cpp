@@ -40,6 +40,7 @@
 #include "Common/File/FileUtil.h"
 #include "Common/File/VFS/VFS.h"
 #include "Common/Log/LogManager.h"
+#include "Common/Math/CrossSIMD.h"
 #include "Common/OSVersion.h"
 #include "Common/System/Display.h"
 #include "Common/System/System.h"
@@ -140,6 +141,11 @@ std::string DefaultLangRegion() {
 }
 
 static int DefaultDepthRaster() {
+#ifdef CROSSSIMD_SLOW
+	// No SIMD acceleration for the depth rasterizer.
+	// Default to off.
+	return (int)DepthRasterMode::OFF;
+#endif
 
 // For 64-bit ARM and x86 with SIMD, enable depth raster.
 #if PPSSPP_ARCH(ARM64_NEON) || PPSSPP_ARCH(SSE2)
@@ -739,14 +745,43 @@ static const ConfigSetting graphicsSettings[] = {
 	ConfigSetting("DisplayRefreshRate", &g_Config.iDisplayRefreshRate, g_Config.iDisplayRefreshRate, CfgFlag::PER_GAME),
 };
 
+static int LegacyVolumeToNewVolume(int legacy, int max) {
+	float multiplier = Volume10ToMultiplier(legacy);
+	return std::clamp(MultiplierToVolume100(multiplier), 0, max);
+}
+
+static int DefaultGameVolume() {
+	return LegacyVolumeToNewVolume(g_Config.iLegacyGameVolume, 100);
+}
+
+static int DefaultReverbVolume() {
+	return LegacyVolumeToNewVolume(g_Config.iLegacyReverbVolume, 200);
+}
+
+static int DefaultAchievementVolume() {
+	// NOTE: The old achievemnt volume was a straight percentage so it doesn't convert
+	// the same as the others.
+	return MultiplierToVolume100((float)g_Config.iLegacyAchievementVolume / 10.0f);
+}
+
 static const ConfigSetting soundSettings[] = {
 	ConfigSetting("Enable", &g_Config.bEnableSound, true, CfgFlag::PER_GAME),
 	ConfigSetting("AudioBackend", &g_Config.iAudioBackend, 0, CfgFlag::PER_GAME),
 	ConfigSetting("ExtraAudioBuffering", &g_Config.bExtraAudioBuffering, false, CfgFlag::DEFAULT),
-	ConfigSetting("GlobalVolume", &g_Config.iGlobalVolume, VOLUME_FULL, CfgFlag::PER_GAME),
-	ConfigSetting("ReverbVolume", &g_Config.iReverbVolume, VOLUME_FULL, CfgFlag::PER_GAME),
-	ConfigSetting("AltSpeedVolume", &g_Config.iAltSpeedVolume, -1, CfgFlag::PER_GAME),
-	ConfigSetting("AchievementSoundVolume", &g_Config.iAchievementSoundVolume, 6, CfgFlag::PER_GAME),
+
+	// Legacy volume settings, these get auto upgraded through default handlers on the new settings. NOTE: Must be before the new ones in the order here.
+	// The default settings here are still relevant, they will get propagated into the new ones.
+	ConfigSetting("GlobalVolume", &g_Config.iLegacyGameVolume, VOLUME_FULL, CfgFlag::PER_GAME | CfgFlag::DONT_SAVE),
+	ConfigSetting("ReverbVolume", &g_Config.iLegacyReverbVolume, VOLUME_FULL, CfgFlag::PER_GAME | CfgFlag::DONT_SAVE),
+	ConfigSetting("AchievementSoundVolume", &g_Config.iLegacyAchievementVolume, 6, CfgFlag::PER_GAME | CfgFlag::DONT_SAVE),
+
+	// Current volume settings.
+	ConfigSetting("GameVolume", &g_Config.iGameVolume, &DefaultGameVolume, CfgFlag::PER_GAME),
+	ConfigSetting("ReverbRelativeVolume", &g_Config.iReverbVolume, &DefaultReverbVolume, CfgFlag::PER_GAME),
+	ConfigSetting("AltSpeedRelativeVolume", &g_Config.iAltSpeedVolume, VOLUMEHI_FULL, CfgFlag::PER_GAME),
+	ConfigSetting("AchievementVolume", &g_Config.iAchievementVolume, &DefaultAchievementVolume, CfgFlag::PER_GAME),
+	ConfigSetting("UIVolume", &g_Config.iUIVolume, 75, CfgFlag::DEFAULT),
+
 	ConfigSetting("AudioDevice", &g_Config.sAudioDevice, "", CfgFlag::DEFAULT),
 	ConfigSetting("AutoAudioDevice", &g_Config.bAutoAudioDevice, true, CfgFlag::DEFAULT),
 	ConfigSetting("AudioMixWithOthers", &g_Config.bAudioMixWithOthers, true, CfgFlag::DEFAULT),
@@ -1287,12 +1322,14 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
 			vPostShaderNames.push_back(it.second);
 	}
 
-	// Check for an old dpad setting
-	Section *control = iniFile.GetOrCreateSection("Control");
-	float f;
-	control->Get("DPadRadius", &f, 0.0f);
-	if (f > 0.0f) {
-		ResetControlLayout();
+	// Check for an old dpad setting (very obsolete)
+	Section *control = iniFile.GetSection("Control");
+	if (control) {
+		float f;
+		control->Get("DPadRadius", &f, 0.0f);
+		if (f > 0.0f) {
+			ResetControlLayout();
+		}
 	}
 
 	// Force JIT setting to a valid value for the current system configuration.
@@ -1457,6 +1494,7 @@ bool Config::Save(const char *saveReason) {
 	return true;
 }
 
+// A lot more cleanup tasks should be moved into here, and some of these are severely outdated.
 void Config::PostLoadCleanup(bool gameSpecific) {
 	// Override ppsspp.ini JIT value to prevent crashing
 	jitForcedOff = DefaultCpuCore() != (int)CPUCore::JIT && (g_Config.iCpuCore == (int)CPUCore::JIT || g_Config.iCpuCore == (int)CPUCore::JIT_IR);
@@ -1479,7 +1517,7 @@ void Config::PostLoadCleanup(bool gameSpecific) {
 
 	// Automatically silence secondary instances. Could be an option I guess, but meh.
 	if (PPSSPP_ID > 1) {
-		g_Config.iGlobalVolume = 0;
+		g_Config.iGameVolume = 0;
 	}
 
 	// Automatically switch away from deprecated setting value.
@@ -1491,6 +1529,9 @@ void Config::PostLoadCleanup(bool gameSpecific) {
 	if (g_Config.sCustomDriver == "Default") {
 		g_Config.sCustomDriver = "";
 	}
+
+	// Convert old volume settings.
+
 }
 
 void Config::PreSaveCleanup(bool gameSpecific) {
@@ -2080,4 +2121,32 @@ bool PlayTimeTracker::GetPlayedTimeString(const std::string &gameId, std::string
 
 	*str = ApplySafeSubstitutions(ga->T("Time Played: %1h %2m %3s"), hours, minutes, seconds);
 	return true;
+}
+
+// This matches exactly the old shift-based curve.
+float Volume10ToMultiplier(int volume) {
+	// Allow muting entirely.
+	if (volume <= 0) {
+		return 0.0f;
+	}
+	return powf(2.0f, (float)(volume - 10));
+}
+
+// NOTE: This is used for new volume parameters.
+// It uses a more intuitive-feeling curve.
+float Volume100ToMultiplier(int volume) {
+	// Switch to linear above the 1.0f point.
+	if (volume > 100) {
+		return volume / 100.0f;
+	}
+	return powf(volume * 0.01f, 1.75f);
+}
+
+// Used for migration from the old settings.
+int MultiplierToVolume100(float multiplier) {
+	// Switch to linear above the 1.0f point.
+	if (multiplier > 1.0f) {
+		return multiplier * 100;
+	}
+	return (int)(powf(multiplier, 1.0f / 1.75f) * 100.f + 0.5f);
 }

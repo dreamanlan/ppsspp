@@ -33,7 +33,6 @@
 #include "Common/System/Display.h"  // Only to check screen aspect ratio with pixel_yres/pixel_xres
 #include "Common/System/Request.h"
 #include "Common/System/OSD.h"
-#include "Common/Battery/Battery.h"
 #include "Common/System/NativeApp.h"
 #include "Common/Data/Color/RGBAUtil.h"
 #include "Common/Math/curves.h"
@@ -59,6 +58,7 @@
 #include "UI/RetroAchievementScreens.h"
 #include "UI/OnScreenDisplay.h"
 #include "UI/DiscordIntegration.h"
+#include "UI/BackgroundAudio.h"
 
 #include "Common/File/FileUtil.h"
 #include "Common/File/AndroidContentURI.h"
@@ -622,11 +622,11 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	});
 
 	graphicsSettings->Add(new ItemHeader(gr->T("Overlay Information")));
-	BitCheckBox *showFPSCtr = graphicsSettings->Add(new BitCheckBox(&g_Config.iShowStatusFlags, (int)ShowStatusFlags::FPS_COUNTER, gr->T("Show FPS Counter")));
-	BitCheckBox *showSpeed = graphicsSettings->Add(new BitCheckBox(&g_Config.iShowStatusFlags, (int)ShowStatusFlags::SPEED_COUNTER, gr->T("Show Speed")));
-#ifdef CAN_DISPLAY_CURRENT_BATTERY_CAPACITY
-	BitCheckBox *showBattery = graphicsSettings->Add(new BitCheckBox(&g_Config.iShowStatusFlags, (int)ShowStatusFlags::BATTERY_PERCENT, gr->T("Show Battery %")));
-#endif
+	graphicsSettings->Add(new BitCheckBox(&g_Config.iShowStatusFlags, (int)ShowStatusFlags::FPS_COUNTER, gr->T("Show FPS Counter")));
+	graphicsSettings->Add(new BitCheckBox(&g_Config.iShowStatusFlags, (int)ShowStatusFlags::SPEED_COUNTER, gr->T("Show Speed")));
+	if (System_GetPropertyBool(SYSPROP_CAN_READ_BATTERY_PERCENTAGE)) {
+		graphicsSettings->Add(new BitCheckBox(&g_Config.iShowStatusFlags, (int)ShowStatusFlags::BATTERY_PERCENT, gr->T("Show Battery %")));
+	}
 	AddOverlayList(graphicsSettings, screenManager());
 }
 
@@ -636,9 +636,6 @@ void GameSettingsScreen::CreateAudioSettings(UI::ViewGroup *audioSettings) {
 	auto a = GetI18NCategory(I18NCat::AUDIO);
 	auto ac = GetI18NCategory(I18NCat::ACHIEVEMENTS);
 	auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
-
-	audioSettings->Add(new ItemHeader(ms->T("Audio")));
-	CheckBox *enableSound = audioSettings->Add(new CheckBox(&g_Config.bEnableSound,a->T("Enable Sound")));
 
 #if PPSSPP_PLATFORM(IOS)
 	CheckBox *respectSilentMode = audioSettings->Add(new CheckBox(&g_Config.bAudioRespectSilentMode, a->T("Respect silent mode")));
@@ -655,29 +652,57 @@ void GameSettingsScreen::CreateAudioSettings(UI::ViewGroup *audioSettings) {
 	mixWithOthers->SetEnabledPtr(&g_Config.bEnableSound);
 #endif
 
-	PopupSliderChoice *volume = audioSettings->Add(new PopupSliderChoice(&g_Config.iGlobalVolume, VOLUME_OFF, VOLUME_FULL, VOLUME_FULL, a->T("Global volume"), screenManager()));
+	audioSettings->Add(new ItemHeader(a->T("Game volume")));
+
+	// This is here because it now only applies to in-game. Muting the menu sounds is separate.
+	CheckBox *enableSound = audioSettings->Add(new CheckBox(&g_Config.bEnableSound, a->T("Enable Sound")));
+
+	PopupSliderChoice *volume = audioSettings->Add(new PopupSliderChoice(&g_Config.iGameVolume, VOLUME_OFF, VOLUMEHI_FULL, VOLUMEHI_FULL, a->T("Game volume"), screenManager()));
+	volume->SetFormat("%d%%");
 	volume->SetEnabledPtr(&g_Config.bEnableSound);
 	volume->SetZeroLabel(a->T("Mute"));
 
-	PopupSliderChoice *altVolume = audioSettings->Add(new PopupSliderChoice(&g_Config.iAltSpeedVolume, VOLUME_OFF, VOLUME_FULL, NO_DEFAULT_INT, a->T("Alternate speed volume"), screenManager()));
-	altVolume->SetEnabledPtr(&g_Config.bEnableSound);
-	altVolume->SetZeroLabel(a->T("Mute"));
-	altVolume->SetNegativeDisable(a->T("Use global volume"));
-
-	PopupSliderChoice *reverbVolume = audioSettings->Add(new PopupSliderChoice(&g_Config.iReverbVolume, VOLUME_OFF, 2 * VOLUME_FULL, VOLUME_FULL, a->T("Reverb volume"), screenManager()));
+	PopupSliderChoice *reverbVolume = audioSettings->Add(new PopupSliderChoice(&g_Config.iReverbVolume, VOLUME_OFF, 2 * VOLUMEHI_FULL, VOLUMEHI_FULL, a->T("Reverb volume"), screenManager()));
+	reverbVolume->SetFormat("%d%%");
 	reverbVolume->SetEnabledPtr(&g_Config.bEnableSound);
 	reverbVolume->SetZeroLabel(a->T("Disabled"));
 
-	PopupSliderChoice *achievementVolume = audioSettings->Add(new PopupSliderChoice(&g_Config.iAchievementSoundVolume, VOLUME_OFF, VOLUME_FULL, VOLUME_FULL, ac->T("Achievement sound volume"), screenManager()));
+	PopupSliderChoice *altVolume = audioSettings->Add(new PopupSliderChoice(&g_Config.iAltSpeedVolume, VOLUME_OFF, VOLUMEHI_FULL, NO_DEFAULT_INT, a->T("Alternate speed volume"), screenManager()));
+	altVolume->SetFormat("%d%%");
+	altVolume->SetEnabledPtr(&g_Config.bEnableSound);
+	altVolume->SetZeroLabel(a->T("Mute"));
+
+	PopupSliderChoice *achievementVolume = audioSettings->Add(new PopupSliderChoice(&g_Config.iAchievementVolume, VOLUME_OFF, VOLUMEHI_FULL, MultiplierToVolume100(0.6f), ac->T("Achievement sound volume"), screenManager()));
+	achievementVolume->SetFormat("%d%%");
 	achievementVolume->SetEnabledPtr(&g_Config.bEnableSound);
 	achievementVolume->SetZeroLabel(a->T("Mute"));
+	achievementVolume->SetLiveUpdate(true);
+	achievementVolume->OnChange.Add([](UI::EventParams &e) {
+		// Audio preview
+		float achievementVolume = Volume100ToMultiplier(g_Config.iAchievementVolume);
+		g_BackgroundAudio.SFX().Play(UI::UISound::ACHIEVEMENT_UNLOCKED, achievementVolume);
+		return UI::EVENT_DONE;
+	});
+
+	audioSettings->Add(new ItemHeader(a->T("UI sound")));
+
+	audioSettings->Add(new CheckBox(&g_Config.bUISound, a->T("UI sound")));
+	PopupSliderChoice *uiVolume = audioSettings->Add(new PopupSliderChoice(&g_Config.iUIVolume, 0, VOLUMEHI_FULL, VOLUMEHI_FULL, ac->T("UI volume"), screenManager()));
+	uiVolume->SetFormat("%d%%");
+	uiVolume->SetZeroLabel(a->T("Mute"));
+	uiVolume->SetLiveUpdate(true);
+	uiVolume->OnChange.Add([](UI::EventParams &e) {
+		// Audio preview
+		PlayUISound(UI::UISound::CONFIRM);
+		return UI::EVENT_DONE;
+	});
+	audioSettings->Add(new ItemHeader(a->T("Audio backend")));
 
 	// Hide the backend selector in UWP builds (we only support XAudio2 there).
 #if PPSSPP_PLATFORM(WINDOWS) && !PPSSPP_PLATFORM(UWP)
 	if (IsVistaOrHigher()) {
 		static const char *backend[] = { "Auto", "DSound (compatible)", "WASAPI (fast)" };
-		PopupMultiChoice *audioBackend = audioSettings->Add(new PopupMultiChoice(&g_Config.iAudioBackend, a->T("Audio backend", "Audio backend (restart req.)"), backend, 0, ARRAY_SIZE(backend), I18NCat::AUDIO, screenManager()));
-		audioBackend->SetEnabledPtr(&g_Config.bEnableSound);
+		audioSettings->Add(new PopupMultiChoice(&g_Config.iAudioBackend, a->T("Audio backend", "Audio backend (restart req.)"), backend, 0, ARRAY_SIZE(backend), I18NCat::AUDIO, screenManager()));
 	}
 #endif
 
@@ -697,7 +722,6 @@ void GameSettingsScreen::CreateAudioSettings(UI::ViewGroup *audioSettings) {
 
 #if PPSSPP_PLATFORM(ANDROID)
 	CheckBox *extraAudio = audioSettings->Add(new CheckBox(&g_Config.bExtraAudioBuffering, a->T("AudioBufferingForBluetooth", "Bluetooth-friendly buffer (slower)")));
-	extraAudio->SetEnabledPtr(&g_Config.bEnableSound);
 
 	// Show OpenSL debug info
 	const std::string audioErrorStr = AndroidAudio_GetErrorString(g_audioState);
@@ -1100,7 +1124,6 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	});
 #endif
 
-	systemSettings->Add(new CheckBox(&g_Config.bUISound, sy->T("UI Sound")));
 	const Path bgPng = GetSysDirectory(DIRECTORY_SYSTEM) / "background.png";
 	const Path bgJpg = GetSysDirectory(DIRECTORY_SYSTEM) / "background.jpg";
 	if (File::Exists(bgPng) || File::Exists(bgJpg)) {
