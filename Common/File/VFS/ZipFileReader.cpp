@@ -58,8 +58,12 @@ uint8_t *ZipFileReader::ReadFile(const char *path, size_t *size) {
 	std::lock_guard<std::mutex> guard(lock_);
 	// Figure out the file size first.
 	struct zip_stat zstat;
-	zip_stat(zip_file_, temp_path.c_str(), ZIP_FL_NOCASE | ZIP_FL_UNCHANGED, &zstat);
-	zip_file *file = zip_fopen(zip_file_, temp_path.c_str(), ZIP_FL_NOCASE | ZIP_FL_UNCHANGED);
+	int retval = zip_stat(zip_file_, temp_path.c_str(), ZIP_FL_NOCASE | ZIP_FL_UNCHANGED, &zstat);
+	if (retval != 0) {
+		ERROR_LOG(Log::IO, "Error opening %s from ZIP", temp_path.c_str());
+		return 0;
+	}
+	zip_file *file = zip_fopen_index(zip_file_, zstat.index, ZIP_FL_NOCASE | ZIP_FL_UNCHANGED);
 	if (!file) {
 		ERROR_LOG(Log::IO, "Error opening %s from ZIP", temp_path.c_str());
 		return 0;
@@ -313,4 +317,49 @@ void ZipFileReader::CloseFile(VFSOpenFile *vfsOpenFile) {
 	vfsOpenFile = nullptr;
 	lock_.unlock();
 	delete file;
+}
+
+bool ReadSingleFileFromZip(Path zipFile, const char *path, std::string *data, std::mutex *mutex) {
+	zip *zip = nullptr;
+	int error = 0;
+	if (zipFile.Type() == PathType::CONTENT_URI) {
+		int fd = File::OpenFD(zipFile, File::OPEN_READ);
+		if (!fd) {
+			return false;
+		}
+		zip = zip_fdopen(fd, 0, &error);
+	} else {
+		zip = zip_open(zipFile.c_str(), 0, &error);
+	}
+
+	if (!zip) {
+		return false;
+	}
+
+	struct zip_stat zstat;
+	if (zip_stat(zip, path, ZIP_FL_NOCASE | ZIP_FL_UNCHANGED, &zstat) != 0) {
+		return false;
+	}
+	zip_file *file = zip_fopen_index(zip, zstat.index, ZIP_FL_UNCHANGED);
+	if (!file) {
+		return false;
+	}
+	if (mutex) {
+		mutex->lock();
+	}
+	data->resize(zstat.size);
+	if (zip_fread(file, data->data(), zstat.size) != zstat.size) {
+		if (mutex) {
+			mutex->unlock();
+		}
+		zip_fclose(file);
+		zip_close(zip);
+		return false;
+	}
+	if (mutex) {
+		mutex->unlock();
+	}
+	zip_fclose(file);
+	zip_close(zip);
+	return true;
 }

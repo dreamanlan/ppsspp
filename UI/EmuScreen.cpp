@@ -861,7 +861,7 @@ void EmuScreen::onVKey(int virtualKeyCode, bool down) {
 		}
 		break;
 	case VIRTKEY_NEXT_SLOT:
-		if (down && !Achievements::WarnUserIfHardcoreModeActive(true) && NetworkWarnUserIfOnlineAndCantSavestate()) {
+		if (down && !Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
 			SaveState::NextSlot();
 			System_PostUIMessage(UIMessage::SAVESTATE_DISPLAY_SLOT);
 		}
@@ -1080,6 +1080,9 @@ bool EmuScreen::key(const KeyInput &key) {
 void EmuScreen::touch(const TouchInput &touch) {
 	if (g_Config.bShowImDebugger && imguiInited_) {
 		ImGui_ImplPlatform_TouchEvent(touch);
+		if (!ImGui::GetIO().WantCaptureMouse) {
+			UIScreen::touch(touch);
+		}
 	} else {
 		UIScreen::touch(touch);
 	}
