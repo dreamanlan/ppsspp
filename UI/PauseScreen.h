@@ -45,7 +45,7 @@ private:
 	void CreateSavestateControls(UI::LinearLayout *viewGroup, bool vertical);
 
 	UI::EventReturn OnGameSettings(UI::EventParams &e);
-	UI::EventReturn OnExitToMenu(UI::EventParams &e);
+	UI::EventReturn OnExit(UI::EventParams &e);
 	UI::EventReturn OnReportFeedback(UI::EventParams &e);
 
 	UI::EventReturn OnRewind(UI::EventParams &e);
@@ -72,3 +72,5 @@ private:
 	bool lastAdhocServerConnected_ = false;
 	bool lastDNSConfigLoaded_ = false;
 };
+
+std::string GetConfirmExitMessage();
