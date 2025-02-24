@@ -95,6 +95,7 @@ using namespace std::placeholders;
 #include "UI/DebugOverlay.h"
 
 #include "ext/imgui/imgui.h"
+#include "ext/imgui/imgui_internal.h"
 #include "ext/imgui/imgui_impl_thin3d.h"
 #include "ext/imgui/imgui_impl_platform.h"
 
@@ -119,10 +120,9 @@ static void __EmuScreenVblank()
 {
 	auto sy = GetI18NCategory(I18NCat::SYSTEM);
 
-	if (frameStep_ && lastNumFlips != gpuStats.numFlips)
-	{
+	if (frameStep_ && lastNumFlips != gpuStats.numFlips) {
 		frameStep_ = false;
-		Core_Break("ui.frameAdvance", 0);
+		Core_Break(BreakReason::FrameAdvance, 0);
 		lastNumFlips = gpuStats.numFlips;
 	}
 #ifndef MOBILE_DEVICE
@@ -690,7 +690,7 @@ static void ShowFpsLimitNotice() {
 	g_OSD.Show(OSDType::TRANSPARENT_STATUS, temp, "", "I_FASTFORWARD", 1.5f, "altspeed");
 }
 
-void EmuScreen::onVKey(int virtualKeyCode, bool down) {
+void EmuScreen::onVKey(VirtKey virtualKeyCode, bool down) {
 	auto sc = GetI18NCategory(I18NCat::SCREEN);
 	auto mc = GetI18NCategory(I18NCat::MAPPABLECONTROLS);
 
@@ -771,10 +771,10 @@ void EmuScreen::onVKey(int virtualKeyCode, bool down) {
 	case VIRTKEY_PAUSE_NO_MENU:
 		if (down && !NetworkWarnUserIfOnlineAndCantSpeed()) {
 			// We re-use debug break/resume to implement pause/resume without a menu.
-			if (coreState == CORE_STEPPING_CPU) {
+			if (coreState == CORE_STEPPING_CPU) {  // should we check reason?
 				Core_Resume();
 			} else {
-				Core_Break("user-pause");
+				Core_Break(BreakReason::UIPause);
 			}
 		}
 		break;
@@ -953,13 +953,41 @@ void EmuScreen::onVKey(int virtualKeyCode, bool down) {
 				"%s: %s", n->T("Enable networking"), g_Config.bEnableWlan ? di->T("Enabled") : di->T("Disabled")), 2.0, "toggle_wlan");
 		}
 		break;
-	case VIRTKEY_EXIT_APP:
-		System_ExitApp();
+	default:
+		// To make sure we're not in an async context.
+		if (down) {
+			queuedVirtKey_ = virtualKeyCode;
+		}
 		break;
 	}
 }
 
-void EmuScreen::onVKeyAnalog(int virtualKeyCode, float value) {
+void EmuScreen::ProcessQueuedVKeys() {
+	switch (queuedVirtKey_) {
+	case VIRTKEY_EXIT_APP:
+	{
+		std::string confirmExitMessage = GetConfirmExitMessage();
+		if (!confirmExitMessage.empty()) {
+			auto di = GetI18NCategory(I18NCat::DIALOG);
+			confirmExitMessage += '\n';
+			confirmExitMessage += di->T("Are you sure you want to exit?");
+			screenManager()->push(new PromptScreen(gamePath_, confirmExitMessage, di->T("Yes"), di->T("No"), [=](bool result) {
+				if (result) {
+					System_ExitApp();
+				}
+			}));
+		} else {
+			System_ExitApp();
+		}
+		break;
+	}
+	default:
+		break;
+	}
+	queuedVirtKey_ = (VirtKey)0;
+}
+
+void EmuScreen::onVKeyAnalog(VirtKey virtualKeyCode, float value) {
 	if (virtualKeyCode != VIRTKEY_SPEED_ANALOG) {
 		return;
 	}
@@ -1478,6 +1506,8 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 
 	GamepadUpdateOpacity();
 
+	ProcessQueuedVKeys();
+
 	bool skipBufferEffects = g_Config.bSkipBufferEffects;
 
 	bool framebufferBound = false;
@@ -1585,7 +1615,7 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 				Core_Resume();
 			} else if (!frameStep_) {
 				lastNumFlips = gpuStats.numFlips;
-				Core_Break("ui.frameAdvance", 0);
+				Core_Break(BreakReason::FrameAdvance, 0);
 			}
 		}
 	}
@@ -1750,8 +1780,24 @@ void EmuScreen::runImDebugger() {
 			io.AddKeyEvent(ImGuiMod_Alt, keyAltLeft_ || keyAltRight_);
 			// io.AddKeyEvent(ImGuiMod_Super, e.key.super);
 
-			ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+			ImGuiID dockID = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_NoDockingOverCentralNode);
+			ImGuiDockNode* node = ImGui::DockBuilderGetCentralNode(dockID);
 
+			// Not elegant! But don't know how else to pass through the bounds, without making a mess.
+			g_imguiCentralNodeBounds = Bounds(node->Pos.x, node->Pos.y, node->Size.x, node->Size.y);
+
+			if (!io.WantCaptureKeyboard) {
+				// Draw a focus rectangle to indicate inputs will be passed through.
+				ImGui::GetBackgroundDrawList()->AddRect
+				(
+					node->Pos,
+					{ node->Pos.x + node->Size.x, node->Pos.y + node->Size.y },
+					IM_COL32(255, 255, 255, 90),
+					0.f,
+					ImDrawFlags_None,
+					1.f
+				);
+			}
 			imDebugger_->Frame(currentDebugMIPS, gpuDebug, draw);
 
 			// Convert to drawlists.

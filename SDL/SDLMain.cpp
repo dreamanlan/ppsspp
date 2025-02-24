@@ -185,8 +185,8 @@ static void StopSDLAudioDevice() {
 }
 
 static void UpdateScreenDPI(SDL_Window *window) {
-	int drawable_width, window_width;
-	SDL_GetWindowSize(window, &window_width, NULL);
+	int drawable_width, window_width, window_height;
+	SDL_GetWindowSize(window, &window_width, &window_height);
 
 	if (g_Config.iGPUBackend == (int)GPUBackend::OPENGL)
 		SDL_GL_GetDrawableSize(window, &drawable_width, NULL);
@@ -200,13 +200,6 @@ static void UpdateScreenDPI(SDL_Window *window) {
 	// Round up a little otherwise there would be a gap sometimes
 	// in fractional scaling
 	g_DesktopDPI = ((float) drawable_width + 1.0f) / window_width;
-
-	// Temporary hack
-#if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
-	if (g_Config.iGPUBackend == (int)GPUBackend::VULKAN) {
-		g_DesktopDPI = 1.0f;
-	}
-#endif
 }
 
 // Simple implementations of System functions
@@ -622,6 +615,7 @@ bool System_GetPropertyBool(SystemProperty prop) {
 #if PPSSPP_PLATFORM(MAC)
 	case SYSPROP_HAS_FOLDER_BROWSER:
 	case SYSPROP_HAS_FILE_BROWSER:
+		return true;
 #endif
 	case SYSPROP_HAS_ACCELEROMETER:
 #if defined(MOBILE_DEVICE)
@@ -759,8 +753,8 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 	// - SDL gives us motion events in "system DPI" points
 	// - Native_UpdateScreenScale expects pixels, so in a way "96 DPI" points
 	// - The UI code expects motion events in "logical DPI" points
-	float mx = event.motion.x * g_DesktopDPI * g_display.dpi_scale_x;
-	float my = event.motion.y * g_DesktopDPI * g_display.dpi_scale_x;
+	float mx = event.motion.x * g_DesktopDPI * g_display.dpi_scale;
+	float my = event.motion.y * g_DesktopDPI * g_display.dpi_scale;
 
 	switch (event.type) {
 	case SDL_QUIT:
@@ -786,7 +780,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			bool fullscreen = (window_flags & SDL_WINDOW_FULLSCREEN);
 
 			// This one calls NativeResized if the size changed.
-			Native_UpdateScreenScale(new_width_px, new_height_px);
+			Native_UpdateScreenScale(new_width_px, new_height_px, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor));
 
 			// Set variable here in case fullscreen was toggled by hotkey
 			if (g_Config.UseFullScreen() != fullscreen) {
@@ -913,8 +907,8 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			SDL_GetWindowSize(window, &w, &h);
 			TouchInput input;
 			input.id = event.tfinger.fingerId;
-			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale_x;
-			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_x;
+			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale;
+			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale;
 			input.flags = TOUCH_MOVE;
 			input.timestamp = event.tfinger.timestamp;
 			NativeTouch(input);
@@ -926,8 +920,8 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			SDL_GetWindowSize(window, &w, &h);
 			TouchInput input;
 			input.id = event.tfinger.fingerId;
-			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale_x;
-			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_x;
+			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale;
+			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale;
 			input.flags = TOUCH_DOWN;
 			input.timestamp = event.tfinger.timestamp;
 			NativeTouch(input);
@@ -945,8 +939,8 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			SDL_GetWindowSize(window, &w, &h);
 			TouchInput input;
 			input.id = event.tfinger.fingerId;
-			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale_x;
-			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_x;
+			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale;
+			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale;
 			input.flags = TOUCH_UP;
 			input.timestamp = event.tfinger.timestamp;
 			NativeTouch(input);
@@ -1438,17 +1432,12 @@ int main(int argc, char *argv[]) {
 		}
 #endif
 	}
-#if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
-	if (g_Config.iGPUBackend == (int)GPUBackend::VULKAN) {
-		g_ForcedDPI = 1.0f;
-	}
-#endif
 
 	UpdateScreenDPI(window);
 
 	float dpi_scale = 1.0f / (g_ForcedDPI == 0.0f ? g_DesktopDPI : g_ForcedDPI);
 
-	Native_UpdateScreenScale(w * g_DesktopDPI, h * g_DesktopDPI);
+	Native_UpdateScreenScale(w * g_DesktopDPI, h * g_DesktopDPI, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor));
 
 	bool mainThreadIsRender = g_Config.iGPUBackend == (int)GPUBackend::OPENGL;
 

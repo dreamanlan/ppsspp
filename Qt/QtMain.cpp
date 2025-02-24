@@ -549,7 +549,7 @@ QString MainUI::InputBoxGetQString(QString title, QString defaultValue) {
 }
 
 void MainUI::resizeGL(int w, int h) {
-	if (Native_UpdateScreenScale(w, h)) {
+	if (Native_UpdateScreenScale(w, h, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor))) {
 		System_PostUIMessage(UIMessage::GPU_RENDER_RESIZED);
 	}
 	xscale = w / this->width();
@@ -585,15 +585,15 @@ bool MainUI::event(QEvent *e) {
 				break;
 			case Qt::TouchPointPressed:
 			case Qt::TouchPointReleased:
-				input.x = touchPoint.pos().x() * g_display.dpi_scale_x * xscale;
-				input.y = touchPoint.pos().y() * g_display.dpi_scale_y * yscale;
+				input.x = touchPoint.pos().x() * g_display.dpi_scale * xscale;
+				input.y = touchPoint.pos().y() * g_display.dpi_scale * yscale;
 				input.flags = (touchPoint.state() == Qt::TouchPointPressed) ? TOUCH_DOWN : TOUCH_UP;
 				input.id = touchPoint.id();
 				NativeTouch(input);
 				break;
 			case Qt::TouchPointMoved:
-				input.x = touchPoint.pos().x() * g_display.dpi_scale_x * xscale;
-				input.y = touchPoint.pos().y() * g_display.dpi_scale_y * yscale;
+				input.x = touchPoint.pos().x() * g_display.dpi_scale * xscale;
+				input.y = touchPoint.pos().y() * g_display.dpi_scale * yscale;
 				input.flags = TOUCH_MOVE;
 				input.id = touchPoint.id();
 				NativeTouch(input);
@@ -611,8 +611,8 @@ bool MainUI::event(QEvent *e) {
 	case QEvent::MouseButtonRelease:
 		switch(((QMouseEvent*)e)->button()) {
 		case Qt::LeftButton:
-			input.x = ((QMouseEvent*)e)->pos().x() * g_display.dpi_scale_x * xscale;
-			input.y = ((QMouseEvent*)e)->pos().y() * g_display.dpi_scale_y * yscale;
+			input.x = ((QMouseEvent*)e)->pos().x() * g_display.dpi_scale * xscale;
+			input.y = ((QMouseEvent*)e)->pos().y() * g_display.dpi_scale * yscale;
 			input.flags = (e->type() == QEvent::MouseButtonPress) ? TOUCH_DOWN : TOUCH_UP;
 			input.id = 0;
 			NativeTouch(input);
@@ -634,8 +634,8 @@ bool MainUI::event(QEvent *e) {
 		}
 		break;
 	case QEvent::MouseMove:
-		input.x = ((QMouseEvent*)e)->pos().x() * g_display.dpi_scale_x * xscale;
-		input.y = ((QMouseEvent*)e)->pos().y() * g_display.dpi_scale_y * yscale;
+		input.x = ((QMouseEvent*)e)->pos().x() * g_display.dpi_scale * xscale;
+		input.y = ((QMouseEvent*)e)->pos().y() * g_display.dpi_scale * yscale;
 		input.flags = TOUCH_MOVE;
 		input.id = 0;
 		NativeTouch(input);
@@ -839,15 +839,10 @@ int main(int argc, char *argv[])
 
 	if (res.width() < res.height())
 		res.transpose();
-	g_display.pixel_xres = res.width();
-	g_display.pixel_yres = res.height();
 
-	g_display.dpi_scale_x = screen->logicalDotsPerInchX() / screen->physicalDotsPerInchX();
-	g_display.dpi_scale_y = screen->logicalDotsPerInchY() / screen->physicalDotsPerInchY();
-	g_display.dpi_scale_real_x = g_display.dpi_scale_x;
-	g_display.dpi_scale_real_y = g_display.dpi_scale_y;
-	g_display.dp_xres = (int)(g_display.pixel_xres * g_display.dpi_scale_x);
-	g_display.dp_yres = (int)(g_display.pixel_yres * g_display.dpi_scale_y);
+	// We assume physicalDotsPerInchY is the same as PerInchX.
+	float dpi_scale = screen->logicalDotsPerInchX() / screen->physicalDotsPerInchX();
+	g_display.Recalculate(res.width(), res.height(), dpi_scale, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor));
 
 	refreshRate = screen->refreshRate();
 

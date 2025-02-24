@@ -1,3 +1,4 @@
+#include <cstdarg>
 #include <climits>
 #include <cstdio>
 #include <string>
@@ -33,13 +34,13 @@ std::string NiceSizeFormat(uint64_t size) {
 std::string NiceTimeFormat(int seconds) {
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 	if (seconds < 60) {
-		return StringFromFormat("%d seconds", seconds);
+		return StringFromFormat(di->T_cstr("%d seconds"), seconds);
 	} else if (seconds < 60 * 60) {
 		int minutes = seconds / 60;
-		return StringFromFormat("%d minutes", minutes);
+		return StringFromFormat(di->T_cstr("%d minutes"), minutes);
 	} else {
 		int hours = seconds / 3600;
-		return StringFromFormat("%d hours", hours);
+		return StringFromFormat(di->T_cstr("%d hours"), hours);
 	}
 }
 
@@ -156,4 +157,12 @@ bool TryParse(const std::string &str, bool *const output) {
 		return false;
 
 	return true;
+}
+
+StringWriter &StringWriter::F(const char *format, ...) {
+	va_list args;
+	va_start(args, format);
+	p_ += vsprintf(p_, format, args);
+	va_end(args);
+	return *this;
 }

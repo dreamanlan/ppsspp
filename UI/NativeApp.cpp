@@ -1512,51 +1512,34 @@ bool Native_IsWindowHidden() {
 
 static bool IsWindowSmall(int pixelWidth, int pixelHeight) {
 	// Can't take this from config as it will not be set if windows is maximized.
-	int w = (int)(pixelWidth * g_display.dpi_scale_x);
-	int h = (int)(pixelHeight * g_display.dpi_scale_y);
+	int w = (int)(pixelWidth * g_display.dpi_scale_real);
+	int h = (int)(pixelHeight * g_display.dpi_scale_real);
 	return g_Config.IsPortrait() ? (h < 480 + 80) : (w < 480 + 80);
 }
 
-bool Native_UpdateScreenScale(int width, int height) {
-	bool smallWindow;
-
+bool Native_UpdateScreenScale(int pixel_width, int pixel_height, float customScale) {
+	_dbg_assert_(customScale > 0.1f);
 	float g_logical_dpi = System_GetPropertyFloat(SYSPROP_DISPLAY_LOGICAL_DPI);
-	g_display.dpi = System_GetPropertyFloat(SYSPROP_DISPLAY_DPI);
+	float dpi = System_GetPropertyFloat(SYSPROP_DISPLAY_DPI);
 
-	if (g_display.dpi < 0.0f) {
-		g_display.dpi = 96.0f;
+	if (dpi < 0.0f) {
+		dpi = 96.0f;
 	}
 	if (g_logical_dpi < 0.0f) {
 		g_logical_dpi = 96.0f;
 	}
 
-	g_display.dpi_scale_x = g_logical_dpi / g_display.dpi;
-	g_display.dpi_scale_y = g_logical_dpi / g_display.dpi;
-	g_display.dpi_scale_real_x = g_display.dpi_scale_x;
-	g_display.dpi_scale_real_y = g_display.dpi_scale_y;
-
-	smallWindow = IsWindowSmall(width, height);
+	bool smallWindow = IsWindowSmall(pixel_width, pixel_height);
 	if (smallWindow) {
-		g_display.dpi /= 2.0f;
-		g_display.dpi_scale_x *= 2.0f;
-		g_display.dpi_scale_y *= 2.0f;
+		customScale *= 0.5f;
+	} else {
+		customScale = UIScaleFactorToMultiplier(g_Config.iUIScaleFactor);
 	}
-	g_display.pixel_in_dps_x = 1.0f / g_display.dpi_scale_x;
-	g_display.pixel_in_dps_y = 1.0f / g_display.dpi_scale_y;
 
-	int new_dp_xres = (int)(width * g_display.dpi_scale_x);
-	int new_dp_yres = (int)(height * g_display.dpi_scale_y);
-
-	bool dp_changed = new_dp_xres != g_display.dp_xres || new_dp_yres != g_display.dp_yres;
-	bool px_changed = g_display.pixel_xres != width || g_display.pixel_yres != height;
-
-	if (dp_changed || px_changed) {
-		g_display.dp_xres = new_dp_xres;
-		g_display.dp_yres = new_dp_yres;
-		g_display.pixel_xres = width;
-		g_display.pixel_yres = height;
+	if (g_display.Recalculate(pixel_width, pixel_height, g_logical_dpi / dpi, customScale)) {
 		NativeResized();
 		return true;
+	} else {
+		return false;
 	}
-	return false;
 }

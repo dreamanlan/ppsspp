@@ -341,6 +341,8 @@ static const ConfigSetting generalSettings[] = {
 	ConfigSetting("RunBehindPauseMenu", &g_Config.bRunBehindPauseMenu, false, CfgFlag::DEFAULT),
 
 	ConfigSetting("ShowGPOLEDs", &g_Config.bShowGPOLEDs, false, CfgFlag::PER_GAME),
+
+	ConfigSetting("UIScaleFactor", &g_Config.iUIScaleFactor, false, CfgFlag::DEFAULT),
 };
 
 static bool DefaultSasThread() {
@@ -990,7 +992,6 @@ static const ConfigSetting systemParamSettings[] = {
 #endif
 	ConfigSetting("WlanPowerSave", &g_Config.bWlanPowerSave, (bool) PSP_SYSTEMPARAM_WLAN_POWERSAVE_OFF, CfgFlag::PER_GAME),
 	ConfigSetting("EncryptSave", &g_Config.bEncryptSave, true, CfgFlag::PER_GAME | CfgFlag::REPORT),
-	ConfigSetting("SavedataUpgradeVersion", &g_Config.bSavedataUpgrade, true, CfgFlag::DEFAULT),
 	ConfigSetting("MemStickSize", &g_Config.iMemStickSizeGB, 16, CfgFlag::DEFAULT),
 };
 
@@ -2151,4 +2152,8 @@ int MultiplierToVolume100(float multiplier) {
 		return multiplier * 100;
 	}
 	return (int)(powf(multiplier, 1.0f / 1.75f) * 100.f + 0.5f);
+}
+
+float UIScaleFactorToMultiplier(int factor) {
+	return powf(2.0f, (float)factor / 8.0f);
 }

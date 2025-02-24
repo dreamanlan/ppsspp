@@ -27,6 +27,8 @@
 #include "Core/HLE/AtracCtx.h"
 #include "Core/HW/Atrac3Standalone.h"
 #include "Core/HLE/sceKernelMemory.h"
+#include <sstream>
+#include <iomanip>
 
 const size_t overAllocBytes = 16384;
 
@@ -357,8 +359,23 @@ int AnalyzeAtracTrack(u32 addr, u32 size, Track *track) {
 				// This is the offset to the jointStereo_ field.
 				track->jointStereo = Memory::Read_U32(addr + offset + 24);
 			}
+			if (chunkSize > 16) {
+				std::stringstream restChunkStream;
+
+				// Read and format extra bytes as hexadecimal
+				for (int i = 16; i < chunkSize; ++i) {
+					unsigned char byte = Memory::Read_U8(addr + offset + i);
+					restChunkStream << " " << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << (int)byte;
+				}
+
+				std::string restChunk = restChunkStream.str();
+				if (!restChunk.empty()) {
+					DEBUG_LOG(Log::ME, "Additional chunk data:%s", restChunk.c_str());
+				}
+
+			}
+			break;
 		}
-		break;
 		case FACT_CHUNK_MAGIC:
 		{
 			track->endSample = Memory::Read_U32(addr + offset);
@@ -369,8 +386,8 @@ int AnalyzeAtracTrack(u32 addr, u32 size, Track *track) {
 				u32 largerOffset = Memory::Read_U32(addr + offset + 8);
 				sampleOffsetAdjust = track->firstSampleOffset - largerOffset;
 			}
+			break;
 		}
-		break;
 		case SMPL_CHUNK_MAGIC:
 		{
 			if (chunkSize < 32) {
@@ -400,8 +417,8 @@ int AnalyzeAtracTrack(u32 addr, u32 size, Track *track) {
 					return hleReportError(Log::ME, ATRAC_ERROR_BAD_CODEC_PARAMS, "loop starts after it ends");
 				}
 			}
+			break;
 		}
-		break;
 		case DATA_CHUNK_MAGIC:
 		{
 			bfoundData = true;
@@ -576,7 +593,7 @@ void AtracBase::CreateDecoder() {
 		delete decoder_;
 	}
 
-	// First, init the standalone decoder. Only used for low-level-decode initially, but simple.
+	// First, init the standalone decoder.
 	if (track_.codecType == PSP_MODE_AT_3) {
 		// We don't pull this from the RIFF so that we can support OMA also.
 		uint8_t extraData[14]{};
@@ -650,6 +667,10 @@ void Atrac::GetResetBufferInfo(AtracResetBufferInfo *bufferInfo, int sample) {
 int Atrac::SetData(u32 buffer, u32 readSize, u32 bufferSize, int outputChannels, int successCode) {
 	outputChannels_ = outputChannels;
 
+	if (outputChannels != track_.channels) {
+		WARN_LOG(Log::ME, "outputChannels %d doesn't match track_.channels %d", outputChannels, track_.channels);
+	}
+
 	first_.addr = buffer;
 	first_.size = readSize;
 
@@ -696,7 +717,7 @@ int Atrac::SetData(u32 buffer, u32 readSize, u32 bufferSize, int outputChannels,
 		Memory::Memcpy(dataBuf_, buffer, copybytes, "AtracSetData");
 	}
 	CreateDecoder();
-	return hleLogInfo(Log::ME, successCode, "%s %s audio", codecName, channelName);
+	return hleLogInfo(Log::ME, successCode, "%s %s (%d channels) audio", codecName, channelName, track_.channels);
 }
 
 u32 Atrac::SetSecondBuffer(u32 secondBuffer, u32 secondBufferSize) {

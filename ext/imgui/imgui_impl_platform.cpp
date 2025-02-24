@@ -10,6 +10,7 @@
 #include "imgui_impl_platform.h"
 
 static ImGuiMouseCursor g_cursor = ImGuiMouseCursor_Arrow;
+Bounds g_imguiCentralNodeBounds;
 
 void ImGui_ImplPlatform_KeyEvent(const KeyInput &key) {
 	ImGuiIO &io = ImGui::GetIO();
@@ -55,8 +56,8 @@ void ImGui_ImplPlatform_TouchEvent(const TouchInput &touch) {
 	ImGuiIO& io = ImGui::GetIO();
 
 	// We use real pixels in the imgui, no DPI adjustment yet.
-	float x = touch.x / g_display.dpi_scale_x;
-	float y = touch.y / g_display.dpi_scale_y;
+	float x = touch.x / g_display.dpi_scale;
+	float y = touch.y / g_display.dpi_scale;
 
 	if (touch.flags & TOUCH_MOVE) {
 		io.AddMousePosEvent(x, y);
