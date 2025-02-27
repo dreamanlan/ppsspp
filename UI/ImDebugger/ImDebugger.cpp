@@ -54,6 +54,7 @@
 #include "UI/ImDebugger/ImGe.h"
 
 extern bool g_TakeScreenshot;
+static ImVec4 g_normalTextColor;
 
 void ShowInMemoryViewerMenuItem(uint32_t addr, ImControl &control) {
 	if (ImGui::BeginMenu("Show in memory viewer")) {
@@ -94,24 +95,53 @@ void StatusBar(std::string_view status) {
 	}
 }
 
-// TODO: Style it.
+// TODO: Style it more
 // Left click performs the preferred action, if any. Right click opens a menu for more.
-void ImClickableAddress(uint32_t addr, ImControl &control, ImCmd cmd) {
+void ImClickableValue(const char *id, uint32_t value, ImControl &control, ImCmd cmd) {
+	ImGui::PushID(id);
+
+	bool validAddr = Memory::IsValidAddress(value);
+
 	char temp[32];
-	snprintf(temp, sizeof(temp), "%08x", addr);
-	if (ImGui::SmallButton(temp)) {
-		control.command = { cmd, addr };
+	snprintf(temp, sizeof(temp), "%08x", value);
+	if (ImGui::Selectable(temp) && validAddr) {
+		control.command = { cmd, value };
 	}
 
-	// Create a right-click popup menu
+	// Create a right-click popup menu. Restore the color while it's up. NOTE: can't query the theme, pushcolor modifies it!
+	ImGui::PushStyleColor(ImGuiCol_Text, g_normalTextColor);
 	if (ImGui::BeginPopupContextItem(temp)) {
-		if (ImGui::MenuItem("Copy address to clipboard")) {
+		if (ImGui::MenuItem(validAddr ? "Copy address to clipboard" : "Copy value to clipboard")) {
 			System_CopyStringToClipboard(temp);
 		}
-		ImGui::Separator();
-		ShowInWindowMenuItems(addr, control);
+		if (validAddr) {
+			ImGui::Separator();
+			ShowInWindowMenuItems(value, control);
+		}
 		ImGui::EndPopup();
 	}
+	ImGui::PopStyleColor();
+	ImGui::PopID();
+}
+
+// Left click performs the preferred action, if any. Right click opens a menu for more.
+void ImClickableValueFloat(const char *id, float value) {
+	ImGui::PushID(id);
+
+	char temp[32];
+	snprintf(temp, sizeof(temp), "%0.7f", value);
+	if (ImGui::Selectable(temp)) {}
+
+	// Create a right-click popup menu. Restore the color while it's up. NOTE: can't query the theme, pushcolor modifies it!
+	ImGui::PushStyleColor(ImGuiCol_Text, g_normalTextColor);
+	if (ImGui::BeginPopupContextItem(temp)) {
+		if (ImGui::MenuItem("Copy value to clipboard")) {
+			System_CopyStringToClipboard(temp);
+		}
+		ImGui::EndPopup();
+	}
+	ImGui::PopStyleColor();
+	ImGui::PopID();
 }
 
 void DrawSchedulerView(ImConfig &cfg) {
@@ -170,13 +200,8 @@ static void DrawGPRs(ImConfig &config, ImControl &control, const MIPSDebugInterf
 			} else if (disabled) {
 				ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 255, 255, 128));
 			}
-			if (Memory::IsValid4AlignedAddress(value)) {
-				ImGui::PushID(index);
-				ImClickableAddress(value, control, index == MIPS_REG_RA ? ImCmd::SHOW_IN_CPU_DISASM : ImCmd::SHOW_IN_MEMORY_VIEWER);
-				ImGui::PopID();
-			} else {
-				ImGui::Text("%08x", value);
-			}
+			// TODO: Check if the address is in the code segment to decide default action.
+			ImClickableValue(regname, value, control, index == MIPS_REG_RA ? ImCmd::SHOW_IN_CPU_DISASM : ImCmd::SHOW_IN_MEMORY_VIEWER);
 			ImGui::TableNextColumn();
 			if (value >= -1000000 && value <= 1000000) {
 				ImGui::Text("%d", value);
@@ -241,7 +266,7 @@ static void DrawFPRs(ImConfig &config, ImControl &control, const MIPSDebugInterf
 			}
 			ImGui::TextUnformatted(mipsDebug->GetRegName(1, i).c_str());
 			ImGui::TableNextColumn();
-			ImGui::Text("%0.7f", fvalue);
+			ImClickableValueFloat(mipsDebug->GetRegName(1, i).c_str(), fvalue);
 			ImGui::TableNextColumn();
 			ImGui::Text("%08x", fivalue);
 			if (diff) {
@@ -349,10 +374,10 @@ void DrawThreadView(ImConfig &cfg, ImControl &control) {
 		for (int i = 0; i < (int)info.size(); i++) {
 			const DebugThreadInfo &thread = info[i];
 			ImGui::TableNextRow();
+			ImGui::PushID(i);
 			ImGui::TableNextColumn();
 			ImGui::Text("%d", thread.id);
 			ImGui::TableNextColumn();
-			ImGui::PushID(i);
 			if (ImGui::Selectable(thread.name, cfg.selectedThread == i, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_SpanAllColumns)) {
 				cfg.selectedThread = i;
 			}
@@ -361,9 +386,9 @@ void DrawThreadView(ImConfig &cfg, ImControl &control) {
 				ImGui::OpenPopup("threadPopup");
 			}
 			ImGui::TableNextColumn();
-			ImClickableAddress(thread.curPC, control, ImCmd::SHOW_IN_CPU_DISASM);
+			ImClickableValue("curpc", thread.curPC, control, ImCmd::SHOW_IN_CPU_DISASM);
 			ImGui::TableNextColumn();
-			ImClickableAddress(thread.entrypoint, control, ImCmd::SHOW_IN_CPU_DISASM);
+			ImClickableValue("entry", thread.entrypoint, control, ImCmd::SHOW_IN_CPU_DISASM);
 			ImGui::TableNextColumn();
 			ImGui::Text("%d", thread.priority);
 			ImGui::TableNextColumn();
@@ -897,7 +922,7 @@ static void DrawBreakpointsView(MIPSDebugInterface *mipsDebug, ImConfig &cfg) {
 	ImGui::End();
 }
 
-void DrawAudioDecodersView(ImConfig &cfg) {
+void DrawAudioDecodersView(ImConfig &cfg, ImControl &control) {
 	if (!ImGui::Begin("Audio decoding contexts", &cfg.audioDecodersOpen)) {
 		ImGui::End();
 		return;
@@ -996,7 +1021,7 @@ void DrawAudioDecodersView(ImConfig &cfg) {
 	ImGui::End();
 }
 
-void DrawAudioChannels(ImConfig &cfg) {
+void DrawAudioChannels(ImConfig &cfg, ImControl &control) {
 	if (!ImGui::Begin("Raw audio channels", &cfg.audioChannelsOpen)) {
 		ImGui::End();
 		return;
@@ -1025,7 +1050,9 @@ void DrawAudioChannels(ImConfig &cfg) {
 				ImGui::Text("%d", i);
 			}
 			ImGui::TableNextColumn();
-			ImGui::Text("%08x", chans[i].sampleAddress);
+			char id[2]{};
+			id[0] = i + 1;
+			ImClickableValue(id, chans[i].sampleAddress, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
 			ImGui::TableNextColumn();
 			ImGui::Text("%08x", chans[i].sampleCount);
 			ImGui::TableNextColumn();
@@ -1156,8 +1183,8 @@ void DrawSasAudio(ImConfig &cfg) {
 	ImGui::End();
 }
 
-static void DrawCallStacks(const MIPSDebugInterface *debug, bool *open) {
-	if (!ImGui::Begin("Callstacks", open)) {
+static void DrawCallStacks(const MIPSDebugInterface *debug, ImConfig &config, ImControl &control) {
+	if (!ImGui::Begin("Callstacks", &config.callstackOpen)) {
 		ImGui::End();
 		return;
 	}
@@ -1183,36 +1210,37 @@ static void DrawCallStacks(const MIPSDebugInterface *debug, bool *open) {
 		ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthStretch);
 
 		ImGui::TableHeadersRow();
-		ImGui::TableNextRow();
 
 		std::vector<MIPSStackWalk::StackFrame> frames = MIPSStackWalk::Walk(debug->GetPC(), debug->GetRegValue(0, 31), debug->GetRegValue(0, 29), entry, stackTop);
 
 		// TODO: Add context menu and clickability
+		int i = 0;
 		for (auto &frame : frames) {
 			const std::string entrySym = g_symbolMap->GetLabelString(frame.entry);
-
+			ImGui::PushID(i);
+			ImGui::TableNextRow();
 			ImGui::TableSetColumnIndex(0);
 			ImGui::TextUnformatted(entrySym.c_str());
 			ImGui::TableSetColumnIndex(1);
-			ImGui::Text("%08x", frame.entry);
+			ImClickableValue("frameentry", frame.entry, control, ImCmd::SHOW_IN_CPU_DISASM);
 			ImGui::TableSetColumnIndex(2);
-			ImGui::Text("%08x", frame.pc);
+			ImClickableValue("framepc", frame.pc, control, ImCmd::SHOW_IN_CPU_DISASM);
 			ImGui::TableSetColumnIndex(3);
 			ImGui::TextUnformatted("N/A");  // opcode, see the old debugger
 			ImGui::TableSetColumnIndex(4);
-			ImGui::Text("%08x", frame.sp);
+			ImClickableValue("framepc", frame.sp, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
 			ImGui::TableSetColumnIndex(5);
 			ImGui::Text("%d", frame.stackSize);
-			ImGui::TableNextRow();
 			// TODO: More fields?
+			ImGui::PopID();
+			i++;
 		}
-
 		ImGui::EndTable();
 	}
 	ImGui::End();
 }
 
-static void DrawModules(const MIPSDebugInterface *debug, ImConfig &cfg) {
+static void DrawModules(const MIPSDebugInterface *debug, ImConfig &cfg, ImControl &control) {
 	if (!ImGui::Begin("Modules", &cfg.modulesOpen) || !g_symbolMap) {
 		ImGui::End();
 		return;
@@ -1230,17 +1258,19 @@ static void DrawModules(const MIPSDebugInterface *debug, ImConfig &cfg) {
 		// TODO: Add context menu and clickability
 		for (int i = 0; i < (int)modules.size(); i++) {
 			auto &module = modules[i];
+			ImGui::PushID(i);
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn();
 			if (ImGui::Selectable(module.name.c_str(), cfg.selectedModule == i, ImGuiSelectableFlags_SpanAllColumns)) {
 				cfg.selectedModule = i;
 			}
 			ImGui::TableNextColumn();
-			ImGui::Text("%08x", module.address);
+			ImClickableValue("addr", module.address, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
 			ImGui::TableNextColumn();
 			ImGui::Text("%08x", module.size);
 			ImGui::TableNextColumn();
 			ImGui::TextUnformatted(module.active ? "yes" : "no");
+			ImGui::PopID();
 		}
 
 		ImGui::EndTable();
@@ -1287,6 +1317,7 @@ void DrawHLEModules(ImConfig &config) {
 ImDebugger::ImDebugger() {
 	reqToken_ = g_requestManager.GenerateRequesterToken();
 	cfg_.LoadConfig(ConfigPath());
+	g_normalTextColor = ImGui::GetStyleColorVec4(ImGuiCol_Text);
 }
 
 ImDebugger::~ImDebugger() {
@@ -1492,7 +1523,7 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 	}
 
 	if (cfg_.audioChannelsOpen) {
-		DrawAudioChannels(cfg_);
+		DrawAudioChannels(cfg_, control);
 	}
 
 	if (cfg_.sasAudioOpen) {
@@ -1508,15 +1539,15 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 	}
 
 	if (cfg_.callstackOpen) {
-		DrawCallStacks(mipsDebug, &cfg_.callstackOpen);
+		DrawCallStacks(mipsDebug, cfg_, control);
 	}
 
 	if (cfg_.modulesOpen) {
-		DrawModules(mipsDebug, cfg_);
+		DrawModules(mipsDebug, cfg_, control);
 	}
 
 	if (cfg_.audioDecodersOpen) {
-		DrawAudioDecodersView(cfg_);
+		DrawAudioDecodersView(cfg_, control);
 	}
 
 	if (cfg_.hleModulesOpen) {
