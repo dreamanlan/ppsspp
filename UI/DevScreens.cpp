@@ -154,17 +154,19 @@ void DevMenuScreen::CreatePopupContents(UI::ViewGroup *parent) {
 		return UI::EVENT_DONE;
 	});
 
-	items->Add(new Choice(dev->T("Create frame dump")))->OnClick.Add([](UI::EventParams &e) {
-		gpuDebug->GetRecorder()->RecordNextFrame([](const Path &dumpPath) {
-			NOTICE_LOG(Log::System, "Frame dump created at '%s'", dumpPath.c_str());
-			if (System_GetPropertyBool(SYSPROP_CAN_SHOW_FILE)) {
-				System_ShowFileInFolder(dumpPath);
-			} else {
-				g_OSD.Show(OSDType::MESSAGE_SUCCESS, dumpPath.ToVisualString(), 7.0f);
-			}
+	if (PSP_CoreParameter().fileType != IdentifiedFileType::PPSSPP_GE_DUMP) {
+		items->Add(new Choice(dev->T("Create frame dump")))->OnClick.Add([](UI::EventParams &e) {
+			gpuDebug->GetRecorder()->RecordNextFrame([](const Path &dumpPath) {
+				NOTICE_LOG(Log::System, "Frame dump created at '%s'", dumpPath.c_str());
+				if (System_GetPropertyBool(SYSPROP_CAN_SHOW_FILE)) {
+					System_ShowFileInFolder(dumpPath);
+				} else {
+					g_OSD.Show(OSDType::MESSAGE_SUCCESS, dumpPath.ToVisualString(), 7.0f);
+				}
+			});
+			return UI::EVENT_DONE;
 		});
-		return UI::EVENT_DONE;
-	});
+	}
 
 	// This one is not very useful these days, and only really on desktop. Hide it on other platforms.
 	if (System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_DESKTOP) {
@@ -1268,6 +1270,11 @@ bool TouchTestScreen::key(const KeyInput &key) {
 }
 
 void TouchTestScreen::axis(const AxisInput &axis) {
+	if (axis.deviceId == DEVICE_ID_MOUSE && (axis.axisId == JOYSTICK_AXIS_MOUSE_REL_X || axis.axisId == JOYSTICK_AXIS_MOUSE_REL_Y)) {
+		// These spam a lot, don't log for now.
+		return;
+	}
+
 	char buf[512];
 	snprintf(buf, sizeof(buf), "Axis: %s (%d) (value %1.3f) Device ID: %d",
 		KeyMap::GetAxisName(axis.axisId).c_str(), axis.axisId, axis.value, axis.deviceId);
@@ -1311,12 +1318,6 @@ void TouchTestScreen::DrawForeground(UIContext &dc) {
 	truncate_cpy(extra_debug, Android_GetInputDeviceDebugString().c_str());
 #endif
 
-	// Hm, why don't we print all the info on Android?
-#if PPSSPP_PLATFORM(ANDROID)
-	snprintf(buffer, sizeof(buffer),
-		"display_res: %dx%d\n",
-		(int)System_GetPropertyInt(SYSPROP_DISPLAY_XRES), (int)System_GetPropertyInt(SYSPROP_DISPLAY_YRES));
-#else
 	snprintf(buffer, sizeof(buffer),
 		"display_res: %dx%d\n"
 		"dp_res: %dx%d pixel_res: %dx%d\n"
@@ -1329,7 +1330,6 @@ void TouchTestScreen::DrawForeground(UIContext &dc) {
 		g_display.dpi_scale_real,
 		delta * 1000.0, 1.0 / delta,
 		extra_debug);
-#endif
 
 	// On Android, also add joystick debug data.
 	dc.DrawTextShadow(buffer, bounds.centerX(), bounds.y + 20.0f, 0xFFFFFFFF, FLAG_DYNAMIC_ASCII);

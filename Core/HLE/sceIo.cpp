@@ -977,11 +977,13 @@ static u32 sceIoChstat(const char *filename, u32 iostatptr, u32 changebits) {
 	if (!iostat.IsValid())
 		return hleReportError(Log::sceIo, SCE_KERNEL_ERROR_ERRNO_INVALID_ARGUMENT, "bad address");
 
-	ERROR_LOG_REPORT(Log::sceIo, "UNIMPL sceIoChstat(%s, %08x, %08x)", filename, iostatptr, changebits);
+	ERROR_LOG(Log::sceIo, "UNIMPL sceIoChstat(%s, %08x, %08x)", filename, iostatptr, changebits);
 	if (changebits & SCE_CST_MODE)
 		ERROR_LOG_REPORT(Log::sceIo, "sceIoChstat: change mode to %03o requested", iostat->st_mode);
-	if (changebits & SCE_CST_ATTR)
+	if (changebits & SCE_CST_ATTR) {
+		// These are pretty much all of the reported calls: https://report.ppsspp.org/logs/kind/1115
 		ERROR_LOG_REPORT(Log::sceIo, "sceIoChstat: change attr to %04x requested", iostat->st_attr);
+	}
 	if (changebits & SCE_CST_SIZE)
 		ERROR_LOG(Log::sceIo, "sceIoChstat: change size requested");
 	if (changebits & SCE_CST_CT)
@@ -1171,6 +1173,15 @@ static u32 sceIoReadAsync(int id, u32 data_addr, int size) {
 	}
 }
 
+void SanitizeControlChars(std::string &buf) {
+	for (auto &c : buf) {
+		// Eat BEL characters and other bad ones before echoing.
+		if (c < 32 && c != 10 && c != 13) {
+			c = ' ';
+		}
+	}
+}
+
 static bool __IoWrite(int &result, int id, u32 data_addr, int size, int &us) {
 	PROFILE_THIS_SCOPE("io_rw");
 	// Low estimate, may be improved later from the WriteFile result.
@@ -1185,7 +1196,10 @@ static bool __IoWrite(int &result, int id, u32 data_addr, int size, int &us) {
 	if (id == PSP_STDOUT || id == PSP_STDERR) {
 		const char *str = (const char *) data_ptr;
 		const int str_size = size <= 0 ? 0 : (str[validSize - 1] == '\n' ? validSize - 1 : validSize);
-		INFO_LOG(Log::Printf, "%s: %.*s", id == 1 ? "stdout" : "stderr", str_size, str);
+		// buffer so we can edit the string.
+		std::string buf(str, str_size);
+		SanitizeControlChars(buf);
+		INFO_LOG(Log::Printf, "%s: %.*s", id == 1 ? "stdout" : "stderr", (int)buf.size(), buf.data());
 		result = validSize;
 		return true;
 	}
@@ -1211,7 +1225,9 @@ static bool __IoWrite(int &result, int id, u32 data_addr, int size, int &us) {
 		if (f->isTTY) {
 			const char *str = (const char *)data_ptr;
 			const int str_size = size <= 0 ? 0 : (str[validSize - 1] == '\n' ? validSize - 1 : validSize);
-			INFO_LOG(Log::Printf, "%s: %.*s", "tty", str_size, str);
+			std::string buf(str, str_size);
+			SanitizeControlChars(buf);
+			INFO_LOG(Log::Printf, "%s: %.*s", "tty", (int)buf.size(), buf.data());
 			result = validSize;
 			return true;
 		}
