@@ -25,7 +25,9 @@ void Register_sceAtrac3plus();
 void __AtracInit();
 void __AtracDoState(PointerWrap &p);
 void __AtracShutdown();
-void __AtracLoadModule(int version, u32 crc);
+
+void __AtracNotifyLoadModule(int version, u32 crc, u32 bssAddr, int bssSize);
+void __AtracNotifyUnloadModule();
 
 enum AtracStatus : u8 {
 	ATRAC_STATUS_NO_DATA = 1,
@@ -42,6 +44,8 @@ enum AtracStatus : u8 {
 
 	ATRAC_STATUS_STREAMED_MASK = 4,
 };
+
+const char *AtracStatusToString(AtracStatus status);
 
 #if COMMON_LITTLE_ENDIAN
 typedef AtracStatus AtracStatus_le;

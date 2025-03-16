@@ -7,8 +7,10 @@
 #include "Common/File/FileUtil.h"
 #include "Common/Data/Format/IniFile.h"
 #include "Common/Data/Text/Parsers.h"
+#include "Common/Log/LogManager.h"
 #include "Core/Config.h"
 #include "Core/System.h"
+#include "Core/Debugger/MemBlockInfo.h"
 #include "Core/RetroAchievements.h"
 #include "Core/Core.h"
 #include "Core/Debugger/DebugInterface.h"
@@ -20,7 +22,6 @@
 #include "Core/FileSystems/MetaFileSystem.h"
 #include "Core/Debugger/SymbolMap.h"
 #include "Core/MemMap.h"
-#include "Core/System.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/SocketManager.h"
 #include "Core/HLE/NetInetConstants.h"
@@ -184,7 +185,7 @@ static void DrawGPRs(ImConfig &config, ImControl &control, const MIPSDebugInterf
 
 	if (ImGui::Button("Copy all to clipboard")) {
 		char *buffer = new char[20000];
-		StringWriter w(buffer);
+		StringWriter w(buffer, 20000);
 		for (int i = 0; i < 32; i++) {
 			u32 value = mipsDebug->GetGPR32Value(i);
 			w.F("%s: %08x (%d)", mipsDebug->GetRegName(0, i).c_str(), value, value).endl();
@@ -530,8 +531,8 @@ static void DrawKernelObjects(ImConfig &cfg) {
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn();
 			ImGui::PushID(i);
-			if (ImGui::Selectable("", cfg.selectedThread == i, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_SpanAllColumns)) {
-				cfg.selectedThread = i;
+			if (ImGui::Selectable("", cfg.selectedKernelObject == i, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_SpanAllColumns)) {
+				cfg.selectedKernelObject = id;
 			}
 			ImGui::SameLine();
 			/*
@@ -553,6 +554,19 @@ static void DrawKernelObjects(ImConfig &cfg) {
 		}
 
 		ImGui::EndTable();
+	}
+
+	if (kernelObjects.IsValid(cfg.selectedKernelObject)) {
+		const int id = cfg.selectedKernelObject;
+		KernelObject *obj = kernelObjects.GetFast<KernelObject>(id);
+		if (obj) {
+			ImGui::Text("%08x: %s", id, obj->GetTypeName());
+			char longInfo[4096];
+			obj->GetLongInfo(longInfo, sizeof(longInfo));
+			ImGui::TextUnformatted(longInfo);
+		}
+
+		// TODO: Show details
 	}
 	ImGui::End();
 }
@@ -944,9 +958,10 @@ void DrawAudioDecodersView(ImConfig &cfg, ImControl &control) {
 	}
 
 	if (ImGui::CollapsingHeader("sceAtrac", ImGuiTreeNodeFlags_DefaultOpen)) {
-		if (ImGui::BeginTable("atracs", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
+		if (ImGui::BeginTable("atracs", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
 			ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("OutChans", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("CurrentSample", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("RemainingFrames", ImGuiTableColumnFlags_WidthFixed);
@@ -955,14 +970,18 @@ void DrawAudioDecodersView(ImConfig &cfg, ImControl &control) {
 
 			for (int i = 0; i < PSP_NUM_ATRAC_IDS; i++) {
 				u32 type = 0;
-				const AtracBase *atracBase = __AtracGetCtx(i, &type);
-				if (!atracBase) {
+				const AtracBase *ctx = __AtracGetCtx(i, &type);
+				if (!ctx) {
 					continue;
 				}
 
 				ImGui::TableNextRow();
 				ImGui::TableNextColumn();
-				ImGui::Text("%d", i);
+				char temp[16];
+				snprintf(temp, sizeof(temp), "%d", i);
+				if (ImGui::Selectable(temp, i == cfg.selectedAtracCtx, ImGuiSelectableFlags_SpanAllColumns)) {
+					cfg.selectedAtracCtx = i;
+				}
 				ImGui::TableNextColumn();
 				switch (type) {
 				case PSP_MODE_AT_3_PLUS:
@@ -976,15 +995,37 @@ void DrawAudioDecodersView(ImConfig &cfg, ImControl &control) {
 					break;
 				}
 				ImGui::TableNextColumn();
-				ImGui::Text("%d", atracBase->GetOutputChannels());
+				ImGui::TextUnformatted(AtracStatusToString(ctx->BufferState()));
 				ImGui::TableNextColumn();
-				ImGui::Text("%d", atracBase->CurrentSample());
+				ImGui::Text("%d", ctx->GetOutputChannels());
 				ImGui::TableNextColumn();
-				ImGui::Text("%d", atracBase->RemainingFrames());
-				// TODO: Add more.
+				int pos;
+				ctx->GetNextDecodePosition(&pos);
+				ImGui::Text("%d", pos);
+				ImGui::TableNextColumn();
+				ImGui::Text("%d", ctx->RemainingFrames());
 			}
 
 			ImGui::EndTable();
+		}
+
+		if (cfg.selectedAtracCtx >= 0 && cfg.selectedAtracCtx < PSP_NUM_ATRAC_IDS) {
+			u32 type = 0;
+			const AtracBase *ctx = __AtracGetCtx(cfg.selectedAtracCtx, &type);
+			// Show details about the selected atrac context here.
+			char header[32];
+			snprintf(header, sizeof(header), "Atrac context %d", cfg.selectedAtracCtx);
+			if (ctx && ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen)) {
+				int pos;
+				ctx->GetNextDecodePosition(&pos);
+				int endSample, loopStart, loopEnd;
+				ctx->GetSoundSample(&endSample, &loopStart, &loopEnd);
+				ImGui::ProgressBar((float)pos / (float)endSample, ImVec2(200.0f, 0.0f));
+				ImGui::Text("Status: %s", AtracStatusToString(ctx->BufferState()));
+				ImGui::Text("cur/end sample: %d/%d", pos, endSample);
+				ImGui::Text("ctx addr: "); ImGui::SameLine(); ImClickableValue("addr", ctx->Decoder()->GetCtxPtr(), control, ImCmd::SHOW_IN_MEMORY_VIEWER);
+				ImGui::Text("loop: %d", ctx->LoopNum());
+			}
 		}
 	}
 
@@ -1098,6 +1139,60 @@ void DrawAudioChannels(ImConfig &cfg, ImControl &control) {
 	ImGui::End();
 }
 
+void DrawLogConfig(ImConfig &cfg) {
+	if (!ImGui::Begin("Logs", &cfg.logConfigOpen)) {
+		ImGui::End();
+		return;
+	}
+
+	static const char *logLevels[] = {
+		"N/A",
+		"Notice",  // starts at 1 for some reason
+		"Error",
+		"Warn",
+		"Info",
+		"Debug",
+		"Verb."
+	};
+	_dbg_assert_(ARRAY_SIZE(logLevels) == (int)LogLevel::LVERBOSE + 1);
+
+	if (ImGui::BeginTable("logs", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
+		ImGui::TableSetupColumn("Log", ImGuiTableColumnFlags_WidthFixed);
+		ImGui::TableSetupColumn("Level", ImGuiTableColumnFlags_WidthFixed, 150.0f);
+		ImGui::TableHeadersRow();
+		for (int i = 0; i < (int)Log::NUMBER_OF_LOGS; i++) {
+			LogChannel *chan = g_logManager.GetLogChannel((Log)i);
+			ImGui::TableNextRow();
+			ImGui::TableNextColumn();
+
+			const char *logName = LogManager::GetLogTypeName((Log)i);
+
+			ImGui::PushID(logName);
+
+			ImGui::Checkbox(logName, &chan->enabled);
+			ImGui::TableNextColumn();
+
+			if (ImGui::BeginCombo("-", logLevels[(int)chan->level])) {
+				for (int i = 1; i < ARRAY_SIZE(logLevels); ++i) {
+					LogLevel current = static_cast<LogLevel>(i);
+					bool isSelected = (chan->level == current);
+					if (ImGui::Selectable(logLevels[(int)current], isSelected)) {
+						chan->level = current;
+					}
+					if (isSelected) {
+						ImGui::SetItemDefaultFocus();
+					}
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::PopID();
+		}
+		ImGui::EndTable();
+	}
+
+	ImGui::End();
+}
+
 static const char *VoiceTypeToString(VoiceType type) {
 	switch (type) {
 	case VOICETYPE_OFF: return "OFF";
@@ -1205,7 +1300,7 @@ static void DrawCallStacks(const MIPSDebugInterface *debug, ImConfig &config, Im
 	}
 
 	std::vector<DebugThreadInfo> info = GetThreadsInfo();
-	// TODO: Add dropdown for thread choice.
+	// TODO: Add dropdown for thread choice, so you can check the callstacks of other threads.
 	u32 entry = 0;
 	u32 stackTop = 0;
 	for (auto &thread : info) {
@@ -1255,12 +1350,58 @@ static void DrawCallStacks(const MIPSDebugInterface *debug, ImConfig &config, Im
 	ImGui::End();
 }
 
+static void DrawUtilityModules(ImConfig &cfg, ImControl &control) {
+	if (!ImGui::Begin("Utility Modules", &cfg.utilityModulesOpen) || !g_symbolMap) {
+		ImGui::End();
+		return;
+	}
+
+	ImGui::TextUnformatted("These are fake module representations loaded by sceUtilityLoadModule");
+
+	const std::map<int, u32> &modules = __UtilityGetLoadedModules();
+	if (ImGui::BeginTable("modules", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
+		ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);
+		ImGui::TableSetupColumn("Load Address", ImGuiTableColumnFlags_WidthFixed);
+		ImGui::TableSetupColumn("Load Size", ImGuiTableColumnFlags_WidthFixed);
+
+		ImGui::TableHeadersRow();
+
+		// TODO: Add context menu and clickability
+		int i = 0;
+		for (const auto &iter : modules) {
+			u32 loadedAddr = iter.second;
+			const ModuleLoadInfo *info = __UtilityModuleInfo(iter.first);
+
+			ImGui::PushID(i);
+			ImGui::TableNextRow();
+			ImGui::TableNextColumn();
+			if (ImGui::Selectable(info->name, cfg.selectedModule == i, ImGuiSelectableFlags_SpanAllColumns)) {
+				cfg.selectedModule = i;
+			}
+			ImGui::TableNextColumn();
+			if (loadedAddr) {
+				ImClickableValue("addr", loadedAddr, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
+			} else {
+				ImGui::TextUnformatted("-");
+			}
+			ImGui::TableNextColumn();
+			ImGui::Text("%08x", info->size);
+			ImGui::PopID();
+			i++;
+		}
+
+		ImGui::EndTable();
+	}
+	ImGui::End();
+}
+
 static void DrawModules(const MIPSDebugInterface *debug, ImConfig &cfg, ImControl &control) {
 	if (!ImGui::Begin("Modules", &cfg.modulesOpen) || !g_symbolMap) {
 		ImGui::End();
 		return;
 	}
 
+	// Hm, this reads from the symbol map.
 	std::vector<LoadedModuleInfo> modules = g_symbolMap->getAllModules();
 	if (ImGui::BeginTable("modules", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
 		ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);
@@ -1292,7 +1433,6 @@ static void DrawModules(const MIPSDebugInterface *debug, ImConfig &cfg, ImContro
 	}
 
 	if (cfg.selectedModule >= 0 && cfg.selectedModule < (int)modules.size()) {
-		auto &module = modules[cfg.selectedModule];
 		// TODO: Show details
 	}
 	ImGui::End();
@@ -1441,6 +1581,10 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			}
 			ImGui::EndMenu();
 		}
+		if (ImGui::BeginMenu("Core")) {
+			ImGui::MenuItem("Scheduler", nullptr, &cfg_.schedulerOpen);
+			ImGui::EndMenu();
+		}
 		if (ImGui::BeginMenu("CPU")) {
 			ImGui::MenuItem("CPU debugger", nullptr, &cfg_.disasmOpen);
 			ImGui::MenuItem("GPR regs", nullptr, &cfg_.gprOpen);
@@ -1448,8 +1592,9 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			ImGui::MenuItem("VFPU regs", nullptr, &cfg_.vfpuOpen);
 			ImGui::MenuItem("Callstacks", nullptr, &cfg_.callstackOpen);
 			ImGui::MenuItem("Breakpoints", nullptr, &cfg_.breakpointsOpen);
-			ImGui::MenuItem("Scheduler", nullptr, &cfg_.schedulerOpen);
-			ImGui::Separator();
+			ImGui::EndMenu();
+		}
+		if (ImGui::BeginMenu("Memory")) {
 			for (int i = 0; i < 4; i++) {
 				char title[64];
 				snprintf(title, sizeof(title), "Memory %d", i + 1);
@@ -1458,11 +1603,12 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			ImGui::MenuItem("Memory Dumper", nullptr, &cfg_.memDumpOpen);
 			ImGui::EndMenu();
 		}
-		if (ImGui::BeginMenu("HLE")) {
+		if (ImGui::BeginMenu("OS HLE")) {
 			ImGui::MenuItem("File System Browser", nullptr, &cfg_.filesystemBrowserOpen);
 			ImGui::MenuItem("Kernel Objects", nullptr, &cfg_.kernelObjectsOpen);
 			ImGui::MenuItem("Threads", nullptr, &cfg_.threadsOpen);
-			ImGui::MenuItem("Modules",nullptr,  &cfg_.modulesOpen);
+			ImGui::MenuItem("Modules", nullptr, &cfg_.modulesOpen);
+			ImGui::MenuItem("Utility Modules",nullptr, &cfg_.utilityModulesOpen);
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Graphics")) {
@@ -1491,6 +1637,7 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 		if (ImGui::BeginMenu("Tools")) {
 			ImGui::MenuItem("Debug stats", nullptr, &cfg_.debugStatsOpen);
 			ImGui::MenuItem("Struct viewer", nullptr, &cfg_.structViewerOpen);
+			ImGui::MenuItem("Log channels", nullptr, &cfg_.logConfigOpen);
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Misc")) {
@@ -1561,6 +1708,10 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 		DrawModules(mipsDebug, cfg_, control);
 	}
 
+	if (cfg_.utilityModulesOpen) {
+		DrawUtilityModules(cfg_, control);
+	}
+
 	if (cfg_.audioDecodersOpen) {
 		DrawAudioDecodersView(cfg_, control);
 	}
@@ -1575,6 +1726,10 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 
 	if (cfg_.texturesOpen) {
 		DrawTexturesWindow(cfg_, gpuDebug->GetTextureCacheCommon());
+	}
+
+	if (cfg_.logConfigOpen) {
+		DrawLogConfig(cfg_);
 	}
 
 	if (cfg_.displayOpen) {
@@ -1708,21 +1863,38 @@ void ImMemWindow::Draw(MIPSDebugInterface *mipsDebug, ImConfig &cfg, ImControl &
 
 	ImVec2 size(0, -ImGui::GetFrameHeightWithSpacing());
 
+	auto node = [&](const char *title, uint32_t start, uint32_t len) {
+		if (ImGui::TreeNode(title)) {
+			if (ImGui::Selectable("(start)", cfg.selectedMemoryBlock == start)) {
+				cfg.selectedMemoryBlock = start;
+				GotoAddr(start);
+			}
+			const std::vector<MemBlockInfo> info = FindMemInfo(start, len);
+			for (auto &iter : info) {
+				ImGui::PushID(iter.start);
+				if (ImGui::Selectable(iter.tag.c_str(), cfg.selectedMemoryBlock == iter.start)) {
+					cfg.selectedMemoryBlock = iter.start;
+					GotoAddr(iter.start);
+				}
+				ImGui::PopID();
+			}
+			const u32 end = start + len;
+			if (ImGui::Selectable("(end)", cfg.selectedMemoryBlock == end)) {
+				cfg.selectedMemoryBlock = end;
+				GotoAddr(end);
+			}
+			ImGui::TreePop();
+		}
+	};
+
 	// Main views - list of interesting addresses to the left, memory view to the right.
 	if (ImGui::BeginChild("addr_list", ImVec2(200.0f, size.y), ImGuiChildFlags_ResizeX)) {
-		if (ImGui::Selectable("Scratch")) {
-			GotoAddr(0x00010000);
-		}
-		if (ImGui::Selectable("Kernel RAM")) {
-			GotoAddr(0x08000000);
-		}
-		if (ImGui::Selectable("User RAM")) {
-			GotoAddr(0x08800000);
-		}
-		if (ImGui::Selectable("VRAM")) {
-			GotoAddr(0x04000000);
-		}
+		node("Scratch",    0x00010000, 0x00004000);
+		node("Kernel RAM", 0x08000000, 0x00800000);
+		node("User RAM"  , 0x08800000, 0x01800000);
+		node("VRAM",       0x04000000, 0x00200000);
 	}
+
 	ImGui::EndChild();
 
 	ImGui::SameLine();
@@ -2012,6 +2184,8 @@ void ImConfig::SyncConfig(IniFile *ini, bool save) {
 	sync.Sync("pixelViewerOpen", &pixelViewerOpen, false);
 	sync.Sync("internalsOpen", &internalsOpen, false);
 	sync.Sync("sasAudioOpen", &sasAudioOpen, false);
+	sync.Sync("logConfigOpen", &logConfigOpen, false);
+	sync.Sync("utilityModulesOpen", &utilityModulesOpen, false);
 	for (int i = 0; i < 4; i++) {
 		char name[64];
 		snprintf(name, sizeof(name), "memory%dOpen", i + 1);

@@ -148,6 +148,8 @@ struct ImConfig {
 	bool memDumpOpen;
 	bool internalsOpen;
 	bool sasAudioOpen;
+	bool logConfigOpen;
+	bool utilityModulesOpen;
 	bool memViewOpen[4];
 
 	// HLE explorer settings
@@ -155,10 +157,14 @@ struct ImConfig {
 
 	// Various selections
 	int selectedModule = 0;
+	int selectedUtilityModule = 0;
 	int selectedThread = 0;
+	int selectedKernelObject = 0;
 	int selectedFramebuffer = -1;
 	int selectedBreakpoint = -1;
 	int selectedMemCheck = -1;
+	int selectedAtracCtx = 0;
+	u32 selectedMemoryBlock = 0;
 	uint64_t selectedTexAddr = 0;
 
 	bool realtimePixelPreview = false;
