@@ -33,6 +33,7 @@
 #include "Core/HLE/sceNetAdhocMatching.h"
 #include "Common/System/Request.h"
 
+#include "Core/Util/AtracTrack.h"
 #include "Core/HLE/sceAtrac.h"
 #include "Core/HLE/sceAudio.h"
 #include "Core/HLE/sceAudiocodec.h"
@@ -958,17 +959,18 @@ void DrawAudioDecodersView(ImConfig &cfg, ImControl &control) {
 	}
 
 	if (ImGui::CollapsingHeader("sceAtrac", ImGuiTreeNodeFlags_DefaultOpen)) {
-		if (ImGui::BeginTable("atracs", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
+		if (ImGui::BeginTable("atracs", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
 			ImGui::TableSetupColumn("Index", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed);
-			ImGui::TableSetupColumn("OutChans", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("Channels", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("CurrentSample", ImGuiTableColumnFlags_WidthFixed);
 			ImGui::TableSetupColumn("RemainingFrames", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("Impl", ImGuiTableColumnFlags_WidthFixed);
 
 			ImGui::TableHeadersRow();
 
-			for (int i = 0; i < PSP_NUM_ATRAC_IDS; i++) {
+			for (int i = 0; i < PSP_MAX_ATRAC_IDS; i++) {
 				u32 type = 0;
 				const AtracBase *ctx = __AtracGetCtx(i, &type);
 				if (!ctx) {
@@ -997,19 +999,29 @@ void DrawAudioDecodersView(ImConfig &cfg, ImControl &control) {
 				ImGui::TableNextColumn();
 				ImGui::TextUnformatted(AtracStatusToString(ctx->BufferState()));
 				ImGui::TableNextColumn();
-				ImGui::Text("%d", ctx->GetOutputChannels());
+				ImGui::Text("in:%d out:%d", ctx->Channels(), ctx->GetOutputChannels());
 				ImGui::TableNextColumn();
-				int pos;
-				ctx->GetNextDecodePosition(&pos);
-				ImGui::Text("%d", pos);
+				if (AtracStatusIsNormal(ctx->BufferState())) {
+					int pos;
+					ctx->GetNextDecodePosition(&pos);
+					ImGui::Text("%d", pos);
+				} else {
+					ImGui::TextUnformatted("N/A");
+				}
 				ImGui::TableNextColumn();
-				ImGui::Text("%d", ctx->RemainingFrames());
+				if (AtracStatusIsNormal(ctx->BufferState())) {
+					ImGui::Text("%d", ctx->RemainingFrames());
+				} else {
+					ImGui::TextUnformatted("N/A");
+				}
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(ctx->GetContextVersion() >= 2 ? "NewImpl" : "Legacy");
 			}
 
 			ImGui::EndTable();
 		}
 
-		if (cfg.selectedAtracCtx >= 0 && cfg.selectedAtracCtx < PSP_NUM_ATRAC_IDS) {
+		if (cfg.selectedAtracCtx >= 0 && cfg.selectedAtracCtx < PSP_MAX_ATRAC_IDS) {
 			u32 type = 0;
 			const AtracBase *ctx = __AtracGetCtx(cfg.selectedAtracCtx, &type);
 			// Show details about the selected atrac context here.
@@ -1022,9 +1034,37 @@ void DrawAudioDecodersView(ImConfig &cfg, ImControl &control) {
 				ctx->GetSoundSample(&endSample, &loopStart, &loopEnd);
 				ImGui::ProgressBar((float)pos / (float)endSample, ImVec2(200.0f, 0.0f));
 				ImGui::Text("Status: %s", AtracStatusToString(ctx->BufferState()));
-				ImGui::Text("cur/end sample: %d/%d", pos, endSample);
-				ImGui::Text("ctx addr: "); ImGui::SameLine(); ImClickableValue("addr", ctx->Decoder()->GetCtxPtr(), control, ImCmd::SHOW_IN_MEMORY_VIEWER);
-				ImGui::Text("loop: %d", ctx->LoopNum());
+				if (ctx->BufferState() <= ATRAC_STATUS_STREAMED_LOOP_WITH_TRAILER) {
+					ImGui::Text("cur/end sample: %d/%d/%d", pos, endSample);
+				}
+				if (ctx->context_.IsValid()) {
+					ImGui::Text("ctx addr: ");
+					ImGui::SameLine();
+					ImClickableValue("ctx", ctx->context_.ptr, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
+				}
+				if (ctx->context_.IsValid() && ctx->GetContextVersion() >= 2) {
+					const auto &info = ctx->context_->info;
+					ImGui::Text("Buffer: (size: %d / %08x) Frame: %d", info.bufferByte, info.bufferByte, info.sampleSize);
+					ImGui::SameLine();
+					ImClickableValue("buffer", info.buffer, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
+					if (info.secondBuffer || info.secondBufferByte) {
+						ImGui::Text("Second: (size: %d / %08x)", info.secondBufferByte, info.secondBufferByte);
+						ImGui::SameLine();
+						ImClickableValue("second", info.secondBuffer, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
+					}
+					ImGui::Text("Data: %d/%d", info.dataOff, info.fileDataEnd);
+					if (info.state != ATRAC_STATUS_STREAMED_WITHOUT_LOOP) {
+						ImGui::Text("LoopNum: %d (%d-%d)", info.loopNum, info.loopStart, info.loopEnd);
+					}
+					ImGui::Text("DecodePos: %d EndSample: %d", info.decodePos, info.fileDataEnd);
+					if (AtracStatusIsStreaming(info.state)) {
+						ImGui::Text("Stream: offset %d, streamDataBytes: %d", info.streamOff, info.streamDataByte);
+					}
+					// Display unknown vars.
+					ImGui::Text("numFrame: %d curBuffer: %d streamOff2: %d", info.numSkipFrames, info.curBuffer, info.secondStreamOff);
+				} else {
+					ImGui::Text("loop: %d", ctx->LoopNum());
+				}
 			}
 		}
 	}
@@ -1356,7 +1396,9 @@ static void DrawUtilityModules(ImConfig &cfg, ImControl &control) {
 		return;
 	}
 
-	ImGui::TextUnformatted("These are fake module representations loaded by sceUtilityLoadModule");
+	ImGui::TextUnformatted(
+		"These are fake module representations loaded by sceUtilityLoadModule\n"
+		"On a real PSP, these would be loaded from the BIOS.\n");
 
 	const std::map<int, u32> &modules = __UtilityGetLoadedModules();
 	if (ImGui::BeginTable("modules", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
@@ -1435,6 +1477,44 @@ static void DrawModules(const MIPSDebugInterface *debug, ImConfig &cfg, ImContro
 	if (cfg.selectedModule >= 0 && cfg.selectedModule < (int)modules.size()) {
 		// TODO: Show details
 	}
+	ImGui::End();
+}
+
+void ImAtracToolWindow::Draw(ImConfig &cfg) {
+	if (!ImGui::Begin("Atrac Tool", &cfg.atracToolOpen) || !g_symbolMap) {
+		ImGui::End();
+		return;
+	}
+
+	ImGui::InputText("File", atracPath_, sizeof(atracPath_));
+	ImGui::SameLine();
+	if (ImGui::Button("Choose...")) {
+		System_BrowseForFile(cfg.requesterToken, "Choose AT3 file", BrowseFileType::ATRAC3, [&](const std::string &filename, int) {
+			truncate_cpy(atracPath_, filename);
+		}, nullptr);
+	}
+
+	if (strlen(atracPath_) > 0) {
+		if (ImGui::Button("Load")) {
+			track_.reset(new Track());
+			std::string data;
+			if (File::ReadBinaryFileToString(Path(atracPath_), &data)) {
+				AnalyzeAtracTrack((const u8 *)data.data(), (u32)data.size(), track_.get(), &error_);
+			}
+		}
+	}
+
+	if (track_.get() != 0) {
+		ImGui::Text("Codec: %s", track_->codecType != PSP_CODEC_AT3 ? "at3+" : "at3");
+		ImGui::Text("Bitrate: %d kbps Channels: %d", track_->Bitrate(), track_->channels);
+		ImGui::Text("Frame size in bytes: %d Output frame in samples: %d", track_->BytesPerFrame(), track_->SamplesPerFrame());
+		ImGui::Text("First valid sample: %08x", track_->FirstSampleOffsetFull());
+	}
+
+	if (!error_.empty()) {
+		ImGui::TextUnformatted(error_.c_str());
+	}
+
 	ImGui::End();
 }
 
@@ -1638,6 +1718,7 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			ImGui::MenuItem("Debug stats", nullptr, &cfg_.debugStatsOpen);
 			ImGui::MenuItem("Struct viewer", nullptr, &cfg_.structViewerOpen);
 			ImGui::MenuItem("Log channels", nullptr, &cfg_.logConfigOpen);
+			ImGui::MenuItem("Atrac Tool", nullptr, &cfg_.atracToolOpen);
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Misc")) {
@@ -1720,6 +1801,10 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 		DrawHLEModules(cfg_);
 	}
 
+	if (cfg_.atracToolOpen) {
+		atracToolWindow_.Draw(cfg_);
+	}
+
 	if (cfg_.framebuffersOpen) {
 		DrawFramebuffersWindow(cfg_, gpuDebug->GetFramebufferManagerCommon());
 	}
@@ -1788,6 +1873,11 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 
 	if (cfg_.internalsOpen) {
 		DrawInternals(cfg_);
+	}
+
+	if (externalCommand_.cmd != ImCmd::NONE) {
+		control.command = externalCommand_;
+		externalCommand_.cmd = ImCmd::NONE;
 	}
 
 	// Process UI commands

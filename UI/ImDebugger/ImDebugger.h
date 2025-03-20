@@ -150,6 +150,7 @@ struct ImConfig {
 	bool sasAudioOpen;
 	bool logConfigOpen;
 	bool utilityModulesOpen;
+	bool atracToolOpen;
 	bool memViewOpen[4];
 
 	// HLE explorer settings
@@ -164,7 +165,8 @@ struct ImConfig {
 	int selectedBreakpoint = -1;
 	int selectedMemCheck = -1;
 	int selectedAtracCtx = 0;
-	u32 selectedMemoryBlock = 0;
+	int selectedMemoryBlock = 0;
+
 	uint64_t selectedTexAddr = 0;
 
 	bool realtimePixelPreview = false;
@@ -175,11 +177,22 @@ struct ImConfig {
 
 	bool sasShowAllVoices = false;
 
+
 	// We use a separate ini file from the main PPSSPP config.
 	void LoadConfig(const Path &iniFile);
 	void SaveConfig(const Path &iniFile);
 
 	void SyncConfig(IniFile *ini, bool save);
+};
+
+struct Track;
+class ImAtracToolWindow {
+public:
+	void Draw(ImConfig &cfg);
+
+	char atracPath_[1024]{};
+	std::unique_ptr<Track> track_;
+	std::string error_;
 };
 
 enum class ImCmd {
@@ -215,6 +228,11 @@ public:
 	void Snapshot(MIPSState *mips);
 	void SnapshotGPU(GPUDebugInterface *mips);
 
+	// Call from the outside.
+	void PostCmd(ImCommand cmd) {
+		externalCommand_ = cmd;
+	}
+
 private:
 	Path ConfigPath();
 
@@ -227,6 +245,7 @@ private:
 	ImStructViewer structViewer_;
 	ImGePixelViewerWindow pixelViewer_;
 	ImMemDumpWindow memDumpWindow_;
+	ImAtracToolWindow atracToolWindow_;
 
 	ImSnapshotState newSnapshot_;
 	ImSnapshotState snapshot_;
@@ -236,6 +255,8 @@ private:
 
 	// Open variables.
 	ImConfig cfg_{};
+
+	ImCommand externalCommand_;
 };
 
 // Simple custom controls and utilities.
