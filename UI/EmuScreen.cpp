@@ -212,10 +212,6 @@ EmuScreen::EmuScreen(const Path &filename)
 	// Usually, we don't want focus movement enabled on this screen, so disable on start.
 	// Only if you open chat or dev tools do we want it to start working.
 	UI::EnableFocusMovement(false);
-
-	// TODO: Do this only on demand.
-	IMGUI_CHECKVERSION();
-	ImGui::CreateContext();
 }
 
 bool EmuScreen::bootAllowStorage(const Path &filename) {
@@ -416,10 +412,6 @@ void EmuScreen::bootComplete() {
 	}
 #endif
 
-	if (g_Config.bUseExperimentalAtrac) {
-		g_OSD.Show(OSDType::MESSAGE_WARNING, dev->T("Use experimental sceAtrac"));
-	}
-
 #if !PPSSPP_PLATFORM(UWP)
 	if (GetGPUBackend() == GPUBackend::OPENGL) {
 		const char *renderer = gl_extensions.model;
@@ -464,7 +456,7 @@ void EmuScreen::bootComplete() {
 EmuScreen::~EmuScreen() {
 	if (imguiInited_) {
 		ImGui_ImplThin3d_Shutdown();
-		ImGui::DestroyContext();
+		ImGui::DestroyContext(ctx_);
 	}
 
 	std::string gameID = g_paramSFO.GetValueString("DISC_ID");
@@ -1774,6 +1766,11 @@ void EmuScreen::runImDebugger() {
 		Draw::DrawContext *draw = screenManager()->getDrawContext();
 		if (!imguiInited_) {
 			imguiInited_ = true;
+
+			// TODO: Do this only on demand.
+			IMGUI_CHECKVERSION();
+			ctx_ = ImGui::CreateContext();
+
 			ImGui_ImplPlatform_Init(GetSysDirectory(DIRECTORY_SYSTEM) / "imgui.ini");
 			imDebugger_ = std::make_unique<ImDebugger>();
 
