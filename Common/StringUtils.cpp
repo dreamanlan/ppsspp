@@ -112,7 +112,8 @@ std::string SanitizeString(std::string_view input, StringRestriction restriction
 	// First, remove any chars not in A-Za-z0-9_-. This will effectively get rid of any Unicode char, emojis etc too.
 	std::string sanitized;
 	sanitized.reserve(input.size());
-	for (auto c : input) {
+	bool lastWasLineBreak = false;
+	for (char c : input) {
 		switch (restriction) {
 		case StringRestriction::None:
 			sanitized.push_back(c);
@@ -125,10 +126,27 @@ std::string SanitizeString(std::string_view input, StringRestriction restriction
 				sanitized.push_back(c);
 			}
 			break;
+		case StringRestriction::NoLineBreaksOrSpecials:
+			if ((uint8_t)c >= 32) {
+				sanitized.push_back(c);
+				lastWasLineBreak = false;
+			} else if (c == 10 || c == 13) {
+				// Collapse line breaks/feeds to single spaces.
+				if (!lastWasLineBreak) {
+					sanitized.push_back(' ');
+					lastWasLineBreak = true;
+				}
+			}
+			break;
+		case StringRestriction::ConvertToUnixEndings:  // Strips off carriage returns, keeps line feeds.
+			if (c != '\r') {
+				sanitized.push_back(c);
+			}
+			break;
 		}
 	}
 
-	if (minLength >= 0) {
+	if (minLength > 0) {
 		if ((int)sanitized.size() < minLength) {
 			// Just reject it by returning an empty string, as we can't really
 			// conjure up new characters here.
@@ -227,6 +245,15 @@ std::string IndentString(const std::string &str, const std::string &sep, bool sk
 std::string_view StripPrefix(std::string_view prefix, std::string_view s) {
 	if (startsWith(s, prefix)) {
 		return s.substr(prefix.size(), s.size() - prefix.size());
+	} else {
+		return s;
+	}
+}
+
+std::string_view KeepAfterLast(std::string_view s, char c) {
+	size_t pos = s.rfind(c);
+	if (pos != std::string_view::npos) {
+		return s.substr(pos + 1);
 	} else {
 		return s;
 	}

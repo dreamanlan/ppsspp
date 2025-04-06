@@ -20,6 +20,7 @@
 #include "UI/ImDebugger/ImMemView.h"
 #include "UI/ImDebugger/ImStructViewer.h"
 #include "UI/ImDebugger/ImGe.h"
+#include "UI/ImDebugger/ImConsole.h"
 
 // This is the main state container of the whole Dear ImGUI-based in-game cross-platform debugger.
 //
@@ -115,7 +116,6 @@ class IniFile;
 
 struct ImConfig {
 	// Defaults for saved settings are set in SyncConfig.
-
 	bool disasmOpen;
 	bool demoOpen;
 	bool gprOpen;
@@ -124,6 +124,7 @@ struct ImConfig {
 	bool threadsOpen;
 	bool callstackOpen;
 	bool breakpointsOpen;
+	bool symbolsOpen;
 	bool modulesOpen;
 	bool hleModulesOpen;
 	bool audioDecodersOpen;
@@ -152,12 +153,14 @@ struct ImConfig {
 	bool utilityModulesOpen;
 	bool atracToolOpen;
 	bool memViewOpen[4];
+	bool luaConsoleOpen;
 
 	// HLE explorer settings
 	// bool filterByUsed = true;
 
 	// Various selections
-	int selectedModule = 0;
+	int selectedModuleId = 0;
+	int selectedSymbolModule = 0;
 	int selectedUtilityModule = 0;
 	int selectedThread = 0;
 	int selectedKernelObject = 0;
@@ -189,10 +192,12 @@ struct Track;
 class ImAtracToolWindow {
 public:
 	void Draw(ImConfig &cfg);
+	void Load();
 
 	char atracPath_[1024]{};
 	std::unique_ptr<Track> track_;
 	std::string error_;
+	std::string data_;
 };
 
 enum class ImCmd {
@@ -246,6 +251,7 @@ private:
 	ImGePixelViewerWindow pixelViewer_;
 	ImMemDumpWindow memDumpWindow_;
 	ImAtracToolWindow atracToolWindow_;
+	ImConsole luaConsole_;
 
 	ImSnapshotState newSnapshot_;
 	ImSnapshotState snapshot_;

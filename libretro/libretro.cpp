@@ -104,6 +104,8 @@ namespace Libretro
    static retro_input_state_t input_state_cb;
    static retro_log_printf_t log_cb;
 
+   bool g_pendingBoot = false;
+
    static bool detectVsyncSwapInterval = false;
    static bool detectVsyncSwapIntervalOptShown = true;
    static bool softwareRenderInitHack = false;
@@ -1326,12 +1328,14 @@ namespace Libretro
       if (ctx->GetDrawContext())
          ctx->GetDrawContext()->BeginFrame(Draw::DebugFlags::NONE);
 
-      gpu->BeginHostFrame();
+      if (gpu)
+         gpu->BeginHostFrame();
 
       coreState = CORE_RUNNING_CPU;
       PSP_RunLoopWhileState();
 
-      gpu->EndHostFrame();
+      if (gpu)
+         gpu->EndHostFrame();
 
       if (ctx->GetDrawContext()) {
          ctx->GetDrawContext()->EndFrame();
@@ -1349,13 +1353,13 @@ namespace Libretro
          {
             case EmuThreadState::START_REQUESTED:
                emuThreadState = EmuThreadState::RUNNING;
-               /* fallthrough */
+               [[fallthrough]];
             case EmuThreadState::RUNNING:
                EmuFrame();
                break;
             case EmuThreadState::PAUSE_REQUESTED:
                emuThreadState = EmuThreadState::PAUSED;
-               /* fallthrough */
+               [[fallthrough]];
             case EmuThreadState::PAUSED:
                sleep_ms(1, "libretro-paused");
                break;
@@ -1473,9 +1477,11 @@ bool retro_load_game(const struct retro_game_info *game)
    // set cpuCore from libretro setting variable
    coreParam.cpuCore         =  (CPUCore)g_Config.iCpuCore;
 
+   g_pendingBoot = true;
+
    std::string error_string;
-   if (!PSP_InitStart(coreParam, &error_string))
-   {
+   if (!PSP_InitStart(coreParam)) {
+      // Can't really fail, the errors happen later during InitUpdate
       ERROR_LOG(Log::Boot, "%s", error_string.c_str());
       return false;
    }
@@ -1497,6 +1503,8 @@ bool retro_load_game(const struct retro_game_info *game)
 
    set_variable_visibility();
 
+   // NOTE: At this point we haven't really booted yet, but "in-game" we'll just keep polling
+   // PSP_InitUpdate until done.
    return true;
 }
 
@@ -1505,7 +1513,7 @@ void retro_unload_game(void)
 	if (Libretro::useEmuThread)
 		Libretro::EmuThreadStop();
 
-	PSP_Shutdown();
+	PSP_Shutdown(true);
 	g_VFS.Clear();
 
 	delete ctx;
@@ -1517,9 +1525,9 @@ void retro_reset(void)
 {
    std::string error_string;
 
-   PSP_Shutdown();
+   PSP_Shutdown(true);
 
-   if (!PSP_Init(PSP_CoreParameter(), &error_string))
+   if (BootState::Complete != PSP_Init(PSP_CoreParameter(), &error_string))
    {
       ERROR_LOG(Log::Boot, "%s", error_string.c_str());
       environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, nullptr);
@@ -1626,26 +1634,32 @@ static void retro_input(void)
 
 void retro_run(void)
 {
-   if (PSP_IsIniting())
-   {
+   if (g_pendingBoot) {
       std::string error_string;
-      while (!PSP_InitUpdate(&error_string))
-         sleep_ms(4, "libretro-init-poll");
-
-      if (!PSP_IsInited())
-      {
+      BootState state = PSP_InitUpdate(&error_string);
+      if (state == BootState::Failed) {
+         g_pendingBoot = false;
          ERROR_LOG(Log::Boot, "%s", error_string.c_str());
          environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, nullptr);
          return;
+      } else if (state == BootState::Booting) {
+         // Not done yet. Do maintenance stuff and bail.
+         retro_input();
+         ctx->SwapBuffers();
+         return;
       }
 
-      if (softwareRenderInitHack)
-      {
-         log_cb(RETRO_LOG_DEBUG, "Software rendering init hack for opengl triggered.\n");
-         softwareRenderInitHack = false;
-         g_Config.bSoftwareRendering = true;
-         retro_reset();
-      }
+      // Here's where we finish the boot process.
+      g_pendingBoot = false;
+   }
+
+   // TODO: This seems dubious.
+   if (softwareRenderInitHack)
+   {
+      log_cb(RETRO_LOG_DEBUG, "Software rendering init hack for opengl triggered.\n");
+      softwareRenderInitHack = false;
+      g_Config.bSoftwareRendering = true;
+      retro_reset();
    }
 
    check_variables(PSP_CoreParameter());

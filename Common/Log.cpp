@@ -31,6 +31,7 @@
 #include <android/log.h>
 #elif PPSSPP_PLATFORM(WINDOWS)
 #include "CommonWindows.h"
+static HWND g_dialogParent;
 #endif
 
 #define LOG_BUF_SIZE 2048
@@ -41,8 +42,14 @@ static std::mutex g_extraAssertInfoMutex;
 static std::string g_extraAssertInfo = "menu";
 static double g_assertInfoTime = 0.0;
 static bool g_exitOnAssert;
-static AssertNoCallbackFunc g_assertNoCallback = 0;
-static void *g_assertNoCallbackUserData = 0;
+static AssertNoCallbackFunc g_assertCancelCallback = 0;
+static void *g_assertCancelCallbackUserData = 0;
+
+void SetAssertDialogParent(void *handle) {
+#if PPSSPP_PLATFORM(WINDOWS)
+	g_dialogParent = (HWND)handle;
+#endif
+}
 
 void SetExtraAssertInfo(const char *info) {
 	std::lock_guard<std::mutex> guard(g_extraAssertInfoMutex);
@@ -50,9 +57,9 @@ void SetExtraAssertInfo(const char *info) {
 	g_assertInfoTime = time_now_d();
 }
 
-void SetAssertNoCallback(AssertNoCallbackFunc callback, void *userdata) {
-	g_assertNoCallback = callback;
-	g_assertNoCallbackUserData = userdata;
+void SetAssertCancelCallback(AssertNoCallbackFunc callback, void *userdata) {
+	g_assertCancelCallback = callback;
+	g_assertCancelCallbackUserData = userdata;
 }
 
 void SetCleanExitOnAssert() {
@@ -60,8 +67,8 @@ void SetCleanExitOnAssert() {
 }
 
 void BreakIntoPSPDebugger(const char *reason) {
-	if (g_assertNoCallback) {
-		g_assertNoCallback(reason, g_assertNoCallbackUserData);
+	if (g_assertCancelCallback) {
+		g_assertCancelCallback(reason, g_assertCancelCallbackUserData);
 	}
 }
 
@@ -92,33 +99,32 @@ bool HandleAssert(const char *function, const char *file, int line, const char *
 #if defined(USING_WIN_UI)
 	// Avoid hanging on CI.
 	if (!getenv("CI")) {
-		int msgBoxStyle = MB_ICONINFORMATION | MB_YESNOCANCEL;
+		const int msgBoxStyle = MB_ICONINFORMATION | MB_YESNOCANCEL;
 		std::string text = formatted;
 		text += "\n\nTry to continue?";
-		text += "\n\nNo: skip and break into PPSSPP debugger";
 		if (IsDebuggerPresent()) {
-			msgBoxStyle ;
-			text += "\n\nCancel: break directly into the native debugger";
+			text += "\n\nNo: break directly into the native debugger";
+			text += "\n\nCancel: skip and break into PPSSPP debugger";
 		} else {
-			msgBoxStyle |= MB_YESNO;
-			text += "\n\nCancel: Exit";
+			text += "\n\nNo: exit";
+			text += "\n\nCancel: skip and break into PPSSPP debugger";
 		}
 		const char *threadName = GetCurrentThreadName();
 		OutputDebugStringA(formatted);
 		printf("%s\n", formatted);
 		std::wstring wcaption = ConvertUTF8ToWString(std::string(caption) + " " + (threadName ? threadName : "(unknown thread)"));
-		switch (MessageBox(0, ConvertUTF8ToWString(text).c_str(), wcaption.c_str(), msgBoxStyle)) {
+		switch (MessageBox(g_dialogParent, ConvertUTF8ToWString(text).c_str(), wcaption.c_str(), msgBoxStyle)) {
 		case IDYES:
 			return true;
 		case IDNO:
-			g_assertNoCallback(formatted, g_assertNoCallbackUserData);
-			return true;  // don't crash!
-		case IDCANCEL:
 			if (g_exitOnAssert || !IsDebuggerPresent()) {
 				// Hard exit.
 				ExitProcess(1);
 			}
 			return false;  // Break into the native debugger.
+		case IDCANCEL:
+			g_assertCancelCallback(formatted, g_assertCancelCallbackUserData);
+			return true;  // don't crash!
 		}
 	}
 	return false;

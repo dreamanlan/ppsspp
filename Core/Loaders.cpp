@@ -15,7 +15,6 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include "Common/File/AndroidContentURI.h"
 #include "Common/File/FileUtil.h"
 #include "Common/File/Path.h"
 #include "Common/StringUtils.h"
@@ -249,133 +248,6 @@ Path ResolvePBPFile(const Path &filename) {
 	}
 }
 
-bool LoadFile(FileLoader **fileLoaderPtr, std::string *error_string) {
-	FileLoader *&fileLoader = *fileLoaderPtr;
-	IdentifiedFileType type = Identify_File(fileLoader, error_string);
-	switch (type) {
-	case IdentifiedFileType::PSP_PBP_DIRECTORY:
-		{
-			fileLoader = ResolveFileLoaderTarget(fileLoader);
-			if (fileLoader->Exists()) {
-				INFO_LOG(Log::Loader, "File is a PBP in a directory: %s", fileLoader->GetPath().c_str());
-				IdentifiedFileType ebootType = Identify_File(fileLoader, error_string);
-				if (ebootType == IdentifiedFileType::PSP_ISO_NP) {
-					InitMemoryForGameISO(fileLoader);
-					pspFileSystem.SetStartingDirectory("disc0:/PSP_GAME/USRDIR");
-					return Load_PSP_ISO(fileLoader, error_string);
-				}
-				else if (ebootType == IdentifiedFileType::PSP_PS1_PBP) {
-					*error_string = "PS1 EBOOTs are not supported by PPSSPP.";
-					coreState = CORE_BOOT_ERROR;
-					return false;
-				} else if (ebootType == IdentifiedFileType::ERROR_IDENTIFYING) {
-					// IdentifyFile will have written to errorString.
-					coreState = CORE_BOOT_ERROR;
-					return false;
-				}
-
-				std::string dir = fileLoader->GetPath().GetDirectory();
-				if (fileLoader->GetPath().Type() == PathType::CONTENT_URI) {
-					dir = AndroidContentURI(dir).FilePath();
-				}
-				size_t pos = dir.find("PSP/GAME/");
-				if (pos != std::string::npos) {
-					dir = ResolvePBPDirectory(Path(dir)).ToString();
-					pspFileSystem.SetStartingDirectory("ms0:/" + dir.substr(pos));
-				}
-				return Load_PSP_ELF_PBP(fileLoader, error_string);
-			} else {
-				*error_string = "No EBOOT.PBP, misidentified game";
-				coreState = CORE_BOOT_ERROR;
-				return false;
-			}
-		}
-		// Looks like a wrong fall through but is not, both paths are handled above.
-
-	case IdentifiedFileType::PSP_PBP:
-	case IdentifiedFileType::PSP_ELF:
-		{
-			INFO_LOG(Log::Loader, "File is an ELF or loose PBP! %s", fileLoader->GetPath().c_str());
-			return Load_PSP_ELF_PBP(fileLoader, error_string);
-		}
-
-	case IdentifiedFileType::PSP_ISO:
-	case IdentifiedFileType::PSP_ISO_NP:
-	case IdentifiedFileType::PSP_DISC_DIRECTORY:	// behaves the same as the mounting is already done by now
-		pspFileSystem.SetStartingDirectory("disc0:/PSP_GAME/USRDIR");
-		return Load_PSP_ISO(fileLoader, error_string);
-
-	case IdentifiedFileType::PSP_PS1_PBP:
-		*error_string = "PS1 EBOOTs are not supported by PPSSPP.";
-		break;
-
-	case IdentifiedFileType::ARCHIVE_RAR:
-#ifdef WIN32
-		*error_string = "RAR file detected (Require WINRAR)";
-#else
-		*error_string = "RAR file detected (Require UnRAR)";
-#endif
-		break;
-
-	case IdentifiedFileType::ARCHIVE_ZIP:
-#ifdef WIN32
-		*error_string = "ZIP file detected (Require WINRAR)";
-#else
-		*error_string = "ZIP file detected (Require UnRAR)";
-#endif
-		break;
-
-	case IdentifiedFileType::ARCHIVE_7Z:
-#ifdef WIN32
-		*error_string = "7z file detected (Require 7-Zip)";
-#else
-		*error_string = "7z file detected (Require 7-Zip)";
-#endif
-		break;
-
-	case IdentifiedFileType::ISO_MODE2:
-		*error_string = "PSX game image detected.";
-		break;
-
-	case IdentifiedFileType::NORMAL_DIRECTORY:
-		ERROR_LOG(Log::Loader, "Just a directory.");
-		*error_string = "Just a directory.";
-		break;
-
-	case IdentifiedFileType::PPSSPP_SAVESTATE:
-		*error_string = "This is a saved state, not a game.";  // Actually, we could make it load it...
-		break;
-
-	case IdentifiedFileType::PSP_SAVEDATA_DIRECTORY:
-		*error_string = "This is save data, not a game."; // Actually, we could make it load it...
-		break;
-
-	case IdentifiedFileType::PPSSPP_GE_DUMP:
-		return Load_PSP_GE_Dump(fileLoader, error_string);
-
-	case IdentifiedFileType::UNKNOWN_BIN:
-	case IdentifiedFileType::UNKNOWN_ELF:
-	case IdentifiedFileType::UNKNOWN_ISO:
-	case IdentifiedFileType::UNKNOWN:
-		ERROR_LOG(Log::Loader, "Unknown file type: %s (%s)", fileLoader->GetPath().c_str(), error_string->c_str());
-		*error_string = "Unknown file type: " + fileLoader->GetPath().ToString();
-		break;
-
-	case IdentifiedFileType::ERROR_IDENTIFYING:
-		*error_string = *error_string + ": " + (fileLoader ? fileLoader->LatestError() : "");
-		ERROR_LOG(Log::Loader, "Error while identifying file: %s", error_string->c_str());
-		break;
-
-	default:
-		*error_string = StringFromFormat("Unhandled identified file type %d", (int)type);
-		ERROR_LOG(Log::Loader, "%s", error_string->c_str());
-		break;
-	}
-
-	coreState = CORE_BOOT_ERROR;
-	return false;
-}
-
 bool UmdReplace(const Path &filepath, FileLoader **fileLoader, std::string &error) {
 	IFileSystem *currentUMD = pspFileSystem.GetSystem("disc0:");
 
@@ -386,8 +258,8 @@ bool UmdReplace(const Path &filepath, FileLoader **fileLoader, std::string &erro
 
 	FileLoader *loadedFile = ConstructFileLoader(filepath);
 
-	if (!loadedFile->Exists()) {
-		error = loadedFile->GetPath().ToVisualString() + " doesn't exist";
+	if (!loadedFile || !loadedFile->Exists()) {
+		error = loadedFile ? (loadedFile->GetPath().ToVisualString() + " doesn't exist") : "no loaded file";
 		delete loadedFile;
 		return false;
 	}
@@ -404,8 +276,8 @@ bool UmdReplace(const Path &filepath, FileLoader **fileLoader, std::string &erro
 	case IdentifiedFileType::PSP_ISO:
 	case IdentifiedFileType::PSP_ISO_NP:
 	case IdentifiedFileType::PSP_DISC_DIRECTORY:
-		if (!ReInitMemoryForGameISO(loadedFile)) {
-			error = "reinit memory failed";
+		if (!MountGameISO(loadedFile)) {
+			error = "mounting the new ISO failed";
 			return false;
 		}
 		break;

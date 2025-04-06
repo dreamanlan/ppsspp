@@ -25,6 +25,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/Log.h"
 #include "Core/MIPS/MIPS.h"
+#include "Core/ConfigValues.h"
 
 #ifdef _MSC_VER
 #pragma warning (error: 4834)  // discarding return value of function with 'nodiscard' attribute
@@ -97,15 +98,30 @@ struct Syscall {
 #define RETURN64(n) {u64 RETURN64_tmp = n; currentMIPS->r[MIPS_REG_V0] = RETURN64_tmp & 0xFFFFFFFF; currentMIPS->r[MIPS_REG_V1] = RETURN64_tmp >> 32;}
 #define RETURNF(fl) currentMIPS->f[0] = fl
 
-const char *GetFuncName(std::string_view module, u32 nib);
-const char *GetFuncName(int module, int func);
-const HLEFunction *GetFunc(std::string_view module, u32 nib);
-int GetFuncIndex(int moduleIndex, u32 nib);
-int GetModuleIndex(std::string_view modulename);
+struct HLEModuleMeta {
+	// This is the modname (name from the PRX header). Probably, we should really blacklist on the module names of the exported symbol metadata.
+	const char *modname;
+	const char *importName;  // Technically a module can export functions with different module names, but doesn't seem to happen.
+	DisableHLEFlags disableFlag;
+};
 
-void RegisterModule(std::string_view name, int numFunctions, const HLEFunction *funcTable);
-int GetNumRegisteredModules();
-const HLEModule *GetModuleByIndex(int index);
+const HLEModuleMeta *GetHLEModuleMetaByFlag(DisableHLEFlags flag);
+const HLEModuleMeta *GetHLEModuleMeta(std::string_view modname);
+bool ShouldHLEModule(std::string_view modname, bool *wasDisabledManually = nullptr);
+bool ShouldHLEModuleByImportName(std::string_view importModuleName);
+
+const char *GetHLEFuncName(std::string_view module, u32 nib);
+const char *GetHLEFuncName(int module, int func);
+const HLEModule *GetHLEModuleByName(std::string_view name);
+const HLEFunction *GetHLEFunc(std::string_view module, u32 nib);
+int GetHLEFuncIndexByNib(int moduleIndex, u32 nib);
+int GetHLEModuleIndex(std::string_view modulename);
+u32 GetNibByName(std::string_view module, std::string_view function);
+
+void RegisterHLEModule(std::string_view name, int numFunctions, const HLEFunction *funcTable);
+int GetNumRegisteredHLEModules();
+const HLEModule *GetHLEModuleByIndex(int index);
+DisableHLEFlags AlwaysDisableHLEFlags();
 
 // Run the current thread's callbacks after the syscall finishes.
 void hleCheckCurrentCallbacks();
@@ -158,10 +174,8 @@ inline s64 hleDelayResult(s64 result, const char *reason, int usec) {
 void HLEInit();
 void HLEDoState(PointerWrap &p);
 void HLEShutdown();
-u32 GetNibByName(std::string_view module, std::string_view function);
 u32 GetSyscallOp(std::string_view module, u32 nib);
-bool FuncImportIsSyscall(std::string_view module, u32 nib);
-bool WriteSyscall(std::string_view module, u32 nib, u32 address);
+bool WriteHLESyscall(std::string_view module, u32 nib, u32 address);
 void CallSyscall(MIPSOpcode op);
 void WriteFuncStub(u32 stubAddr, u32 symAddr);
 void WriteFuncMissingStub(u32 stubAddr, u32 nid);
@@ -181,7 +195,7 @@ __attribute__((format(printf, 7, 8)))
 #endif
 NO_INLINE
 T hleDoLog(Log t, LogLevel level, T res, const char *file, int line, const char *reportTag, const char *reasonFmt, ...) {
-	if (!GenericLogEnabled(level, t)) {
+	if (!GenericLogEnabled(t, level)) {
 		if (leave) {
 			hleLeave();
 		}
@@ -221,7 +235,7 @@ template <bool leave, bool convert_code, typename T>
 [[nodiscard]]
 NO_INLINE
 T hleDoLog(Log t, LogLevel level, T res, const char *file, int line, const char *reportTag) {
-	if (((int)level > MAX_LOGLEVEL || !GenericLogEnabled(level, t)) && !reportTag) {
+	if (((int)level > MAX_LOGLEVEL || !GenericLogEnabled(t, level)) && !reportTag) {
 		if (leave) {
 			hleLeave();
 		}

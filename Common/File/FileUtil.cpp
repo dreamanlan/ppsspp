@@ -281,6 +281,13 @@ int OpenFD(const Path &path, OpenFlag flags) {
 	return descriptor;
 }
 
+void CloseFD(int fd) {
+#if PPSSPP_PLATFORM(ANDROID)
+	close(fd);
+#endif
+}
+
+
 #ifdef _WIN32
 static bool ResolvePathVista(const std::wstring &path, wchar_t *buf, DWORD bufSize) {
 	typedef DWORD(WINAPI *getFinalPathNameByHandleW_f)(HANDLE hFile, LPWSTR lpszFilePath, DWORD cchFilePath, DWORD dwFlags);
@@ -315,21 +322,21 @@ static bool ResolvePathVista(const std::wstring &path, wchar_t *buf, DWORD bufSi
 }
 #endif
 
-std::string ResolvePath(const std::string &path) {
+std::string ResolvePath(std::string_view path) {
 	if (LOG_IO) {
-		INFO_LOG(Log::System, "ResolvePath %s", path.c_str());
+		INFO_LOG(Log::System, "ResolvePath %.*s", (int)path.size(), path.data());
 	}
 	if (SIMULATE_SLOW_IO) {
 		sleep_ms(100, "slow-io-sim");
 	}
 
 	if (startsWith(path, "http://") || startsWith(path, "https://")) {
-		return path;
+		return std::string(path);
 	}
 
 	if (Android_IsContentUri(path)) {
-		// Nothing to do?
-		return path;
+		// Nothing to do? We consider these to only have one canonical form.
+		return std::string(path);
 	}
 
 #ifdef _WIN32
@@ -370,12 +377,13 @@ std::string ResolvePath(const std::string &path) {
 
 #elif PPSSPP_PLATFORM(IOS)
 	// Resolving has wacky effects on documents paths.
-	return path;
+	return std::string(path);
 #else
 	std::unique_ptr<char[]> buf(new char[PATH_MAX + 32768]);
-	if (realpath(path.c_str(), buf.get()) == nullptr)
-		return path;
-	return buf.get();
+	std::string spath(path);
+	if (realpath(spath.c_str(), buf.get()) == nullptr)
+		return spath;
+	return std::string(buf.get());
 #endif
 }
 

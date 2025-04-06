@@ -75,6 +75,7 @@
 #include "scePower.h"
 #include "sceUtility.h"
 #include "sceUmd.h"
+#include "sceReg.h"
 #include "sceRtc.h"
 #include "sceSsl.h"
 #include "sceSas.h"
@@ -164,6 +165,7 @@ void __KernelInit()
 	__OpenPSIDInit();
 	__HttpInit();
 	__NpInit();
+	__RegInit();
 	
 	SaveState::Init();  // Must be after IO, as it may create a directory
 	Reporting::Init();
@@ -188,6 +190,7 @@ void __KernelShutdown()
 	hleCurrentThreadName = NULL;
 	kernelObjects.Clear();
 
+	__RegShutdown();
 	__HttpShutdown();
 	__OpenPSIDShutdown();
 	__UsbCamShutdown();
@@ -303,6 +306,7 @@ void __KernelDoState(PointerWrap &p)
 		__AACDoState(p);
 		__UsbGpsDoState(p);
 		__UsbMicDoState(p);
+		__RegDoState(p);
 
 		// IMPORTANT! Add new sections last!
 	}
@@ -326,9 +330,7 @@ std::string __KernelStateSummary() {
 	return __KernelThreadingSummary();
 }
 
-
-void sceKernelExitGame()
-{
+void sceKernelExitGame() {
 	INFO_LOG(Log::sceKernel, "sceKernelExitGame");
 	__KernelSwitchOffThread("game exited");
 	Core_Stop();
@@ -948,7 +950,7 @@ const HLEFunction ThreadManForKernel[] =
 
 void Register_ThreadManForUser()
 {
-	RegisterModule("ThreadManForUser", ARRAY_SIZE(ThreadManForUser), ThreadManForUser);
+	RegisterHLEModule("ThreadManForUser", ARRAY_SIZE(ThreadManForUser), ThreadManForUser);
 }
 
 
@@ -964,7 +966,7 @@ const HLEFunction LoadExecForUser[] =
 
 void Register_LoadExecForUser()
 {
-	RegisterModule("LoadExecForUser", ARRAY_SIZE(LoadExecForUser), LoadExecForUser);
+	RegisterHLEModule("LoadExecForUser", ARRAY_SIZE(LoadExecForUser), LoadExecForUser);
 }
  
 const HLEFunction LoadExecForKernel[] =
@@ -977,7 +979,7 @@ const HLEFunction LoadExecForKernel[] =
  
 void Register_LoadExecForKernel()
 {
-	RegisterModule("LoadExecForKernel", ARRAY_SIZE(LoadExecForKernel), LoadExecForKernel);
+	RegisterHLEModule("LoadExecForKernel", ARRAY_SIZE(LoadExecForKernel), LoadExecForKernel);
 }
 
 const HLEFunction ExceptionManagerForKernel[] =
@@ -994,7 +996,7 @@ const HLEFunction ExceptionManagerForKernel[] =
 
 void Register_ExceptionManagerForKernel()
 {
-	RegisterModule("ExceptionManagerForKernel", ARRAY_SIZE(ExceptionManagerForKernel), ExceptionManagerForKernel);
+	RegisterHLEModule("ExceptionManagerForKernel", ARRAY_SIZE(ExceptionManagerForKernel), ExceptionManagerForKernel);
 }
 
 // Seen in some homebrew
@@ -1023,17 +1025,18 @@ const HLEFunction UtilsForKernel[] = {
 
 void Register_UtilsForKernel()
 {
-	RegisterModule("UtilsForKernel", ARRAY_SIZE(UtilsForKernel), UtilsForKernel);
+	RegisterHLEModule("UtilsForKernel", ARRAY_SIZE(UtilsForKernel), UtilsForKernel);
 }
 
 void Register_ThreadManForKernel()
 {
-	RegisterModule("ThreadManForKernel", ARRAY_SIZE(ThreadManForKernel), ThreadManForKernel);
+	RegisterHLEModule("ThreadManForKernel", ARRAY_SIZE(ThreadManForKernel), ThreadManForKernel);
 }
 
 const char *KernelErrorToString(u32 err) {
 	switch (err) {
 	case 0x00000000: return "ERROR_OK";
+	case SCE_KERNEL_ERROR_BAD_ARGUMENT: "BAD_ARGUMENT";
 	case 0x80000020: return "ALREADY";
 	case 0x80000021: return "BUSY";
 	case 0x80000022: return "OUT_OF_MEMORY";
@@ -1466,6 +1469,48 @@ const char *KernelErrorToString(u32 err) {
 	case SCE_SSL_ERROR_ALREADY_INIT: return "SCE_SSL_ERROR_ALREADY_INIT";
 	case SCE_SSL_ERROR_OUT_OF_MEMORY: return "SCE_SSL_ERROR_OUT_OF_MEMORY";
 	case SCE_SSL_ERROR_INVALID_PARAMETER: return "SCE_SSL_ERROR_INVALID_PARAMETER";
+
+	case SCE_SAS_ERROR_INVALID_GRAIN: return "SCE_SAS_ERROR_INVALID_GRAIN";
+	case SCE_SAS_ERROR_INVALID_MAX_VOICES: return "SCE_SAS_ERROR_INVALID_MAX_VOICES";
+	case SCE_SAS_ERROR_INVALID_OUTPUT_MODE: return "SCE_SAS_ERROR_INVALID_OUTPUT_MODE";
+	case SCE_SAS_ERROR_INVALID_SAMPLE_RATE: return "SCE_SAS_ERROR_INVALID_SAMPLE_RATE";
+	case SCE_SAS_ERROR_BAD_ADDRESS: return "SCE_SAS_ERROR_BAD_ADDRESS";
+	case SCE_SAS_ERROR_INVALID_VOICE: return "SCE_SAS_ERROR_INVALID_VOICE";
+	case SCE_SAS_ERROR_INVALID_NOISE_FREQ: return "SCE_SAS_ERROR_INVALID_NOISE_FREQ";
+	case SCE_SAS_ERROR_INVALID_PITCH: return "SCE_SAS_ERROR_INVALID_PITCH";
+	case SCE_SAS_ERROR_INVALID_ADSR_CURVE_MODE: return "SCE_SAS_ERROR_INVALID_ADSR_CURVE_MODE";
+	case SCE_SAS_ERROR_INVALID_PARAMETER: return "SCE_SAS_ERROR_INVALID_PARAMETER";
+	case SCE_SAS_ERROR_INVALID_LOOP_POS: return "SCE_SAS_ERROR_INVALID_LOOP_POS";
+	case SCE_SAS_ERROR_VOICE_PAUSED: return "SCE_SAS_ERROR_VOICE_PAUSED";
+	case SCE_SAS_ERROR_INVALID_VOLUME: return "SCE_SAS_ERROR_INVALID_VOLUME";
+	case SCE_SAS_ERROR_INVALID_ADSR_RATE: return "SCE_SAS_ERROR_INVALID_ADSR_RATE";
+	case SCE_SAS_ERROR_INVALID_PCM_SIZE: return "SCE_SAS_ERROR_INVALID_PCM_SIZE";
+	case SCE_SAS_ERROR_REV_INVALID_TYPE: return "SCE_SAS_ERROR_REV_INVALID_TYPE";
+	case SCE_SAS_ERROR_REV_INVALID_FEEDBACK: return "SCE_SAS_ERROR_REV_INVALID_FEEDBACK";
+	case SCE_SAS_ERROR_REV_INVALID_DELAY: return "SCE_SAS_ERROR_REV_INVALID_DELAY";
+	case SCE_SAS_ERROR_REV_INVALID_VOLUME: return "SCE_SAS_ERROR_REV_INVALID_VOLUME";
+	case SCE_SAS_ERROR_BUSY: return "SCE_SAS_ERROR_BUSY";
+	case SCE_SAS_ERROR_ATRAC3_ALREADY_SET: return "SCE_SAS_ERROR_ATRAC3_ALREADY_SET";
+	case SCE_SAS_ERROR_ATRAC3_NOT_SET: return "SCE_SAS_ERROR_ATRAC3_NOT_SET";
+	case SCE_SAS_ERROR_NOT_INIT: return "SCE_SAS_ERROR_NOT_INIT";
+
+	case SCE_AVCODEC_ERROR_INVALID_DATA: return "SCE_AVCODEC_ERROR_INVALID_DATA";
+
+	case SCE_REG_ERROR_MALLOC_FAILURE: return "SCE_REG_ERROR_MALLOC_FAILURE";
+	case SCE_REG_ERROR_CATEGORY_NOT_FOUND: return "SCE_REG_ERROR_CATEGORY_NOT_FOUND";
+	case SCE_REG_ERROR_REGISTRY_NOT_FOUND: return "SCE_REG_ERROR_REGISTRY_NOT_FOUND";
+	case SCE_REG_ERROR_INVALID_PATH: return "SCE_REG_ERROR_INVALID_PATH";
+	case SCE_REG_ERROR_INVALID_NAME: return "SCE_REG_ERROR_INVALID_NAME";
+	case SCE_REG_ERROR_PERMISSION_FAILURE: return "SCE_REG_ERROR_PERMISSION_FAILURE";
+
+	case SCE_MP3_ERROR_INVALID_HANDLE: return "SCE_MP3_ERROR_INVALID_HANDLE";
+	case SCE_MP3_ERROR_UNRESERVED_HANDLE: return "SCE_MP3_ERROR_UNRESERVED_HANDLE";
+	case SCE_MP3_ERROR_NOT_YET_INIT_HANDLE: return "SCE_MP3_ERROR_NOT_YET_INIT_HANDLE";
+	case SCE_MP3_ERROR_NO_RESOURCE_AVAIL: return "SCE_MP3_ERROR_NO_RESOURCE_AVAIL";
+	case SCE_MP3_ERROR_BAD_SAMPLE_RATE: return "SCE_MP3_ERROR_BAD_SAMPLE_RATE";
+	case SCE_MP3_ERROR_BAD_RESET_FRAME: return "SCE_MP3_ERROR_BAD_RESET_FRAME";
+	case SCE_MP3_ERROR_BAD_ADDR: return "SCE_MP3_ERROR_BAD_ADDR";
+	case SCE_MP3_ERROR_BAD_SIZE: return "SCE_MP3_ERROR_BAD_SIZE";
 
 	default:
 		return nullptr;

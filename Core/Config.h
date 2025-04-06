@@ -35,7 +35,6 @@ namespace http {
 }
 
 struct UrlEncoder;
-struct ConfigPrivate;
 
 class Section;
 
@@ -123,6 +122,7 @@ public:
 	int iIOTimingMethod;
 	int iLockedCPUSpeed;
 	bool bAutoSaveSymbolMap;
+	bool bCompressSymbols;
 	bool bCacheFullIsoInRam;
 	int iRemoteISOPort;
 	std::string sLastRemoteISOServer;
@@ -139,6 +139,8 @@ public:
 	bool bLoadPlugins;
 	int iAskForExitConfirmationAfterSeconds;
 	int iUIScaleFactor;  // In 8ths of powers of two.
+	int iDisableHLE;
+	int iForceEnableHLE;  // This is the opposite of DisableHLE but can force on HLE even when we've made it permanently off. Only used in tests, not hooked up to the ini file yet.
 
 	int iScreenRotation;  // The rotation angle of the PPSSPP UI. Only supported on Android and possibly other mobile platforms.
 	int iInternalScreenRotation;  // The internal screen rotation angle. Useful for vertical SHMUPs and similar.
@@ -622,11 +624,6 @@ public:
 
 	void UpdateIniLocation(const char *iniFileName = nullptr, const char *controllerIniFilename = nullptr);
 
-	// Utility functions for "recent" management
-	void AddRecent(const std::string &file);
-	void RemoveRecent(const std::string &file);
-	void CleanRecent();
-
 	static void DownloadCompletedCallback(http::Request &download);
 	void DismissUpgrade();
 
@@ -643,10 +640,6 @@ public:
 			return iForceFullScreen == 1;
 		return bFullScreen;
 	}
-
-	std::vector<std::string> RecentIsos() const;
-	bool HasRecentIsos() const;
-	void ClearRecentIsos();
 
 	const std::map<std::string, std::pair<std::string, int>, std::less<>> &GetLangValuesMapping();
 	bool LoadAppendedConfig();
@@ -671,7 +664,6 @@ private:
 	bool reload_ = false;
 	std::string gameId_;
 	std::string gameIdTitle_;
-	std::vector<std::string> recentIsos;
 	std::map<std::string, std::pair<std::string, int>, std::less<>> langValuesMapping_;
 	PlayTimeTracker playTimeTracker_;
 	Path iniFilename_;
@@ -680,10 +672,10 @@ private:
 	Path appendedConfigFileName_;
 	// A set make more sense, but won't have many entry, and I dont want to include the whole std::set header here
 	std::vector<std::string> appendedConfigUpdatedGames_;
-	ConfigPrivate *private_ = nullptr;
 };
 
 std::string CreateRandMAC();
+bool TryUpdateSavedPath(Path *path);
 
 // TODO: Find a better place for this.
 extern http::RequestManager g_DownloadManager;

@@ -75,7 +75,7 @@ SavedataView::SavedataView(UIContext &dc, const Path &savePath, IdentifiedFileTy
 		mTime_->SetTextColor(textStyle.fgColor);
 		toprow->Add(topright);
 		Add(new Spacer(3.0));
-		detail_ = Add(new TextView(ReplaceAll(savedataDetail, "\r", ""), ALIGN_LEFT | FLAG_WRAP_TEXT, true, new LinearLayoutParams(Margins(10, 0))));
+		detail_ = Add(new TextView(SanitizeString(savedataDetail, StringRestriction::ConvertToUnixEndings), ALIGN_LEFT | FLAG_WRAP_TEXT, true, new LinearLayoutParams(Margins(10, 0))));
 		detail_->SetTextColor(textStyle.fgColor);
 		Add(new Spacer(3.0));
 	} else {
@@ -92,15 +92,16 @@ SavedataView::SavedataView(UIContext &dc, const Path &savePath, IdentifiedFileTy
 	}
 }
 
+// TODO: This runs every frame, which is a bit silly.
 void SavedataView::UpdateGame(GameInfo *ginfo) {
 	if (!ginfo->Ready(GameInfoFlags::PARAM_SFO | GameInfoFlags::SIZE)) {
 		return;
 	}
 	if (savedataTitle_) {
-		savedataTitle_->SetText(ginfo->GetParamSFO().GetValueString("SAVEDATA_TITLE"));
+		savedataTitle_->SetText(SanitizeString(ginfo->GetParamSFO().GetValueString("SAVEDATA_TITLE"), StringRestriction::NoLineBreaksOrSpecials));
 	}
 	if (detail_) {
-		detail_->SetText(ginfo->GetParamSFO().GetValueString("SAVEDATA_DETAIL"));
+		detail_->SetText(SanitizeString(ginfo->GetParamSFO().GetValueString("SAVEDATA_DETAIL"), StringRestriction::ConvertToUnixEndings));
 	}
 	if (fileSize_) {
 		fileSize_->SetText(NiceSizeFormat(ginfo->gameSizeOnDisk));
@@ -272,12 +273,6 @@ void SavedataButton::UpdateDateSeconds() {
 	hasDateSeconds_ = true;
 }
 
-static std::string CleanSaveString(std::string_view str) {
-	std::string s = ReplaceAll(str, "\n", " ");
-	s = ReplaceAll(s, "\r", " ");
-	return s;
-}
-
 bool SavedataButton::UpdateText() {
 	std::shared_ptr<GameInfo> ginfo = g_gameInfoCache->GetInfo(nullptr, savePath_, GameInfoFlags::PARAM_SFO);
 	if (ginfo->Ready(GameInfoFlags::PARAM_SFO)) {
@@ -290,12 +285,12 @@ bool SavedataButton::UpdateText() {
 void SavedataButton::UpdateText(const std::shared_ptr<GameInfo> &ginfo) {
 	const std::string currentTitle = ginfo->GetTitle();
 	if (!currentTitle.empty()) {
-		title_ = CleanSaveString(currentTitle);
+		title_ = SanitizeString(currentTitle, StringRestriction::NoLineBreaksOrSpecials);
 	}
 	if (subtitle_.empty() && ginfo->gameSizeOnDisk > 0) {
 		std::string date = ginfo->GetMTime();
 		std::string savedata_title = ginfo->GetParamSFO().GetValueString("SAVEDATA_TITLE");
-		subtitle_ = CleanSaveString(savedata_title) + " (" + NiceSizeFormat(ginfo->gameSizeOnDisk) + ", " + date + ")";
+		subtitle_ = SanitizeString(savedata_title, StringRestriction::NoLineBreaksOrSpecials) + " (" + NiceSizeFormat(ginfo->gameSizeOnDisk) + ", " + date + ")";
 	}
 }
 
@@ -635,7 +630,6 @@ void SavedataScreen::CreateSavedataTab(UI::ViewGroup *savedata) {
 	if (!searchFilter_.empty())
 		dataBrowser_->SetSearchFilter(searchFilter_);
 	dataBrowser_->OnChoice.Handle(this, &SavedataScreen::OnSavedataButtonClick);
-
 }
 
 void SavedataScreen::CreateSavestateTab(UI::ViewGroup *savestate) {
@@ -699,7 +693,10 @@ UI::EventReturn SavedataScreen::OnSavedataButtonClick(UI::EventParams &e) {
 	if (!ginfo->Ready(GameInfoFlags::PARAM_SFO)) {
 		return UI::EVENT_DONE;
 	}
-	SavedataPopupScreen *popupScreen = new SavedataPopupScreen(gamePath_, Path(e.s), ginfo->GetTitle());
+
+	// Sanitize the title.
+	std::string title = SanitizeString(ginfo->GetTitle(), StringRestriction::NoLineBreaksOrSpecials, 0, 200);
+	SavedataPopupScreen *popupScreen = new SavedataPopupScreen(gamePath_, Path(e.s), title);
 	if (e.v) {
 		popupScreen->SetPopupOrigin(e.v);
 	}
@@ -716,7 +713,10 @@ void SavedataScreen::dialogFinished(const Screen *dialog, DialogResult result) {
 
 void SavedataScreen::sendMessage(UIMessage message, const char *value) {
 	UIDialogScreenWithGameBackground::sendMessage(message, value);
+
 	if (message == UIMessage::SAVEDATA_SEARCH) {
+		EnsureTabs();
+
 		searchFilter_ = value;
 		dataBrowser_->SetSearchFilter(searchFilter_);
 		stateBrowser_->SetSearchFilter(searchFilter_);

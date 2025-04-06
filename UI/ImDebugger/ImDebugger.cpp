@@ -2,6 +2,7 @@
 
 
 #include "ext/imgui/imgui_internal.h"
+#include "ext/imgui/imgui_extras.h"
 
 #include "Common/StringUtils.h"
 #include "Common/File/FileUtil.h"
@@ -25,6 +26,7 @@
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/SocketManager.h"
 #include "Core/HLE/NetInetConstants.h"
+#include "Core/HLE/sceKernelModule.h"
 #include "Core/HLE/sceNp.h"
 #include "Core/HLE/sceNet.h"
 #include "Core/HLE/sceNetApctl.h"
@@ -306,21 +308,6 @@ static void DrawVFPU(ImConfig &config, ImControl &control, const MIPSDebugInterf
 	ImGui::End();
 }
 
-static const char *ThreadStatusToString(u32 status) {
-	switch (status) {
-	case THREADSTATUS_RUNNING: return "Running";
-	case THREADSTATUS_READY: return "Ready";
-	case THREADSTATUS_WAIT: return "Wait";
-	case THREADSTATUS_SUSPEND: return "Suspended";
-	case THREADSTATUS_DORMANT: return "Dormant";
-	case THREADSTATUS_DEAD: return "Dead";
-	case THREADSTATUS_WAITSUSPEND: return "WaitSuspended";
-	default:
-		break;
-	}
-	return "(unk)";
-}
-
 void WaitIDToString(WaitType waitType, SceUID waitID, char *buffer, size_t bufSize) {
 	switch (waitType) {
 	case WAITTYPE_AUDIOCHANNEL:
@@ -411,7 +398,7 @@ void DrawThreadView(ImConfig &cfg, ImControl &control) {
 			ImGui::TableNextColumn();
 			ImGui::TextUnformatted(ThreadStatusToString(thread.status));
 			ImGui::TableNextColumn();
-			ImGui::TextUnformatted(getWaitTypeName(thread.waitType));
+			ImGui::TextUnformatted(WaitTypeToString(thread.waitType));
 			ImGui::TableNextColumn();
 			char temp[64];
 			WaitIDToString(thread.waitType, thread.waitID, temp, sizeof(temp));
@@ -1028,14 +1015,15 @@ void DrawAudioDecodersView(ImConfig &cfg, ImControl &control) {
 			char header[32];
 			snprintf(header, sizeof(header), "Atrac context %d", cfg.selectedAtracCtx);
 			if (ctx && ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen)) {
-				int pos;
-				ctx->GetNextDecodePosition(&pos);
-				int endSample, loopStart, loopEnd;
-				ctx->GetSoundSample(&endSample, &loopStart, &loopEnd);
-				ImGui::ProgressBar((float)pos / (float)endSample, ImVec2(200.0f, 0.0f));
-				ImGui::Text("Status: %s", AtracStatusToString(ctx->BufferState()));
-				if (ctx->BufferState() <= ATRAC_STATUS_STREAMED_LOOP_WITH_TRAILER) {
-					ImGui::Text("cur/end sample: %d/%d/%d", pos, endSample);
+				bool isNormal = AtracStatusIsNormal(ctx->BufferState());
+				if (isNormal) {
+					int pos;
+					ctx->GetNextDecodePosition(&pos);
+					int endSample, loopStart, loopEnd;
+					ctx->GetSoundSample(&endSample, &loopStart, &loopEnd);
+					ImGui::ProgressBar((float)pos / (float)endSample, ImVec2(200.0f, 0.0f));
+					ImGui::Text("Status: %s", AtracStatusToString(ctx->BufferState()));
+					ImGui::Text("cur/end sample: %d/%d", pos, endSample);
 				}
 				if (ctx->context_.IsValid()) {
 					ImGui::Text("ctx addr: ");
@@ -1044,25 +1032,58 @@ void DrawAudioDecodersView(ImConfig &cfg, ImControl &control) {
 				}
 				if (ctx->context_.IsValid() && ctx->GetContextVersion() >= 2) {
 					const auto &info = ctx->context_->info;
-					ImGui::Text("Buffer: (size: %d / %08x) Frame: %d", info.bufferByte, info.bufferByte, info.sampleSize);
-					ImGui::SameLine();
-					ImClickableValue("buffer", info.buffer, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
-					if (info.secondBuffer || info.secondBufferByte) {
-						ImGui::Text("Second: (size: %d / %08x)", info.secondBufferByte, info.secondBufferByte);
+					if (isNormal) {
+						ImGui::Text("Buffer: (size: %d / %08x) Frame: %d", info.bufferByte, info.bufferByte, info.sampleSize);
 						ImGui::SameLine();
-						ImClickableValue("second", info.secondBuffer, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
+						ImClickableValue("buffer", info.buffer, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
+						if (info.secondBuffer || info.secondBufferByte) {
+							ImGui::Text("Second: (size: %d / %08x)", info.secondBufferByte, info.secondBufferByte);
+							ImGui::SameLine();
+							ImClickableValue("second", info.secondBuffer, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
+						}
+						ImGui::Text("Data: %d/%d", info.dataOff, info.fileDataEnd);
+						if (info.state != ATRAC_STATUS_STREAMED_WITHOUT_LOOP) {
+							ImGui::Text("LoopNum: %d (%d-%d)", info.loopNum, info.loopStart, info.loopEnd);
+						}
+						ImGui::Text("DecodePos: %d EndSample: %d", info.decodePos, info.fileDataEnd);
+						if (AtracStatusIsStreaming(info.state)) {
+							ImGui::Text("Stream: offset %d, streamDataBytes: %d", info.streamOff, info.streamDataByte);
+						}
+						ImGui::Text("numFrame: %d curBuffer: %d streamOff2: %d", info.numSkipFrames, info.curBuffer, info.secondStreamOff);
+					} else if (ctx->BufferState() == ATRAC_STATUS_FOR_SCESAS) {
+						// A different set of state!
+						const AtracSasStreamState *sas = ctx->StreamStateForSas();
+						if (sas) {
+							ImGui::ProgressBar((float)sas->CurPos() / (float)info.fileDataEnd, ImVec2(200.0f, 0.0f));
+							ImGui::ProgressBar((float)sas->streamOffset / (float)sas->bufSize[sas->curBuffer], ImVec2(200.0f, 0.0f));
+							ImGui::Text("Cur pos: %08x File offset: %08x File end: %08x%s", sas->CurPos(), sas->fileOffset, info.fileDataEnd, sas->fileOffset >= info.fileDataEnd ? " (END)" : "");
+							ImGui::Text("Second (next buffer): %08x (sz: %08x)", info.secondBuffer, info.secondBufferByte);
+							ImGui::Text("Cur buffer: %d (%08x, sz: %08x)", sas->curBuffer, sas->bufPtr[sas->curBuffer], sas->bufSize[sas->curBuffer]);
+							ImGui::Text("2nd buffer: %d (%08x, sz: %08x)", sas->curBuffer ^ 1, sas->bufPtr[sas->curBuffer ^ 1], sas->bufSize[sas->curBuffer ^ 1]);
+							ImGui::Text("Loop points: %08x, %08x", info.loopStart, info.loopEnd);
+							ImGui::TextUnformatted(sas->isStreaming ? "Streaming mode!" : "Non-streaming mode");
+						} else {
+							ImGui::Text("can't access sas state");
+						}
 					}
-					ImGui::Text("Data: %d/%d", info.dataOff, info.fileDataEnd);
-					if (info.state != ATRAC_STATUS_STREAMED_WITHOUT_LOOP) {
-						ImGui::Text("LoopNum: %d (%d-%d)", info.loopNum, info.loopStart, info.loopEnd);
+
+					if (ctx->BufferState() == ATRAC_STATUS_ALL_DATA_LOADED) {
+						if (ImGui::Button("Save to disk...")) {
+							System_BrowseForFileSave(cfg.requesterToken, "Save AT3 file", "song.at3", BrowseFileType::ATRAC3, [=](const std::string &filename, int) {
+								const u8 *data = Memory::GetPointerRange(info.buffer, info.bufferByte);
+								if (!data) {
+									return;
+								}
+								FILE *file = File::OpenCFile(Path(filename), "wb");
+								if (!file) {
+									return;
+								}
+								fwrite(data, 1, info.bufferByte, file);
+								fclose(file);
+							});
+						}
 					}
-					ImGui::Text("DecodePos: %d EndSample: %d", info.decodePos, info.fileDataEnd);
-					if (AtracStatusIsStreaming(info.state)) {
-						ImGui::Text("Stream: offset %d, streamDataBytes: %d", info.streamOff, info.streamDataByte);
-					}
-					// Display unknown vars.
-					ImGui::Text("numFrame: %d curBuffer: %d streamOff2: %d", info.numSkipFrames, info.curBuffer, info.secondStreamOff);
-				} else {
+				} else  {
 					ImGui::Text("loop: %d", ctx->LoopNum());
 				}
 			}
@@ -1306,7 +1327,7 @@ void DrawSasAudio(ImConfig &cfg) {
 			case VOICETYPE_OFF: ImGui::TextUnformatted("(off)"); break;
 			case VOICETYPE_VAG: ImGui::Text("%08x", voice.vagAddr); break;
 			case VOICETYPE_PCM: ImGui::Text("%08x", voice.pcmAddr); break;
-			case VOICETYPE_ATRAC3: ImGui::Text("atrac: %d", voice.atrac3.id()); break;
+			case VOICETYPE_ATRAC3: ImGui::Text("atrac: %d", voice.atrac3.AtracID()); break;
 			default:
 				ImGui::TextUnformatted("N/A");
 				break;
@@ -1417,8 +1438,8 @@ static void DrawUtilityModules(ImConfig &cfg, ImControl &control) {
 			ImGui::PushID(i);
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn();
-			if (ImGui::Selectable(info->name, cfg.selectedModule == i, ImGuiSelectableFlags_SpanAllColumns)) {
-				cfg.selectedModule = i;
+			if (ImGui::Selectable(info->name, cfg.selectedUtilityModule == i, ImGuiSelectableFlags_SpanAllColumns)) {
+				cfg.selectedUtilityModule = i;
 			}
 			ImGui::TableNextColumn();
 			if (loadedAddr) {
@@ -1443,7 +1464,115 @@ static void DrawModules(const MIPSDebugInterface *debug, ImConfig &cfg, ImContro
 		return;
 	}
 
-	// Hm, this reads from the symbol map.
+	ImGui::TextUnformatted("This shows modules that have been loaded by the game (not plain HLE)");
+
+	if (ImGui::BeginChild("module_list", ImVec2(170.0f, 0.0), ImGuiChildFlags_ResizeX)) {
+		if (ImGui::BeginTable("modules", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
+			ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableHeadersRow();
+
+			// TODO: Add context menu and clickability
+			kernelObjects.Iterate<PSPModule>([&cfg, &control](int id, PSPModule *module) -> bool {
+				ImGui::PushID(id);
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				if (ImGui::Selectable(module->GetName(), cfg.selectedModuleId == id, ImGuiSelectableFlags_SpanAllColumns)) {
+					cfg.selectedModuleId = id;
+				}
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(module->isFake ? "FAKE/HLE" : "normal");
+				ImGui::PopID();
+				return true;
+			});
+
+			ImGui::EndTable();
+		}
+		ImGui::EndChild();
+	}
+	ImGui::SameLine();
+
+	if (ImGui::BeginChild("info")) {
+		if (kernelObjects.Is<PSPModule>(cfg.selectedModuleId)) {
+			PSPModule *mod = kernelObjects.GetFast<PSPModule>(cfg.selectedModuleId);
+			if (mod) {
+				if (mod->isFake) {
+					ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 255, 255, 170));
+				}
+				ImGui::Text("%s %d.%d (%s)\n", mod->GetName(), mod->nm.version[1], mod->nm.version[0], mod->isFake ? "FAKE/HLE" : "normal");
+				ImGui::Text("Attr: %08x (%s)\n", mod->nm.attribute, (mod->nm.attribute & 0x1000) ? "Kernel" : "User");
+				char buf[512];
+				mod->GetLongInfo(buf, sizeof(buf));
+				ImGui::TextUnformatted(buf);
+				if (mod->isFake) {
+					ImGui::PopStyleColor();
+				}
+				if (!mod->impModuleNames.empty() && ImGui::CollapsingHeader("Imported modules")) {
+					for (auto &name : mod->impModuleNames) {
+						ImGui::TextUnformatted(name);
+					}
+				}
+				if (!mod->expModuleNames.empty() && ImGui::CollapsingHeader("Exported modules")) {
+					for (auto &name : mod->expModuleNames) {
+						ImGui::TextUnformatted(name);
+					}
+				}
+				if (!mod->importedFuncs.empty() || !mod->importedVars.empty()) {
+					if (ImGui::CollapsingHeader("Imports")) {
+						if (!mod->importedVars.empty() && ImGui::CollapsingHeader("Vars")) {
+							for (auto &var : mod->importedVars) {
+								ImGui::TextUnformatted("(some var)");  // TODO
+							}
+						}
+						for (auto &import : mod->importedFuncs) {
+							// Look the name up in our HLE database.
+							const HLEFunction *func = GetHLEFunc(import.moduleName, import.nid);
+							ImGui::TextUnformatted(import.moduleName);
+							if (func) {
+								ImGui::SameLine();
+								ImGui::TextUnformatted(func->name);
+							}
+							ImGui::SameLine(); ImClickableValue("addr", import.stubAddr, control, ImCmd::SHOW_IN_CPU_DISASM);
+						}
+					}
+				}
+				if (!mod->exportedFuncs.empty() || !mod->exportedVars.empty()) {
+					if (ImGui::CollapsingHeader("Exports")) {
+						if (!mod->exportedVars.empty() && ImGui::CollapsingHeader("Vars")) {
+							for (auto &var : mod->importedVars) {
+								ImGui::TextUnformatted("(some var)");  // TODO
+							}
+						}
+						for (auto &exportFunc : mod->exportedFuncs) {
+							// Look the name up in our HLE database.
+							const HLEFunction *func = GetHLEFunc(exportFunc.moduleName, exportFunc.nid);
+							ImGui::TextUnformatted(exportFunc.moduleName);
+							if (func) {
+								ImGui::SameLine();
+								ImGui::TextUnformatted(func->name);
+							}
+							ImGui::SameLine(); ImClickableValue("addr", exportFunc.symAddr, control, ImCmd::SHOW_IN_CPU_DISASM);
+						}
+					}
+				}
+			}
+		} else {
+			ImGui::TextUnformatted("(no module selected)");
+		}
+		ImGui::EndChild();
+	}
+	ImGui::End();
+}
+
+// Started as a module browser but really only draws from the symbols database, so let's
+// evolve it to that.
+static void DrawSymbols(const MIPSDebugInterface *debug, ImConfig &cfg, ImControl &control) {
+	if (!ImGui::Begin("Symbols", &cfg.symbolsOpen) || !g_symbolMap) {
+		ImGui::End();
+		return;
+	}
+
+	// Reads from the symbol map.
 	std::vector<LoadedModuleInfo> modules = g_symbolMap->getAllModules();
 	if (ImGui::BeginTable("modules", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersH)) {
 		ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed);
@@ -1459,8 +1588,8 @@ static void DrawModules(const MIPSDebugInterface *debug, ImConfig &cfg, ImContro
 			ImGui::PushID(i);
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn();
-			if (ImGui::Selectable(module.name.c_str(), cfg.selectedModule == i, ImGuiSelectableFlags_SpanAllColumns)) {
-				cfg.selectedModule = i;
+			if (ImGui::Selectable(module.name.c_str(), cfg.selectedSymbolModule == i, ImGuiSelectableFlags_SpanAllColumns)) {
+				cfg.selectedSymbolModule = i;
 			}
 			ImGui::TableNextColumn();
 			ImClickableValue("addr", module.address, control, ImCmd::SHOW_IN_MEMORY_VIEWER);
@@ -1474,10 +1603,17 @@ static void DrawModules(const MIPSDebugInterface *debug, ImConfig &cfg, ImContro
 		ImGui::EndTable();
 	}
 
-	if (cfg.selectedModule >= 0 && cfg.selectedModule < (int)modules.size()) {
+	if (cfg.selectedModuleId >= 0 && cfg.selectedModuleId < (int)modules.size()) {
 		// TODO: Show details
 	}
 	ImGui::End();
+}
+
+void ImAtracToolWindow::Load() {
+	if (File::ReadBinaryFileToString(Path(atracPath_), &data_)) {
+		track_.reset(new Track());
+		AnalyzeAtracTrack((const u8 *)data_.data(), (u32)data_.size(), track_.get(), &error_);
+	}
 }
 
 void ImAtracToolWindow::Draw(ImConfig &cfg) {
@@ -1489,26 +1625,41 @@ void ImAtracToolWindow::Draw(ImConfig &cfg) {
 	ImGui::InputText("File", atracPath_, sizeof(atracPath_));
 	ImGui::SameLine();
 	if (ImGui::Button("Choose...")) {
-		System_BrowseForFile(cfg.requesterToken, "Choose AT3 file", BrowseFileType::ATRAC3, [&](const std::string &filename, int) {
+		System_BrowseForFile(cfg.requesterToken, "Choose AT3 file", BrowseFileType::ATRAC3, [this](const std::string &filename, int) {
 			truncate_cpy(atracPath_, filename);
+			Load();
 		}, nullptr);
 	}
 
 	if (strlen(atracPath_) > 0) {
 		if (ImGui::Button("Load")) {
-			track_.reset(new Track());
-			std::string data;
-			if (File::ReadBinaryFileToString(Path(atracPath_), &data)) {
-				AnalyzeAtracTrack((const u8 *)data.data(), (u32)data.size(), track_.get(), &error_);
-			}
+			Load();
 		}
 	}
 
 	if (track_.get() != 0) {
 		ImGui::Text("Codec: %s", track_->codecType != PSP_CODEC_AT3 ? "at3+" : "at3");
 		ImGui::Text("Bitrate: %d kbps Channels: %d", track_->Bitrate(), track_->channels);
-		ImGui::Text("Frame size in bytes: %d Output frame in samples: %d", track_->BytesPerFrame(), track_->SamplesPerFrame());
+		ImGui::Text("Frame size in bytes: %d (%04x) Output frame in samples: %d", track_->BytesPerFrame(), track_->BytesPerFrame(), track_->SamplesPerFrame());
 		ImGui::Text("First valid sample: %08x", track_->FirstSampleOffsetFull());
+	}
+
+	if (data_.size()) {
+		if (ImGui::Button("Dump 64 raw frames")) {
+			std::string firstFrames = data_.substr(track_->dataByteOffset, track_->bytesPerFrame * 64);
+			System_BrowseForFileSave(cfg.requesterToken, "Save .at3raw", "at3.raw", BrowseFileType::ANY, [firstFrames](const std::string &filename, int) {
+				FILE *f = File::OpenCFile(Path(filename), "wb");
+				if (f) {
+					fwrite(firstFrames.data(), 1, firstFrames.size(), f);
+					fclose(f);
+				}
+			});
+		}
+
+		if (ImGui::Button("Unload")) {
+			data_.clear();
+			track_.reset(nullptr);
+		}
 	}
 
 	if (!error_.empty()) {
@@ -1524,11 +1675,11 @@ void DrawHLEModules(ImConfig &config) {
 		return;
 	}
 
-	const int moduleCount = GetNumRegisteredModules();
+	const int moduleCount = GetNumRegisteredHLEModules();
 	std::vector<const HLEModule *> modules;
 	modules.reserve(moduleCount);
 	for (int i = 0; i < moduleCount; i++) {
-		modules.push_back(GetModuleByIndex(i));
+		modules.push_back(GetHLEModuleByIndex(i));
 	}
 
 	std::sort(modules.begin(), modules.end(), [](const HLEModule* a, const HLEModule* b) {
@@ -1543,6 +1694,44 @@ void DrawHLEModules(ImConfig &config) {
 				ImGui::Text("%s(%s)", func.name, func.argmask);
 			}
 			ImGui::TreePop();
+		}
+		if (ImGui::BeginPopupContextItem(label.c_str())) {
+			if (ImGui::MenuItem("Copy as JpscpTrace")) {
+				char *buffer = new char[1000000];
+				StringWriter w(buffer, 1000000);
+
+				for (int j = 0; j < mod->numFunctions; j++) {
+					auto &func = mod->funcTable[j];
+					// Translate the argmask to fit jpscptrace
+					std::string amask = func.argmask;
+					for (int i = 0; i < amask.size(); i++) {
+						switch (amask[i]) {
+						case 'i':
+						case 'I': amask[i] = 'd'; break;
+						case 'f':
+						case 'F': amask[i] = 'x'; break;
+						}
+					}
+					w.F("%s 0x%08x %d %s", func.name, func.ID, strlen(func.argmask), amask.c_str()).endl();
+				}
+				System_CopyStringToClipboard(w.as_view());
+				delete[] buffer;
+			}
+			if (ImGui::MenuItem("Copy as imports.S")) {
+				char *buffer = new char[100000];
+				StringWriter w(buffer, 100000);
+
+				w.C(".set noreorder\n\n#include \"pspimport.s\"\n\n");
+				w.F("IMPORT_START \"%.*s\",0x00090011\n", (int)mod->name.size(), mod->name.data());
+				for (int j = 0; j < mod->numFunctions; j++) {
+					auto &func = mod->funcTable[j];
+					w.F("IMPORT_FUNC  \"%.*s\",0x%08X,%s\n", (int)mod->name.size(), mod->name.data(), func.ID, func.name);
+				}
+				w.endl();
+				System_CopyStringToClipboard(w.as_view());
+				delete[] buffer;
+			}
+			ImGui::EndPopup();
 		}
 	}
 
@@ -1619,34 +1808,6 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			ImGui::MenuItem("Don't break on start", nullptr, &g_Config.bAutoRun);  // should really invert this bool!
 			ImGui::MenuItem("Fast memory", nullptr, &g_Config.bFastMemory);
 			ImGui::Separator();
-
-			/*
-			// Symbol stuff. Move to separate menu?
-			// Doesn't quite seem to work yet.
-			if (ImGui::MenuItem("Load symbol map...")) {
-				System_BrowseForFile(reqToken_, "Load symbol map", BrowseFileType::SYMBOL_MAP, [&](const char *responseString, int) {
-					Path path(responseString);
-					if (!g_symbolMap->LoadSymbolMap(path)) {
-						ERROR_LOG(Log::Common, "Failed to load symbol map");
-					}
-					disasm_.DirtySymbolMap();
-				});
-			}
-			if (ImGui::MenuItem("Save symbol map...")) {
-				System_BrowseForFileSave(reqToken_, "Save symbol map", "symbols.map", BrowseFileType::SYMBOL_MAP, [](const char *responseString, int) {
-					Path path(responseString);
-					if (!g_symbolMap->SaveSymbolMap(path)) {
-						ERROR_LOG(Log::Common, "Failed to save symbol map");
-					}
-				});
-			}
-			*/
-			if (ImGui::MenuItem("Reset symbol map")) {
-				g_symbolMap->Clear();
-				disasm_.DirtySymbolMap();
-				// NotifyDebuggerMapLoaded();
-			}
-			ImGui::Separator();
 			if (ImGui::MenuItem("Take screenshot")) {
 				g_TakeScreenshot = true;
 			}
@@ -1674,6 +1835,53 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			ImGui::MenuItem("Breakpoints", nullptr, &cfg_.breakpointsOpen);
 			ImGui::EndMenu();
 		}
+		if (ImGui::BeginMenu("Symbols")) {
+			ImGui::MenuItem("Symbol browser", nullptr, &cfg_.symbolsOpen);
+			ImGui::Separator();
+
+			if (ImGui::MenuItem("Load .ppmap...")) {
+				System_BrowseForFile(reqToken_, "Load PPSSPP symbol map", BrowseFileType::SYMBOL_MAP, [&](const char *responseString, int) {
+					Path path(responseString);
+					if (!g_symbolMap->LoadSymbolMap(path)) {
+						ERROR_LOG(Log::Common, "Failed to load symbol map");
+					}
+					disasm_.DirtySymbolMap();
+				});
+			}
+			if (ImGui::MenuItem("Save .ppmap...")) {
+				System_BrowseForFileSave(reqToken_, "Save PPSSPP symbol map", "symbols.ppmap", BrowseFileType::SYMBOL_MAP, [](const char *responseString, int) {
+					Path path(responseString);
+					if (!g_symbolMap->SaveSymbolMap(path)) {
+						ERROR_LOG(Log::Common, "Failed to save symbol map");
+					}
+				});
+			}
+			if (ImGui::MenuItem("Load No$ .sym...")) {
+				System_BrowseForFile(reqToken_, "Load No$ symbol map", BrowseFileType::SYMBOL_MAP, [&](const char *responseString, int) {
+					Path path(responseString);
+					if (!g_symbolMap->LoadNocashSym(path)) {
+						ERROR_LOG(Log::Common, "Failed to load No$ symbol map");
+					}
+					disasm_.DirtySymbolMap();
+				});
+			}
+			if (ImGui::MenuItem("Save No$ .sym...")) {
+				System_BrowseForFileSave(reqToken_, "Save No$ symbol map", "symbols.sym", BrowseFileType::SYMBOL_MAP, [](const char *responseString, int) {
+					Path path(responseString);
+					if (!g_symbolMap->SaveNocashSym(path)) {
+						ERROR_LOG(Log::Common, "Failed to save No$ symbol map");
+					}
+				});
+			}
+			ImGui::Separator();
+			ImGui::MenuItem("Compress .ppmap files", nullptr, &g_Config.bCompressSymbols);
+			if (ImGui::MenuItem("Reset symbol map")) {
+				g_symbolMap->Clear();
+				disasm_.DirtySymbolMap();
+				// NotifyDebuggerMapLoaded();
+			}
+			ImGui::EndMenu();
+		}
 		if (ImGui::BeginMenu("Memory")) {
 			for (int i = 0; i < 4; i++) {
 				char title[64];
@@ -1684,6 +1892,7 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("OS HLE")) {
+			ImGui::MenuItem("HLE module browser", nullptr, &cfg_.hleModulesOpen);
 			ImGui::MenuItem("File System Browser", nullptr, &cfg_.filesystemBrowserOpen);
 			ImGui::MenuItem("Kernel Objects", nullptr, &cfg_.kernelObjectsOpen);
 			ImGui::MenuItem("Threads", nullptr, &cfg_.threadsOpen);
@@ -1701,10 +1910,10 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			// More to come here...
 			ImGui::EndMenu();
 		}
-		if (ImGui::BeginMenu("Audio")) {
+		if (ImGui::BeginMenu("Audio/Video")) {
 			ImGui::MenuItem("SasAudio mixer", nullptr, &cfg_.sasAudioOpen);
 			ImGui::MenuItem("Raw audio channels", nullptr, &cfg_.audioChannelsOpen);
-			ImGui::MenuItem("Decoder contexts", nullptr, &cfg_.audioDecodersOpen);
+			ImGui::MenuItem("AV Decoder contexts", nullptr, &cfg_.audioDecodersOpen);
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Network")) {
@@ -1715,6 +1924,7 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Tools")) {
+			ImGui::MenuItem("Lua Console", nullptr, &cfg_.luaConsoleOpen);
 			ImGui::MenuItem("Debug stats", nullptr, &cfg_.debugStatsOpen);
 			ImGui::MenuItem("Struct viewer", nullptr, &cfg_.structViewerOpen);
 			ImGui::MenuItem("Log channels", nullptr, &cfg_.logConfigOpen);
@@ -1722,12 +1932,15 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Misc")) {
-			if (ImGui::MenuItem("Close Debugger")) {
-				g_Config.bShowImDebugger = false;
-			}
 			ImGui::MenuItem("PPSSPP Internals", nullptr, &cfg_.internalsOpen);
 			ImGui::MenuItem("Dear ImGui Demo", nullptr, &cfg_.demoOpen);
 			ImGui::MenuItem("Dear ImGui Style editor", nullptr, &cfg_.styleEditorOpen);
+			ImGui::EndMenu();
+		}
+
+		// Let's have this at the top level, to help anyone confused.
+		if (ImGui::BeginMenu("Close Debugger")) {
+			g_Config.bShowImDebugger = false;
 			ImGui::EndMenu();
 		}
 		ImGui::EndMainMenuBar();
@@ -1787,6 +2000,10 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 
 	if (cfg_.modulesOpen) {
 		DrawModules(mipsDebug, cfg_, control);
+	}
+
+	if (cfg_.symbolsOpen) {
+		DrawSymbols(mipsDebug, cfg_, control);
 	}
 
 	if (cfg_.utilityModulesOpen) {
@@ -1915,6 +2132,9 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 		break;
 	case ImCmd::SHOW_IN_PIXEL_VIEWER:
 		break;
+	}
+	if (cfg_.luaConsoleOpen) {
+		luaConsole_.Draw(cfg_);
 	}
 }
 
@@ -2157,7 +2377,7 @@ void ImDisasmWindow::Draw(MIPSDebugInterface *mipsDebug, ImConfig &cfg, ImContro
 
 	if (ImGui::BeginChild("left", ImVec2(150.0f, avail.y), ImGuiChildFlags_ResizeX)) {
 		if (symCache_.empty() || symsDirty_) {
-			symCache_ = g_symbolMap->GetAllSymbols(SymbolType::ST_FUNCTION);
+			symCache_ = g_symbolMap->GetAllActiveSymbols(SymbolType::ST_FUNCTION);
 			symsDirty_ = false;
 		}
 
@@ -2252,6 +2472,7 @@ void ImConfig::SyncConfig(IniFile *ini, bool save) {
 	sync.Sync("threadsOpen", &threadsOpen, false);
 	sync.Sync("callstackOpen", &callstackOpen, false);
 	sync.Sync("breakpointsOpen", &breakpointsOpen, false);
+	sync.Sync("symbolsOpen", &symbolsOpen, false);
 	sync.Sync("modulesOpen", &modulesOpen, false);
 	sync.Sync("hleModulesOpen", &hleModulesOpen, false);
 	sync.Sync("audioDecodersOpen", &audioDecodersOpen, false);
@@ -2275,7 +2496,9 @@ void ImConfig::SyncConfig(IniFile *ini, bool save) {
 	sync.Sync("internalsOpen", &internalsOpen, false);
 	sync.Sync("sasAudioOpen", &sasAudioOpen, false);
 	sync.Sync("logConfigOpen", &logConfigOpen, false);
+	sync.Sync("luaConsoleOpen", &luaConsoleOpen, false);
 	sync.Sync("utilityModulesOpen", &utilityModulesOpen, false);
+	sync.Sync("atracToolOpen", &atracToolOpen, false);
 	for (int i = 0; i < 4; i++) {
 		char name[64];
 		snprintf(name, sizeof(name), "memory%dOpen", i + 1);

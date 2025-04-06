@@ -78,7 +78,7 @@ private:
 	UI::EventReturn OnChat(UI::EventParams &params);
 	UI::EventReturn OnResume(UI::EventParams &params);
 
-	void bootGame(const Path &filename);
+	void ProcessGameBoot(const Path &filename);
 	bool bootAllowStorage(const Path &filename);
 	void bootComplete();
 	bool hasVisibleUI();
@@ -100,10 +100,7 @@ private:
 	bool bootPending_ = true;
 	Path gamePath_;
 
-	// Something invalid was loaded, don't try to emulate
-	bool invalid_ = true;
 	bool quit_ = false;
-	bool stopRender_ = false;
 	std::string errorMessage_;
 
 	// If set, pauses at the end of the frame.

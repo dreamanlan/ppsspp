@@ -1,3 +1,4 @@
+
 // Headless version of PPSSPP, for testing using http://code.google.com/p/pspautotests/ .
 // See headless.txt.
 // To build on non-windows systems, just run CMake in the SDL directory, it will build both a normal ppsspp and the headless version.
@@ -184,9 +185,9 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const
 	if (opt.compare || opt.bench)
 		coreParameter.collectDebugOutput = &output;
 
-	std::string error_string;
-	if (!PSP_InitStart(coreParameter, &error_string)) {
-		fprintf(stderr, "Failed to start '%s'. Error: %s\n", coreParameter.fileToStart.c_str(), error_string.c_str());
+	if (!PSP_InitStart(coreParameter)) {
+		// Shouldn't really happen anymore, the errors happen later in PSP_InitUpdate.
+		fprintf(stderr, "Failed to start '%s'.\n", coreParameter.fileToStart.c_str());
 		printf("TESTERROR\n");
 		TeamCityPrint("testIgnored name='%s' message='PRX/ELF missing'", currentTestName.c_str());
 		GitHubActionsPrint("error", "PRX/ELF missing for %s", currentTestName.c_str());
@@ -198,9 +199,12 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const
 	if (opt.compare)
 		headlessHost->SetComparisonScreenshot(ExpectedScreenshotFromFilename(coreParameter.fileToStart), opt.maxScreenshotError);
 
-	while (!PSP_InitUpdate(&error_string))
+	std::string error_string;
+	while (PSP_InitUpdate(&error_string) == BootState::Booting)
 		sleep_ms(1, "auto-test");
+
 	if (!PSP_IsInited()) {
+		TeamCityPrint("%s", error_string.c_str());
 		TeamCityPrint("testFailed name='%s' message='Startup failed'", currentTestName.c_str());
 		TeamCityPrint("testFinished name='%s'", currentTestName.c_str());
 		GitHubActionsPrint("error", "Test init failed for %s", currentTestName.c_str());
@@ -262,7 +266,7 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const
 		draw->EndFrame();
 	}
 
-	PSP_Shutdown();
+	PSP_Shutdown(true);
 
 	if (!opt.bench)
 		headlessHost->FlushDebugOutput();
@@ -534,6 +538,7 @@ int main(int argc, const char* argv[])
 	g_Config.iReverbVolume = VOLUMEHI_FULL;
 	g_Config.internalDataDirectory.clear();
 	g_Config.bUseOldAtrac = oldAtrac;
+	g_Config.iForceEnableHLE = 0xFFFFFFFF;  // Run all modules as HLE. We don't have anything to load in this context.
 
 	Path exePath = File::GetExeDirectory();
 	g_Config.flash0Directory = exePath / "assets/flash0";

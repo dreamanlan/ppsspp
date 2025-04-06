@@ -638,6 +638,9 @@ set(CommonVR
 )
 include_directories(ext/OpenXR-SDK/include)
 
+# For ext/sol includes, that are usually included as sol/*.hpp
+include_directories(ext)
+
 add_library(Common STATIC
 	${CommonX86}
 	${CommonARM}
@@ -1526,6 +1529,8 @@ list(APPEND NativeAppSource
 	UI/ImDebugger/ImDebugger.h
 	UI/ImDebugger/ImGe.cpp
 	UI/ImDebugger/ImGe.h
+	UI/ImDebugger/ImConsole.cpp
+	UI/ImDebugger/ImConsole.h
 	UI/ImDebugger/ImDisasmView.cpp
 	UI/ImDebugger/ImDisasmView.h
 	UI/ImDebugger/ImMemView.cpp
@@ -2048,6 +2053,8 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/KeyMap.h
 	Core/KeyMapDefaults.cpp
 	Core/KeyMapDefaults.h
+	Core/LuaContext.cpp
+	Core/LuaContext.h
 	Core/RetroAchievements.h
 	Core/RetroAchievements.cpp
 	Core/ThreadEventQueue.h
@@ -2163,6 +2170,7 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/HLE/HLETables.cpp
 	Core/HLE/HLETables.h
 	Core/HLE/KernelWaitHelpers.h
+	Core/HLE/PSPThreadContext.h
 	Core/HLE/KUBridge.h
 	Core/HLE/KUBridge.cpp
 	Core/HLE/Plugins.h
@@ -2290,6 +2298,8 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/HLE/scePower.h
 	Core/HLE/scePsmf.cpp
 	Core/HLE/scePsmf.h
+	Core/HLE/sceReg.cpp
+	Core/HLE/sceReg.h
 	Core/HLE/sceRtc.cpp
 	Core/HLE/sceRtc.h
 	Core/HLE/sceSas.cpp
@@ -2427,6 +2437,8 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/Util/BlockAllocator.h
 	Core/Util/PPGeDraw.cpp
 	Core/Util/PPGeDraw.h
+	Core/Util/RecentFiles.cpp
+	Core/Util/RecentFiles.h
 	${GPU_SOURCES}
 	ext/disarm.cpp
 	ext/disarm.h

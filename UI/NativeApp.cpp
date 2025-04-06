@@ -27,6 +27,7 @@
 
 // Background worker threads should be spawned in NativeInit and joined
 // in NativeShutdown.
+#include <errno.h>
 
 #include <clocale>
 #include <algorithm>
@@ -108,6 +109,7 @@
 #include "Core/Util/GameManager.h"
 #include "Core/Util/PortManager.h"
 #include "Core/Util/AudioFormat.h"
+#include "Core/Util/RecentFiles.h"
 #include "Core/WebServer.h"
 #include "Core/TiltEventProcessor.h"
 
@@ -340,6 +342,8 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 	ShaderTranslationInit();
 
 	g_threadManager.Init(cpu_info.num_cores, cpu_info.logical_cpu_count);
+
+	g_recentFiles.EnsureThread();
 
 	// Make sure UI state is MENU.
 	ResetUIState();
@@ -749,12 +753,16 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 	// Easy testing
 	// screenManager->push(new GPUDriverTestScreen());
 
-	if (g_Config.bRemoteShareOnStartup && g_Config.bRemoteDebuggerOnStartup)
+	WebServerFlags flags = (WebServerFlags)0;
+	if (g_Config.bRemoteShareOnStartup) {
+		flags |= WebServerFlags::DISCS;
+	}
+	if (g_Config.bRemoteDebuggerOnStartup) {
+		flags |= WebServerFlags::DEBUGGER;
+	}
+	if (flags != WebServerFlags::NONE) {
 		StartWebServer(WebServerFlags::ALL);
-	else if (g_Config.bRemoteShareOnStartup)
-		StartWebServer(WebServerFlags::DISCS);
-	else if (g_Config.bRemoteDebuggerOnStartup)
-		StartWebServer(WebServerFlags::DEBUGGER);
+	}
 
 	std::string sysName = System_GetProperty(SYSPROP_NAME);
 

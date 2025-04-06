@@ -172,13 +172,18 @@ public:
 			return occupied[index];
 	}
 
+	template<class T>
+	bool Is(SceUID handle) const {
+		int index = handle - handleOffset;
+		if (index < 0 || index >= maxCount)
+			return false;
+		else
+			return occupied[index] && pool[handle - handleOffset]->GetIDType() == T::GetStaticIDType();
+	}
+
 	template <class T>
 	T* Get(SceUID handle, u32 &outError) {
 		if (handle < handleOffset || handle >= handleOffset+maxCount || !occupied[handle-handleOffset]) {
-			// Tekken 6 spams 0x80020001 gets wrong with no ill effects, also on the real PSP
-			if (handle != 0 && (u32)handle != 0x80020001) {
-				WARN_LOG(Log::sceKernel, "Kernel: Bad %s handle %d (%08x)", T::GetStaticTypeName(), handle, handle);
-			}
 			outError = T::GetMissingErrorCode();
 			return nullptr;
 		} else {
@@ -204,15 +209,15 @@ public:
 		return static_cast<T *>(pool[realHandle]);
 	}
 
-	template <class T, typename ArgT>
-	void Iterate(bool func(T *, ArgT), ArgT arg) {
+	template <typename T, typename F>
+	void Iterate(F func) {
 		int type = T::GetStaticIDType();
 		for (int i = 0; i < maxCount; i++) {
 			if (!occupied[i])
 				continue;
 			T *t = static_cast<T *>(pool[i]);
 			if (t->GetIDType() == type) {
-				if (!func(t, arg))
+				if (!func(i + handleOffset, t))
 					break;
 			}
 		}

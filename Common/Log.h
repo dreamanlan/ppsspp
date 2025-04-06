@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <cstddef>
+
 #include "ppsspp_config.h"
 #include "CommonFuncs.h"
 
@@ -65,6 +67,7 @@ enum class Log {
 	sceSas,
 	sceUtility,
 	sceMisc,
+	sceReg,
 
 	NUMBER_OF_LOGS,  // Must be last
 };
@@ -78,12 +81,33 @@ enum class LogLevel : int {
 	LVERBOSE = VERBOSE_LEVEL,
 };
 
-void GenericLog(LogLevel level, Log type, const char *file, int line, const char *fmt, ...)
+struct LogChannel {
+#if defined(_DEBUG)
+	LogLevel level = LogLevel::LDEBUG;
+#else
+	LogLevel level = LogLevel::LDEBUG;
+#endif
+	bool enabled = true;
+
+	bool IsEnabled(LogLevel level) const {
+		if (level > this->level || !this->enabled)
+			return false;
+		return true;
+	}
+};
+
+extern bool *g_bLogEnabledSetting;
+extern LogChannel g_log[(size_t)Log::NUMBER_OF_LOGS];
+
+inline bool GenericLogEnabled(Log type, LogLevel level) {
+	return g_log[(int)type].IsEnabled(level) && (*g_bLogEnabledSetting);
+}
+
+void GenericLog(Log type, LogLevel level, const char *file, int line, const char *fmt, ...)
 #ifdef __GNUC__
 		__attribute__((format(printf, 5, 6)))
 #endif
 		;
-bool GenericLogEnabled(LogLevel level, Log type);
 
 // If you want to see verbose logs, change this to VERBOSE_LEVEL.
 
@@ -91,9 +115,9 @@ bool GenericLogEnabled(LogLevel level, Log type);
 
 // Let the compiler optimize this out.
 // TODO: Compute a dynamic max level as well that can be checked here.
-#define GENERIC_LOG(t, v, ...) { \
-	if ((int)v <= MAX_LOGLEVEL) \
-		GenericLog(v, t, __FILE__, __LINE__, __VA_ARGS__); \
+#define GENERIC_LOG(t, v, ...) \
+	if ((int)v <= MAX_LOGLEVEL && GenericLogEnabled(t, v)) { \
+		GenericLog(t, v, __FILE__, __LINE__, __VA_ARGS__); \
 	}
 
 #define ERROR_LOG(t,...)   do { GENERIC_LOG(t, LogLevel::LERROR,   __VA_ARGS__) } while (false)
@@ -114,9 +138,10 @@ bool HitAnyAsserts();
 void ResetHitAnyAsserts();
 void SetExtraAssertInfo(const char *info);
 typedef void (*AssertNoCallbackFunc)(const char *message, void *userdata);
-void SetAssertNoCallback(AssertNoCallbackFunc callback, void *userdata);
+void SetAssertCancelCallback(AssertNoCallbackFunc callback, void *userdata);
 void SetCleanExitOnAssert();
 void BreakIntoPSPDebugger(const char *reason = "(userbreak)");
+void SetAssertDialogParent(void *handle);  // HWND on windows. Ignored on other platforms.
 
 #if defined(__ANDROID__)
 // Tricky macro to get the basename, that also works if *built* on Win32.

@@ -39,6 +39,7 @@
 #include "Core/Loaders.h"
 #include "Core/Util/GameDB.h"
 #include "Core/HLE/Plugins.h"
+#include "Core/Util/RecentFiles.h"
 #include "UI/OnScreenDisplay.h"
 #include "UI/CwCheatScreen.h"
 #include "UI/EmuScreen.h"
@@ -266,7 +267,8 @@ void GameScreen::CreateViews() {
 		});
 	}
 
-	if (isRecentGame(gamePath_)) {
+	// TODO: This is synchronous, bad!
+	if (g_recentFiles.ContainsFile(gamePath_.ToString())) {
 		Choice *removeButton = rightColumnItems->Add(AddOtherChoice(new Choice(ga->T("Remove From Recent"))));
 		removeButton->OnClick.Handle(this, &GameScreen::OnRemoveFromRecent);
 		if (inGame_) {
@@ -290,7 +292,7 @@ void GameScreen::CreateViews() {
 	btnSetBackground_->OnClick.Handle(this, &GameScreen::OnSetBackground);
 	btnSetBackground_->SetVisibility(V_GONE);
 
-	isHomebrew_ = info && info->region > GAMEREGION_MAX;
+	isHomebrew_ = info && info->region > GAMEREGION_COUNT;
 	if (fileTypeSupportCRC && !isHomebrew_ && !Reporting::HasCRC(gamePath_) ) {
 		btnCalcCRC_ = rightColumnItems->Add(new ChoiceWithValueDisplay(&CRC32string, ga->T("Calculate CRC"), I18NCat::NONE));
 		btnCalcCRC_->OnClick.Handle(this, &GameScreen::OnDoCRC32);
@@ -380,8 +382,8 @@ ScreenRenderFlags GameScreen::render(ScreenRenderMode mode) {
 	}
 
 	if (tvRegion_) {
-		if (info->region >= 0 && info->region < GAMEREGION_MAX && info->region != GAMEREGION_OTHER) {
-			static const char *regionNames[GAMEREGION_MAX] = {
+		if (info->region >= 0 && info->region < GAMEREGION_COUNT && info->region != GAMEREGION_OTHER) {
+			static const char *regionNames[GAMEREGION_COUNT] = {
 				"Japan",
 				"USA",
 				"Europe",
@@ -390,7 +392,7 @@ ScreenRenderFlags GameScreen::render(ScreenRenderMode mode) {
 				"Korea"
 			};
 			tvRegion_->SetText(ga->T(regionNames[info->region]));
-		} else if (info->region > GAMEREGION_MAX) {
+		} else if (info->region > GAMEREGION_COUNT) {
 			tvRegion_->SetText(ga->T("Homebrew"));
 		}
 	}
@@ -577,21 +579,8 @@ void GameScreen::CallbackDeleteGame(bool yes) {
 	}
 }
 
-bool GameScreen::isRecentGame(const Path &gamePath) {
-	if (g_Config.iMaxRecent <= 0)
-		return false;
-
-	const std::string resolved = File::ResolvePath(gamePath.ToString());
-	for (const auto &iso : g_Config.RecentIsos()) {
-		const std::string recent = File::ResolvePath(iso);
-		if (resolved == recent)
-			return true;
-	}
-	return false;
-}
-
 UI::EventReturn GameScreen::OnRemoveFromRecent(UI::EventParams &e) {
-	g_Config.RemoveRecent(gamePath_.ToString());
+	g_recentFiles.Remove(gamePath_.ToString());
 	screenManager()->switchScreen(new MainScreen());
 	return UI::EVENT_DONE;
 }

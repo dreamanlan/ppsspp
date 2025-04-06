@@ -117,7 +117,7 @@ static bool startDumping;
 
 extern bool g_TakeScreenshot;
 
-static void AssertNoCallback(const char *message, void *userdata) {
+static void AssertCancelCallback(const char *message, void *userdata) {
 	NOTICE_LOG(Log::CPU, "Broke after assert: %s", message);
 	Core_Break(BreakReason::AssertChoice);
 	g_Config.bShowImDebugger = true;
@@ -229,7 +229,6 @@ bool EmuScreen::bootAllowStorage(const Path &filename) {
 		return false;
 
 	case PERMISSION_STATUS_DENIED:
-		stopRender_ = true;
 		screenManager()->switchScreen(new MainScreen());
 		return false;
 
@@ -245,76 +244,49 @@ bool EmuScreen::bootAllowStorage(const Path &filename) {
 	return false;
 }
 
-void EmuScreen::bootGame(const Path &filename) {
+void EmuScreen::ProcessGameBoot(const Path &filename) {
 	if (Achievements::IsBlockingExecution()) {
 		// Keep waiting.
 		return;
 	}
 
-	if (PSP_IsRebooting())
+	std::string error_string = "(unknown error)";
+	BootState state = PSP_InitUpdate(&error_string);
+
+	switch (state) {
+	case BootState::Booting:
+		// Keep trying.
 		return;
-	if (PSP_IsInited()) {
+	case BootState::Failed:
+		// Failure.
+		PSP_CancelBoot();
+		_dbg_assert_(!error_string.empty());
+		g_BackgroundAudio.SetGame(Path());
 		bootPending_ = false;
-		invalid_ = false;
+		errorMessage_ = error_string;
+		ERROR_LOG(Log::Boot, "Boot failed: %s", errorMessage_.c_str());
+		return;
+	case BootState::Complete:
+		// Done booting!
+		g_BackgroundAudio.SetGame(Path());
+		bootPending_ = false;
+		errorMessage_.clear();
 		bootComplete();
+		// Reset views in case controls are in a different place.
+		RecreateViews();
 		return;
+	case BootState::Off:
+		// Gotta start the boot process! Continue below.
+		break;
 	}
-
-	if (PSP_IsIniting()) {
-		std::string error_string = "(unknown error)";
-
-		bootPending_ = !PSP_InitUpdate(&error_string);
-
-		if (!bootPending_) {
-			invalid_ = !PSP_IsInited();
-			if (invalid_) {
-				errorMessage_ = error_string;
-				ERROR_LOG(Log::Boot, "isIniting bootGame error: %s", errorMessage_.c_str());
-				return;
-			}
-			bootComplete();
-		}
-		return;
-	}
-
-	g_BackgroundAudio.SetGame(Path());
 
 	// Check permission status first, in case we came from a shortcut.
 	if (!bootAllowStorage(filename))
 		return;
 
-	invalid_ = true;
+	SetAssertCancelCallback(&AssertCancelCallback, this);
 
-	// We don't want to boot with the wrong game specific config, so wait until info is ready.
-	std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(nullptr, filename, GameInfoFlags::PARAM_SFO);
-	if (!info->Ready(GameInfoFlags::PARAM_SFO)) {
-		return;
-	}
-
-	auto sc = GetI18NCategory(I18NCat::SCREEN);
-	if (info->fileType == IdentifiedFileType::PSP_DISC_DIRECTORY) {
-		// Check for existence of ppsspp-index.lst - if it exists, the user likely knows what they're doing.
-		// TODO: Better would be to check that it was loaded successfully.
-		if (!File::Exists(filename / INDEX_FILENAME)) {
-			g_OSD.Show(OSDType::MESSAGE_CENTERED_WARNING, sc->T("ExtractedIsoWarning", "Extracted ISOs often don't work.\nPlay the ISO file directly."), gamePath_.ToVisualString(), 7.0f);
-		} else {
-			INFO_LOG(Log::Loader, "Extracted ISO loaded without warning - %s is present.", INDEX_FILENAME.c_str());
-		}
-	}
-
-	extraAssertInfoStr_ = info->id + " " + info->GetTitle();
-	SetExtraAssertInfo(extraAssertInfoStr_.c_str());
-	SetAssertNoCallback(&AssertNoCallback, this);
-
-	if (!info->id.empty()) {
-		g_Config.loadGameConfig(info->id, info->GetTitle());
-		// Reset views in case controls are in a different place.
-		RecreateViews();
-
-		g_Discord.SetPresenceGame(info->GetTitle());
-	} else {
-		g_Discord.SetPresenceGame(sc->T("Untitled PSP game"));
-	}
+	currentMIPS = &mipsr4k;
 
 	CoreParameter coreParam{};
 	coreParam.cpuCore = (CPUCore)g_Config.iCpuCore;
@@ -359,27 +331,11 @@ void EmuScreen::bootGame(const Path &filename) {
 	coreParam.pixelWidth = g_display.pixel_xres;
 	coreParam.pixelHeight = g_display.pixel_yres;
 
-	std::string error_string;
-	if (!PSP_InitStart(coreParam, &error_string)) {
+	// PSP_InitStart can't really fail anymore, unless it's called at the wrong time. It just starts the loader thread.
+	if (!PSP_InitStart(coreParam)) {
 		bootPending_ = false;
-		invalid_ = true;
-		errorMessage_ = error_string;
-		ERROR_LOG(Log::Boot, "InitStart bootGame error: %s", errorMessage_.c_str());
-	}
-
-	if (PSP_CoreParameter().compat.flags().RequireBufferedRendering && g_Config.bSkipBufferEffects && !g_Config.bSoftwareRendering) {
-		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
-		g_OSD.Show(OSDType::MESSAGE_WARNING, gr->T("BufferedRenderingRequired", "Warning: This game requires Rendering Mode to be set to Buffered."), 10.0f);
-	}
-
-	if (PSP_CoreParameter().compat.flags().RequireBlockTransfer && g_Config.iSkipGPUReadbackMode != (int)SkipGPUReadbackMode::NO_SKIP && !PSP_CoreParameter().compat.flags().ForceEnableGPUReadback) {
-		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
-		g_OSD.Show(OSDType::MESSAGE_WARNING, gr->T("BlockTransferRequired", "Warning: This game requires Skip GPU Readbacks be set to No."), 10.0f);
-	}
-
-	if (PSP_CoreParameter().compat.flags().RequireDefaultCPUClock && g_Config.iLockedCPUSpeed != 0) {
-		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
-		g_OSD.Show(OSDType::MESSAGE_WARNING, gr->T("DefaultCPUClockRequired", "Warning: This game requires the CPU clock to be set to default."), 10.0f);
+		ERROR_LOG(Log::Boot, "InitStart ProcessGameBoot error: %s", errorMessage_.c_str());
+		return;
 	}
 
 	loadingViewColor_->Divert(0xFFFFFFFF, 0.75f);
@@ -392,7 +348,26 @@ void EmuScreen::bootGame(const Path &filename) {
 	}
 }
 
+// Only call this on successful boot.
 void EmuScreen::bootComplete() {
+	// We don't want to boot with the wrong game specific config, so wait until info is ready.
+	// TODO: Actually, we read this info again during bootup, so this is not really necessary.
+	auto sc = GetI18NCategory(I18NCat::SCREEN);
+	auto dev = GetI18NCategory(I18NCat::DEVELOPER);
+
+	if (g_paramSFO.IsValid()) {
+		g_Discord.SetPresenceGame(SanitizeString(g_paramSFO.GetValueString("TITLE"), StringRestriction::NoLineBreaksOrSpecials));
+	} else {
+		g_Discord.SetPresenceGame(sc->T("Untitled PSP game"));
+	}
+
+	if (g_paramSFO.IsValid()) {
+		std::string gameTitle = SanitizeString(g_paramSFO.GetValueString("TITLE"), StringRestriction::NoLineBreaksOrSpecials, 0, 32);
+		std::string id = g_paramSFO.GetValueString("DISC_ID");
+		extraAssertInfoStr_ = id + " " + gameTitle;
+		SetExtraAssertInfo(extraAssertInfoStr_.c_str());
+	}
+
 	UpdateUIState(UISTATE_INGAME);
 	System_Notify(SystemNotification::BOOT_DONE);
 	System_Notify(SystemNotification::DISASSEMBLY);
@@ -402,9 +377,6 @@ void EmuScreen::bootComplete() {
 		// Don't auto-load savestates in hardcore mode.
 		autoLoad();
 	}
-
-	auto sc = GetI18NCategory(I18NCat::SCREEN);
-	auto dev = GetI18NCategory(I18NCat::DEVELOPER);
 
 #ifndef MOBILE_DEVICE
 	if (g_Config.bFirstRun) {
@@ -462,9 +434,8 @@ EmuScreen::~EmuScreen() {
 	std::string gameID = g_paramSFO.GetValueString("DISC_ID");
 	g_Config.TimeTracker().Stop(gameID);
 
-	// If we were invalid, it would already be shutdown.
-	if (!invalid_ || bootPending_) {
-		PSP_Shutdown();
+	if (!bootPending_) {
+		PSP_Shutdown(true);
 	}
 
 	System_PostUIMessage(UIMessage::GAME_SELECTED, "");
@@ -472,7 +443,7 @@ EmuScreen::~EmuScreen() {
 	g_OSD.ClearAchievementStuff();
 
 	SetExtraAssertInfo(nullptr);
-	SetAssertNoCallback(nullptr, nullptr);
+	SetAssertCancelCallback(nullptr, nullptr);
 
 #ifndef MOBILE_DEVICE
 	if (g_Config.bDumpFrames && startDumping)
@@ -549,25 +520,31 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 		screenManager()->push(new GamePauseScreen(gamePath_));
 	} else if (message == UIMessage::REQUEST_GAME_STOP) {
 		// We will push MainScreen in update().
-		PSP_Shutdown();
+		if (bootPending_) {
+			ERROR_LOG(Log::Loader, "Can't stop during a pending boot");
+			return;
+		}
+		PSP_Shutdown(true);
 		bootPending_ = false;
-		stopRender_ = true;
-		invalid_ = true;
 		System_Notify(SystemNotification::DISASSEMBLY);
 	} else if (message == UIMessage::REQUEST_GAME_RESET) {
-		PSP_Shutdown();
+		if (bootPending_) {
+			ERROR_LOG(Log::Loader, "Can't reset during a pending boot");
+			return;
+		}
+		PSP_Shutdown(true);
 		bootPending_ = true;
-		invalid_ = true;
-		System_Notify(SystemNotification::DISASSEMBLY);
-
-		std::string resetError;
-		if (!PSP_InitStart(PSP_CoreParameter(), &resetError)) {
-			ERROR_LOG(Log::Loader, "Error resetting: %s", resetError.c_str());
-			stopRender_ = true;
+		_dbg_assert_(coreState == CORE_POWERDOWN);
+		if (!PSP_InitStart(PSP_CoreParameter())) {
+			ERROR_LOG(Log::Loader, "Error resetting");
 			screenManager()->switchScreen(new MainScreen());
 			return;
 		}
 	} else if (message == UIMessage::REQUEST_GAME_BOOT) {
+		if (bootPending_) {
+			ERROR_LOG(Log::Loader, "Can't boot a new game during a pending boot");
+			return;
+		}
 		// TODO: Ignore or not if it's the same game that's already running?
 		if (gamePath_ == Path(value)) {
 			WARN_LOG(Log::Loader, "Game already running, ignoring");
@@ -577,7 +554,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 		if (ext != nullptr && !strcmp(ext, ".ppst")) {
 			SaveState::Load(Path(value), -1, &AfterStateBoot);
 		} else {
-			PSP_Shutdown();
+			PSP_Shutdown(true);
 			bootPending_ = true;
 			gamePath_ = Path(value);
 			// Don't leave it on CORE_POWERDOWN, we'll sometimes aggressively bail.
@@ -799,7 +776,9 @@ void EmuScreen::onVKey(VirtKey virtualKeyCode, bool down) {
 		break;
 
 	case VIRTKEY_RESET_EMULATION:
-		System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
+		if (down) {
+			System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
+		}
 		break;
 
 #ifndef MOBILE_DEVICE
@@ -1372,12 +1351,6 @@ void EmuScreen::update() {
 		}
 	}
 
-	if (bootPending_) {
-		// Keep trying the boot until bootPending_ is lifted.
-		// It may be delayed due to RetroAchievements or any other cause.
-		bootGame(gamePath_);
-	}
-
 	// Simply forcibly update to the current screen size every frame. Doesn't cost much.
 	// If bounds is set to be smaller than the actual pixel resolution of the display, respect that.
 	// TODO: Should be able to use g_dpi_scale here instead. Might want to store the dpi scale in the UI context too.
@@ -1388,7 +1361,7 @@ void EmuScreen::update() {
 	PSP_CoreParameter().pixelHeight = g_display.pixel_yres * bounds.h / g_display.dp_yres;
 #endif
 
-	if (!invalid_) {
+	if (PSP_IsInited()) {
 		UpdateUIState(coreState != CORE_RUNTIME_ERROR ? UISTATE_INGAME : UISTATE_EXCEPTION);
 	}
 
@@ -1410,7 +1383,7 @@ void EmuScreen::update() {
 		screenManager()->push(new GamePauseScreen(gamePath_));
 	}
 
-	if (invalid_)
+	if (!PSP_IsInited())
 		return;
 
 	double now = time_now_d();
@@ -1449,21 +1422,16 @@ void EmuScreen::update() {
 }
 
 bool EmuScreen::checkPowerDown() {
-	if (PSP_IsRebooting()) {
-		bootPending_ = true;
-		invalid_ = true;
-	}
-
-	if (coreState == CORE_POWERDOWN && !PSP_IsIniting() && !PSP_IsRebooting()) {
+	// This is for handling things like sceKernelExitGame().
+	if (coreState == CORE_POWERDOWN && PSP_GetBootState() == BootState::Complete) {
 		bool shutdown = false;
 		if (PSP_IsInited()) {
-			PSP_Shutdown();
+			PSP_Shutdown(true);
 			shutdown = true;
 		}
 		INFO_LOG(Log::System, "SELF-POWERDOWN!");
 		screenManager()->switchScreen(new MainScreen());
 		bootPending_ = false;
-		invalid_ = true;
 		return shutdown;
 	}
 	return false;
@@ -1481,7 +1449,7 @@ ScreenRenderRole EmuScreen::renderRole(bool isTop) const {
 			return false;
 		}
 
-		if (invalid_) {
+		if (!PSP_IsInited() && !bootPending_) {
 			return false;
 		}
 
@@ -1507,6 +1475,14 @@ void EmuScreen::darken() {
 }
 
 ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
+	// Moved from update, because we want it to be possible for booting to happen even when the screen
+	// is in the background, like when choosing Reset from the pause menu.
+	if (bootPending_) {
+		// Keep trying the boot until bootPending_ is lifted.
+		// It may be delayed due to RetroAchievements or any other cause.
+		ProcessGameBoot(gamePath_);
+	}
+
 	ScreenRenderFlags flags = ScreenRenderFlags::NONE;
 	Draw::Viewport viewport{ 0.0f, 0.0f, (float)g_display.pixel_xres, (float)g_display.pixel_yres, 0.0f, 1.0f };
 	using namespace Draw;
@@ -1565,7 +1541,7 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 			gpu->CopyDisplayToOutput(true);
 			PSP_EndHostFrame();
 		}
-		if (gpu->PresentedThisFrame()) {
+		if (gpu && gpu->PresentedThisFrame()) {
 			framebufferBound = true;
 		}
 		if (!framebufferBound) {
@@ -1589,7 +1565,7 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 		return flags;
 	}
 
-	if (invalid_) {
+	if (!PSP_IsInited()) {
 		// It's possible this might be set outside PSP_RunLoopFor().
 		// In this case, we need to double check it here.
 		if (mode & ScreenRenderMode::TOP) {
@@ -1832,7 +1808,7 @@ void EmuScreen::runImDebugger() {
 void EmuScreen::renderImDebugger() {
 	if (g_Config.bShowImDebugger) {
 		Draw::DrawContext *draw = screenManager()->getDrawContext();
-		if (PSP_IsInited()) {
+		if (PSP_IsInited() && imDebugger_) {
 			ImGui_ImplThin3d_RenderDrawData(ImGui::GetDrawData(), draw);
 		}
 	}
@@ -1883,7 +1859,7 @@ void EmuScreen::renderUI() {
 		root_->Draw(*ctx);
 	}
 
-	if (!invalid_) {
+	if (PSP_IsInited()) {
 		if ((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::CONTROL) {
 			DrawControlMapperOverlay(ctx, ctx->GetLayoutBounds(), controlMapper_);
 		}
