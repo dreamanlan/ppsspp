@@ -111,7 +111,7 @@ void GPU_Vulkan::LoadCache(const Path &filename) {
 	// First compile shaders to SPIR-V, then load the pipeline cache and recreate the pipelines.
 	// It's when recreating the pipelines that the pipeline cache is useful - in the ideal case,
 	// it can just memcpy the finished shader binaries out of the pipeline cache file.
-	bool result = shaderManagerVulkan_->LoadCacheFlags(f, &drawEngine_);
+	bool result = ShaderManagerVulkan::LoadCacheFlags(f, &drawEngine_);
 	if (!result) {
 		WARN_LOG(Log::G3D, "ShaderManagerVulkan failed to load cache header.");
 	}
@@ -138,7 +138,7 @@ void GPU_Vulkan::LoadCache(const Path &filename) {
 	VulkanRenderManager *rm = (VulkanRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
 	int maxTasksSeen = rm->WaitForPipelines();
 	double seconds = time_now_d() - start;
-	INFO_LOG(Log::G3D, "Waited %0.1fms for at least %d pipeline tasks to finish compiling.", maxTasksSeen, seconds * 1000.0);
+	INFO_LOG(Log::G3D, "Waited %0.1fms for at least %d pipeline tasks to finish compiling.", seconds * 1000.0, maxTasksSeen);
 
 	if (!result) {
 		WARN_LOG(Log::G3D, "Incompatible Vulkan pipeline cache - rebuilding.");

@@ -1321,8 +1321,9 @@ namespace Libretro
    static void EmuFrame()
    {
       ctx->SetRenderTarget();
-      if (ctx->GetDrawContext())
+      if (ctx->GetDrawContext()) {
          ctx->GetDrawContext()->BeginFrame(Draw::DebugFlags::NONE);
+      }
 
       if (gpu)
          gpu->BeginHostFrame();
@@ -1330,6 +1331,7 @@ namespace Libretro
       PSP_RunLoopWhileState();
       switch (coreState) {
       case CORE_NEXTFRAME:
+      case CORE_POWERDOWN:
          // Reached the end of the frame while running at full blast, all good. Set back to running for the next frame
          coreState = CORE_RUNNING_CPU;
          break;
@@ -1451,6 +1453,7 @@ bool retro_load_game(const struct retro_game_info *game)
    retro_check_backend();
 
    ctx       = LibretroGraphicsContext::CreateGraphicsContext();
+
    INFO_LOG(Log::System, "Using %s backend", ctx->Ident());
 
    Core_SetGraphicsContext(ctx);

@@ -227,7 +227,12 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
 	}
 
 	std::string error_string = "(unknown error)";
-	BootState state = PSP_InitUpdate(&error_string);
+	const BootState state = PSP_InitUpdate(&error_string);
+
+	if (state == BootState::Off && screenManager()->topScreen() != this) {
+		// Don't kick off a new boot if we're not on top.
+		return;
+	}
 
 	switch (state) {
 	case BootState::Booting:
@@ -551,6 +556,8 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 			return;
 		}
 	} else if (message == UIMessage::REQUEST_GAME_BOOT) {
+		INFO_LOG(Log::Loader, "EmuScreen received REQUEST_GAME_BOOT: %s", value);
+
 		if (bootPending_) {
 			ERROR_LOG(Log::Loader, "Can't boot a new game during a pending boot");
 			return;
@@ -560,17 +567,27 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 			WARN_LOG(Log::Loader, "Game already running, ignoring");
 			return;
 		}
-		const char *ext = strrchr(value, '.');
-		if (ext != nullptr && !strcmp(ext, ".ppst")) {
-			SaveState::Load(Path(value), -1, [](SaveState::Status status, std::string_view message) {
+
+		// TODO: Create a path first and
+		Path newGamePath(value);
+
+		if (newGamePath.GetFileExtension() == ".ppst") {
+			// TODO: Should verify that it's for the correct game....
+			INFO_LOG(Log::Loader, "New game is a save state - just load it.");
+			SaveState::Load(newGamePath, -1, [](SaveState::Status status, std::string_view message) {
 				Core_Resume();
 				System_Notify(SystemNotification::DISASSEMBLY);
 			});
 		} else {
 			PSP_Shutdown(true);
 			Achievements::UnloadGame();
+
+			// OK, now pop any open settings screens and stuff that are running above us.
+			// Otherwise, we can get strange results with game-specific settings.
+			screenManager()->cancelScreensAbove(this);
+
 			bootPending_ = true;
-			gamePath_ = Path(value);
+			gamePath_ = newGamePath;
 		}
 	} else if (message == UIMessage::CONFIG_LOADED) {
 		// In case we need to position touch controls differently.
@@ -764,9 +781,6 @@ void EmuScreen::onVKey(VirtKey virtualKeyCode, bool down) {
 
 	case VIRTKEY_PAUSE:
 		if (down) {
-			// Trigger on key-up to partially avoid repetition problems.
-			// This is needed whenever we pop up a menu since the mapper
-			// might miss  the key-up. Same as VIRTKEY_OPENCHAT.
 			// Note: We don't check NetworkWarnUserIfOnlineAndCantSpeed, because we can keep
 			// running in the background of the menu.
 			pauseTrigger_ = true;
@@ -1923,7 +1937,7 @@ void EmuScreen::renderUI() {
 	}
 
 #ifdef USE_PROFILER
-	if ((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::FRAME_PROFILE && !invalid_) {
+	if ((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::FRAME_PROFILE && PSP_IsInited()) {
 		DrawProfile(*ctx);
 	}
 #endif
