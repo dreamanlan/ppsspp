@@ -158,6 +158,7 @@ void DeveloperToolsScreen::CreateGeneralTab(UI::LinearLayout *list) {
 
 	list->Add(new CheckBox(&g_Config.bEnableLogging, dev->T("Enable Logging")))->OnClick.Handle(this, &DeveloperToolsScreen::OnLoggingChanged);
 	list->Add(new Choice(dev->T("Logging Channels")))->OnClick.Handle(this, &DeveloperToolsScreen::OnLogConfig);
+	list->Add(new CheckBox(&g_Config.bEnableFileLogging, dev->T("Log to file")))->SetEnabledPtr(&g_Config.bEnableLogging);
 	list->Add(new CheckBox(&g_Config.bLogFrameDrops, dev->T("Log Dropped Frame Statistics")));
 	if (GetGPUBackend() == GPUBackend::VULKAN) {
 		list->Add(new CheckBox(&g_Config.bGpuLogProfiler, dev->T("GPU log profiler")));
@@ -218,12 +219,15 @@ void DeveloperToolsScreen::CreateTestsTab(UI::LinearLayout *list) {
 		list->Add(new Choice(dev->T("GPU Driver Test")))->OnClick.Handle(this, &DeveloperToolsScreen::OnGPUDriverTest);
 	}
 
+	// Not useful enough to be made visible.
+	/*
 	auto memmapTest = list->Add(new Choice(dev->T("Memory map test")));
 	memmapTest->OnClick.Add([this](UI::EventParams &e) {
 		MemoryMapTest();
 		return UI::EVENT_DONE;
 	});
 	memmapTest->SetEnabled(PSP_IsInited());
+	*/
 }
 
 void DeveloperToolsScreen::CreateDumpFileTab(UI::LinearLayout *list) {

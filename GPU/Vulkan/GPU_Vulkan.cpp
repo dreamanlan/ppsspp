@@ -42,6 +42,8 @@
 
 GPU_Vulkan::GPU_Vulkan(GraphicsContext *gfxCtx, Draw::DrawContext *draw)
 	: GPUCommonHW(gfxCtx, draw), drawEngine_(draw) {
+	_assert_(draw);
+
 	gstate_c.SetUseFlags(CheckGPUFeatures());
 
 	VulkanContext *vulkan = (VulkanContext *)gfxCtx->GetAPIContext();
@@ -454,7 +456,7 @@ void GPU_Vulkan::DeviceLost() {
 }
 
 void GPU_Vulkan::DeviceRestore(Draw::DrawContext *draw) {
-	GPUCommonHW::DeviceRestore(draw);
+	GPUCommonHW::DeviceRestore(draw);  // this updates draw_.
 
 	VulkanContext *vulkan = (VulkanContext *)draw_->GetNativeObject(Draw::NativeObject::CONTEXT);
 	pipelineManager_->DeviceRestore(vulkan);

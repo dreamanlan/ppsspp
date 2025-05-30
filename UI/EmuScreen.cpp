@@ -189,7 +189,9 @@ bool EmuScreen::bootAllowStorage(const Path &filename) {
 		return false;
 
 	case PERMISSION_STATUS_DENIED:
-		screenManager()->switchScreen(new MainScreen());
+		if (!bootPending_) {
+			screenManager()->switchScreen(new MainScreen());
+		}
 		return false;
 
 	case PERMISSION_STATUS_PENDING:
@@ -343,7 +345,10 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
 
 // Only call this on successful boot.
 void EmuScreen::bootComplete() {
-	__DisplayListenVblank([this]() {HandleVBlank(); });
+	__DisplayListenFlip([](void *userdata) {
+		EmuScreen *scr = (EmuScreen *)userdata;
+		scr->HandleFlip();
+	}, (void *)this);
 
 	// Initialize retroachievements, now that we're on the right thread.
 	if (g_Config.bAchievementsEnable) {
@@ -605,9 +610,11 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 		if (gpu)
 			gpu->DumpNextFrame();
 	} else if (message == UIMessage::REQUEST_CLEAR_JIT) {
-		currentMIPS->ClearJitCache();
-		if (PSP_IsInited()) {
-			currentMIPS->UpdateCore((CPUCore)g_Config.iCpuCore);
+		if (!bootPending_) {
+			currentMIPS->ClearJitCache();
+			if (PSP_IsInited()) {
+				currentMIPS->UpdateCore((CPUCore)g_Config.iCpuCore);
+			}
 		}
 	} else if (message == UIMessage::WINDOW_MINIMIZED) {
 		if (!strcmp(value, "true")) {
@@ -982,18 +989,20 @@ void EmuScreen::ProcessVKey(VirtKey virtKey) {
 
 	case VIRTKEY_EXIT_APP:
 	{
-		std::string confirmExitMessage = GetConfirmExitMessage();
-		if (!confirmExitMessage.empty()) {
-			auto di = GetI18NCategory(I18NCat::DIALOG);
-			confirmExitMessage += '\n';
-			confirmExitMessage += di->T("Are you sure you want to exit?");
-			screenManager()->push(new PromptScreen(gamePath_, confirmExitMessage, di->T("Yes"), di->T("No"), [=](bool result) {
-				if (result) {
-					System_ExitApp();
-				}
-			}));
-		} else {
-			System_ExitApp();
+		if (!bootPending_) {
+			std::string confirmExitMessage = GetConfirmExitMessage();
+			if (!confirmExitMessage.empty()) {
+				auto di = GetI18NCategory(I18NCat::DIALOG);
+				confirmExitMessage += '\n';
+				confirmExitMessage += di->T("Are you sure you want to exit?");
+				screenManager()->push(new PromptScreen(gamePath_, confirmExitMessage, di->T("Yes"), di->T("No"), [=](bool result) {
+					if (result) {
+						System_ExitApp();
+					}
+				}));
+			} else {
+				System_ExitApp();
+			}
 		}
 		break;
 	}
@@ -1461,7 +1470,7 @@ void EmuScreen::update() {
 
 bool EmuScreen::checkPowerDown() {
 	// This is for handling things like sceKernelExitGame().
-	if (coreState == CORE_POWERDOWN && PSP_GetBootState() == BootState::Complete) {
+	if (coreState == CORE_POWERDOWN && PSP_GetBootState() == BootState::Complete && !bootPending_) {
 		bool shutdown = false;
 		if (PSP_IsInited()) {
 			PSP_Shutdown(true);
@@ -1470,7 +1479,6 @@ bool EmuScreen::checkPowerDown() {
 		}
 		INFO_LOG(Log::System, "SELF-POWERDOWN!");
 		screenManager()->switchScreen(new MainScreen());
-		bootPending_ = false;
 		return shutdown;
 	}
 	return false;
@@ -1513,8 +1521,10 @@ void EmuScreen::darken() {
 	}
 }
 
-// TODO: We probably shouldn't even handle frame dumping at vblank, we can just as well handle it directly in EmuScreen.
-void EmuScreen::HandleVBlank() {
+void EmuScreen::HandleFlip() {
+	Achievements::FrameUpdate();
+
+	// This video dumping stuff is bad. Or at least completely broken with frameskip..
 #ifndef MOBILE_DEVICE
 	if (g_Config.bDumpFrames && !startDumping_) {
 		auto sy = GetI18NCategory(I18NCat::SYSTEM);
@@ -1527,7 +1537,10 @@ void EmuScreen::HandleVBlank() {
 	} else if (!g_Config.bDumpFrames && startDumping_) {
 		auto sy = GetI18NCategory(I18NCat::SYSTEM);
 		avi.Stop();
-		g_OSD.Show(OSDType::MESSAGE_INFO, sy->T("AVI Dump stopped."), 1.0f);
+		g_OSD.Show(OSDType::MESSAGE_INFO, sy->T("AVI Dump stopped."), 3.0f, "avi_dump");
+		g_OSD.SetClickCallback("avi_dump", [](bool, void *) {
+			System_ShowFileInFolder(avi.LastFilename());
+		}, nullptr);
 		startDumping_ = false;
 	}
 #endif
@@ -1677,7 +1690,6 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 			// Reached the end of the frame while running at full blast, all good. Set back to running for the next frame
 			coreState = frameStep_ ? CORE_STEPPING_CPU : CORE_RUNNING_CPU;
 			flags |= ScreenRenderFlags::HANDLED_THROTTLING;
-			Achievements::FrameUpdate();
 			break;
 		case CORE_STEPPING_CPU:
 		case CORE_STEPPING_GE:
@@ -1711,7 +1723,6 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 
 			// However, let's not cause a UI sleep in the mainloop.
 			flags |= ScreenRenderFlags::HANDLED_THROTTLING;
-			Achievements::FrameUpdate();
 			break;
 		}
 

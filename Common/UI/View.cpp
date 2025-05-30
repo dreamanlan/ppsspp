@@ -538,7 +538,7 @@ void Choice::Draw(UIContext &dc) {
 				uint32_t col = rightIconKeepColor_ ? 0xffffffff : style.fgColor; // Don't apply theme to gold icon
 				if (shine_) {
 					Bounds b = Bounds::FromCenter(bounds_.x2() - 32 - paddingX, bounds_.centerY(), bounds_.h * 0.4f);
-					DrawIconShine(dc, b, 0.8f, false);
+					DrawIconShine(dc, b.Inset(5.0f, 5.0f), 0.65f, false);
 				}
 				dc.Draw()->DrawImageRotated(rightIconImage_, bounds_.x2() - 32 - paddingX, bounds_.centerY(), rightIconScale_, rightIconRot_, col, rightIconFlipH_);
 			}
@@ -1428,6 +1428,13 @@ void Spinner::Draw(UIContext &dc) {
 		return;
 	double t = time_now_d() * 1.3f;
 	double angle = fmod(t, M_PI * 2.0);
+
+	if (!images_) {
+		// Simple.
+		dc.Draw()->CircleSegment(bounds_.centerX(), bounds_.centerY(), bounds_.radius(), 3.0f, 20.0f, angle, angle + PI * 3.0 / 2.0, dc.theme->itemStyle.fgColor, 0.0f);
+		return;
+	}
+
 	float r = bounds_.w * 0.5f;
 	double da = M_PI * 2.0 / numImages_;
 	for (int i = 0; i < numImages_; i++) {
