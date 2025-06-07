@@ -1,4 +1,8 @@
-#include <ext/libzip/zip.h>
+#ifdef SHARED_LIBZIP
+#include <zip.h>
+#else
+#include "ext/libzip/zip.h"
+#endif
 
 #include "Core/FileLoaders/LocalFileLoader.h"
 #include "Core/FileLoaders/ZipFileLoader.h"
@@ -6,7 +10,7 @@
 ZipFileLoader::ZipFileLoader(FileLoader *sourceLoader)
 	: ProxiedFileLoader(sourceLoader), zipArchive_(nullptr) {
 	if (!backend_ || !backend_->Exists() || backend_->IsDirectory()) {
-		// bad
+		return;
 	}
 
 	zip_error_t error{};

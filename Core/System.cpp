@@ -54,6 +54,7 @@
 #include "Core/HLE/Plugins.h"
 #include "Core/HLE/ReplaceTables.h"
 #include "Core/HLE/sceKernel.h"
+#include "Core/HW/Display.h"
 #include "Core/Config.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
@@ -282,8 +283,8 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 	case IdentifiedFileType::PSP_ISO_NP:
 	case IdentifiedFileType::PSP_DISC_DIRECTORY:
 		// Doesn't seem to take ownership of fileLoader?
-		if (!MountGameISO(fileLoader)) {
-			*errorString = "Failed to mount ISO file - invalid format?";
+		if (!MountGameISO(fileLoader, errorString)) {
+			*errorString = "Failed to mount ISO file: " + *errorString;
 			return false;
 		}
 		if (LoadParamSFOFromDisc()) {
@@ -381,7 +382,24 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 
 	if ((g_logManager.GetOutputsEnabled() & LogOutput::File) && !g_logManager.GetLogFilePath().empty()) {
 		auto dev = GetI18NCategory(I18NCat::DEVELOPER);
-		g_OSD.Show(OSDType::MESSAGE_INFO, ApplySafeSubstitutions("%1: %2", dev->T("Log to file"), g_logManager.GetLogFilePath().ToVisualString()));
+
+		std::string logPath = g_logManager.GetLogFilePath().ToString();
+
+		// TODO: Really need a cleaner way to make clickable path notifications.
+		char *path = new char[logPath.size() + 1];
+		strcpy(path, logPath.data());
+
+		g_OSD.Show(OSDType::MESSAGE_INFO, ApplySafeSubstitutions("%1: %2", dev->T("Log to file"), g_logManager.GetLogFilePath().ToVisualString()), 0.0f, "log_to_file");
+		if (System_GetPropertyBool(SYSPROP_CAN_SHOW_FILE)) {
+			g_OSD.SetClickCallback("log_to_file", [](bool clicked, void *userdata) {
+				char *path = (char *)userdata;
+				if (clicked) {
+					System_ShowFileInFolder(Path(path));
+				} else {
+					delete[] path;
+				}
+			}, path);
+		}
 	}
 
 	InitVFPU();
@@ -391,6 +409,8 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 	mipsr4k.Reset();
 
 	CoreTiming::Init();
+
+	DisplayHWInit();
 
 	// Init all the HLE modules
 	HLEInit();
@@ -479,6 +499,8 @@ void CPU_Shutdown(bool success) {
 	__KernelShutdown();
 	HLEShutdown();
 
+	DisplayHWShutdown();
+
 	pspFileSystem.Shutdown();
 	mipsr4k.Shutdown();
 	Memory::Shutdown();
@@ -545,6 +567,8 @@ bool PSP_InitStart(const CoreParameter &coreParam) {
 		ERROR_LOG(Log::Loader, "Can't start loader thread - already on.");
 		return false;
 	}
+
+	IncrementDebugCounter(DebugCounter::GAME_BOOT);
 
 	g_bootState = BootState::Booting;
 
@@ -678,6 +702,7 @@ void PSP_Shutdown(bool success) {
 
 	// Do nothing if we never inited.
 	if (g_bootState == BootState::Off) {
+		ERROR_LOG(Log::Loader, "Unexpected PSP_Shutdown");
 		return;
 	}
 
@@ -710,8 +735,11 @@ void PSP_Shutdown(bool success) {
 	if (success) {
 		g_bootState = BootState::Off;
 	}
+
+	IncrementDebugCounter(DebugCounter::GAME_SHUTDOWN);
 }
 
+// Do not use. Currently only used from the websocket debugger
 BootState PSP_Reboot(std::string *error_string) {
 	if (g_bootState != BootState::Complete) {
 		return g_bootState;

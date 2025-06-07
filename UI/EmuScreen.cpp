@@ -445,8 +445,8 @@ EmuScreen::~EmuScreen() {
 	// Should not be able to quit during boot, as boot can't be cancelled.
 	_dbg_assert_(!bootPending_);
 	if (!bootPending_) {
-		PSP_Shutdown(true);
 		Achievements::UnloadGame();
+		PSP_Shutdown(true);
 	}
 
 	_dbg_assert_(coreState == CORE_POWERDOWN);
@@ -539,16 +539,15 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 			WARN_LOG(Log::Loader, "Can't stop during a pending boot");
 			return;
 		}
-		PSP_Shutdown(true);
-		Achievements::UnloadGame();
-		System_Notify(SystemNotification::DISASSEMBLY);
+		// The destructor will take care of shutting down.
+		screenManager()->switchScreen(new MainScreen());
 	} else if (message == UIMessage::REQUEST_GAME_RESET) {
 		if (bootPending_) {
 			WARN_LOG(Log::Loader, "Can't reset during a pending boot");
 			return;
 		}
-		PSP_Shutdown(true);
 		Achievements::UnloadGame();
+		PSP_Shutdown(true);
 
 		// Restart the boot process
 		bootPending_ = true;
@@ -584,8 +583,8 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 				System_Notify(SystemNotification::DISASSEMBLY);
 			});
 		} else {
-			PSP_Shutdown(true);
 			Achievements::UnloadGame();
+			PSP_Shutdown(true);
 
 			// OK, now pop any open settings screens and stuff that are running above us.
 			// Otherwise, we can get strange results with game-specific settings.
@@ -1240,7 +1239,7 @@ void EmuScreen::CreateViews() {
 	});
 	resumeButton_->SetVisibility(V_GONE);
 
-	resetButton_ = buttons->Add(new Button(dev->T("Reset")));
+	resetButton_ = buttons->Add(new Button(di->T("Reset")));
 	resetButton_->OnClick.Add([](UI::EventParams &) {
 		if (coreState == CoreState::CORE_RUNTIME_ERROR) {
 			System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
@@ -1249,7 +1248,7 @@ void EmuScreen::CreateViews() {
 	});
 	resetButton_->SetVisibility(V_GONE);
 
-	backButton_ = buttons->Add(new Button(dev->T("Back")));
+	backButton_ = buttons->Add(new Button(di->T("Back")));
 	backButton_->OnClick.Add([this](UI::EventParams &) {
 		this->pauseTrigger_ = true;
 		return UI::EVENT_DONE;
@@ -1470,16 +1469,11 @@ void EmuScreen::update() {
 
 bool EmuScreen::checkPowerDown() {
 	// This is for handling things like sceKernelExitGame().
-	if (coreState == CORE_POWERDOWN && PSP_GetBootState() == BootState::Complete && !bootPending_) {
-		bool shutdown = false;
-		if (PSP_IsInited()) {
-			PSP_Shutdown(true);
-			Achievements::UnloadGame();
-			shutdown = true;
-		}
+	// Also for REQUEST_STOP.
+	if (coreState == CORE_POWERDOWN && (PSP_GetBootState() == BootState::Complete || PSP_GetBootState() == BootState::Off) && !bootPending_) {
 		INFO_LOG(Log::System, "SELF-POWERDOWN!");
 		screenManager()->switchScreen(new MainScreen());
-		return shutdown;
+		return true;
 	}
 	return false;
 }
@@ -1731,8 +1725,8 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 		}
 
 		if (SaveState::PollRestartNeeded() && !bootPending_) {
-			PSP_Shutdown(true);
 			Achievements::UnloadGame();
+			PSP_Shutdown(true);
 
 			// Restart the boot process
 			bootPending_ = true;

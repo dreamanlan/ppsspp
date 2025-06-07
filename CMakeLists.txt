@@ -437,10 +437,6 @@ if(NOT MSVC)
 	endif()
 
 	include(CheckSymbolExists)
-	check_symbol_exists(_UCRT "windows.h" UCRT)
-	if (UCRT)
-		link_libraries("$<$<CONFIG:Debug>:ucrtbased>")
-	endif()
 
 	add_compile_definitions("$<$<CONFIG:Debug>:_DEBUG>")
 
@@ -1678,6 +1674,7 @@ add_library(kirk STATIC
 	ext/libkirk/ec.c
 	ext/libkirk/kirk_engine.c
 	ext/libkirk/kirk_engine.h
+	ext/libkirk/kirk_common.h
 )
 target_include_directories(kirk PRIVATE ext/libkirk)
 
@@ -2979,7 +2976,7 @@ if(IOS AND NOT LIBRETRO)
 		else()
 			set(BUNDLE_IDENTIFIER "org.ppsspp.ppssppgold")
 		endif()
-		set(ICON_NAME "GoldIcon")
+		set(ICON_NAME "PPSSPPGold")
 		set(DISPLAY_NAME "PPSSPP Gold")
 	else()
 		if(IOS_APP_STORE)
@@ -3043,6 +3040,7 @@ if(IOS AND NOT LIBRETRO)
 			XCODE_ATTRIBUTE_DEVELOPMENT_TEAM ${DEVELOPMENT_TEAM_ID}
 			XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "Apple Development"
 			XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
+			XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS YES
 
 			XCODE_ATTRIBUTE_DEBUG_INFORMATION_FORMAT "dwarf-with-dsym"
 			XCODE_ATTRIBUTE_DEPLOYMENT_POSTPROCESSING[variant=Release] "YES"
