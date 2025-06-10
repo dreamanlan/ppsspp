@@ -630,6 +630,7 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		return true;
 	case SystemRequestType::BROWSE_FOR_IMAGE:
 		std::thread([=] {
+			SetCurrentThreadName("BrowseForImage");
 			std::string out;
 			if (W32Util::BrowseForFileName(true, MainWindow::GetHWND(), ConvertUTF8ToWString(param1).c_str(), nullptr,
 				FinalizeFilter(L"All supported images (*.jpg *.jpeg *.png)|*.jpg;*.jpeg;*.png|All files (*.*)|*.*||").c_str(), L"jpg", out)) {
@@ -651,6 +652,7 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		}
 		const bool load = type == SystemRequestType::BROWSE_FOR_FILE;
 		std::thread([=] {
+			SetCurrentThreadName("BrowseForFile");
 			std::string out;
 			if (W32Util::BrowseForFileName(load, MainWindow::GetHWND(), ConvertUTF8ToWString(param1).c_str(), nullptr, filter.c_str(), L"", out)) {
 				g_requestManager.PostSystemSuccess(requestId, out.c_str());
@@ -663,6 +665,7 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 	case SystemRequestType::BROWSE_FOR_FOLDER:
 	{
 		std::thread([=] {
+			SetCurrentThreadName("BrowseForFolder");
 			std::string folder = W32Util::BrowseForFolder2(MainWindow::GetHWND(), param1, param2);
 			if (folder.size()) {
 				g_requestManager.PostSystemSuccess(requestId, folder.c_str());
@@ -1034,14 +1037,11 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 			if (wideArgs[i].find(gpuBackend) != std::wstring::npos && wideArgs[i].size() > gpuBackend.size()) {
 				const std::wstring restOfOption = wideArgs[i].substr(gpuBackend.size());
 
-				// Force software rendering off, as picking directx9 or gles implies HW acceleration.
-				// Once software rendering supports Direct3D9/11, we can add more options for software,
-				// such as "software-gles", "software-d3d9", and "software-d3d11", or something similar.
+				// Force software rendering off, as picking gles implies HW acceleration.
+				// We could add more options for software such as "software-gles",
+				// "software-vulkan" and "software-d3d11", or something similar.
 				// For now, software rendering force-activates OpenGL.
-				if (restOfOption == L"directx9") {
-					g_Config.iGPUBackend = (int)GPUBackend::DIRECT3D9;
-					g_Config.bSoftwareRendering = false;
-				} else if (restOfOption == L"directx11") {
+				if (restOfOption == L"directx11") {
 					g_Config.iGPUBackend = (int)GPUBackend::DIRECT3D11;
 					g_Config.bSoftwareRendering = false;
 				} else if (restOfOption == L"gles") {
