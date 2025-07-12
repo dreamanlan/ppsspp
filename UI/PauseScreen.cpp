@@ -47,6 +47,7 @@
 #include "Core/HLE/sceNet.h"
 #include "Core/HLE/sceNetInet.h"
 #include "Core/HLE/sceNetAdhoc.h"
+#include "Core/HLE/NetAdhocCommon.h"
 
 #include "GPU/GPUCommon.h"
 #include "GPU/GPUState.h"
@@ -428,7 +429,7 @@ void GamePauseScreen::CreateViews() {
 
 		if (NetAdhocctl_GetState() >= ADHOCCTL_STATE_CONNECTED) {
 			// Awkwardly re-using a string here
-			leftColumnItems->Add(new TextView(std::string(nw->T("AdHoc Server")) + ": " + std::string(nw->T("Connected"))));
+			leftColumnItems->Add(new TextView(std::string(nw->T("AdHoc server")) + ": " + std::string(nw->T("Connected"))));
 		}
 	}
 
@@ -641,6 +642,11 @@ std::string GetConfirmExitMessage() {
 		auto ac = GetI18NCategory(I18NCat::ACHIEVEMENTS);
 		confirmMessage = ac->T("You have unsaved RAIntegration changes.");
 		confirmMessage += '\n';
+	}
+
+	if (coreState == CORE_RUNTIME_ERROR) {
+		// The game crashed, or similar. Don't bother checking for timeout or network.
+		return confirmMessage;
 	}
 
 	if (IsNetworkConnected()) {

@@ -94,12 +94,6 @@
     <ClCompile Include="InputBox.cpp">
       <Filter>Windows\UI</Filter>
     </ClCompile>
-    <ClCompile Include="DSoundStream.cpp">
-      <Filter>Windows\System</Filter>
-    </ClCompile>
-    <ClCompile Include="WindowsHost.cpp">
-      <Filter>Windows\System</Filter>
-    </ClCompile>
     <ClCompile Include="Debugger\Debugger_Disasm.cpp">
       <Filter>Windows\Debugger</Filter>
     </ClCompile>
@@ -184,7 +178,7 @@
     <ClCompile Include="WindowsAudio.cpp">
       <Filter>Windows\System</Filter>
     </ClCompile>
-    <ClCompile Include="WASAPIStream.cpp">
+    <ClCompile Include="WASAPIContext.cpp">
       <Filter>Windows\System</Filter>
     </ClCompile>
     <ClCompile Include="CaptureDevice.cpp">
@@ -277,6 +271,9 @@
     <ClCompile Include="Debugger\EditSymbolsWindow.cpp">
       <Filter>Windows\Debugger</Filter>
     </ClCompile>
+    <ClCompile Include="HidInputDevice.cpp">
+      <Filter>Windows\Input</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Debugger\CtrlDisAsmView.h">
@@ -305,12 +302,6 @@
     </ClInclude>
     <ClInclude Include="InputBox.h">
       <Filter>Windows\UI</Filter>
-    </ClInclude>
-    <ClInclude Include="DSoundStream.h">
-      <Filter>Windows\System</Filter>
-    </ClInclude>
-    <ClInclude Include="WindowsHost.h">
-      <Filter>Windows\System</Filter>
     </ClInclude>
     <ClInclude Include="main.h" />
     <ClInclude Include="resource.h" />
@@ -396,7 +387,7 @@
     <ClInclude Include="WindowsAudio.h">
       <Filter>Windows\System</Filter>
     </ClInclude>
-    <ClInclude Include="WASAPIStream.h">
+    <ClInclude Include="WASAPIContext.h">
       <Filter>Windows\System</Filter>
     </ClInclude>
     <ClInclude Include="..\ppsspp_config.h" />
@@ -574,6 +565,9 @@
     <ClInclude Include="..\ios\ViewControllerMetal.h">
       <Filter>Other Platforms\iOS</Filter>
     </ClInclude>
+    <ClInclude Include="HidInputDevice.h">
+      <Filter>Windows\Input</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="icon1.ico">
@@ -611,6 +605,9 @@
       <Filter>Build</Filter>
     </None>
     <None Include="..\b.sh">
+      <Filter>Build</Filter>
+    </None>
+    <None Include="..\build_fontatlas.sh">
       <Filter>Build</Filter>
     </None>
     <None Include="..\build_ppgeatlas.sh">

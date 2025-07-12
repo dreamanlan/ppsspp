@@ -1,3 +1,4 @@
+
 // Copyright (c) 2013- PPSSPP Project.
 
 // This program is free software: you can redistribute it and/or modify
@@ -21,6 +22,7 @@
 #include <set>
 
 #include "Common/Net/Resolve.h"
+#include "Common/Audio/AudioBackend.h"
 #include "Common/GPU/OpenGL/GLFeatures.h"
 #include "Common/Render/DrawBuffer.h"
 #include "Common/UI/Root.h"
@@ -674,18 +676,11 @@ void GameSettingsScreen::CreateAudioSettings(UI::ViewGroup *audioSettings) {
 		PlayUISound(UI::UISound::CONFIRM);
 		return UI::EVENT_DONE;
 	});
-	audioSettings->Add(new ItemHeader(a->T("Audio backend")));
-
-	// Hide the backend selector in UWP builds (we only support XAudio2 there).
-#if PPSSPP_PLATFORM(WINDOWS) && !PPSSPP_PLATFORM(UWP)
-	if (IsVistaOrHigher()) {
-		static const char *backend[] = { "Auto", "DSound (compatible)", "WASAPI (fast)" };
-		audioSettings->Add(new PopupMultiChoice(&g_Config.iAudioBackend, a->T("Audio backend", "Audio backend (restart req.)"), backend, 0, ARRAY_SIZE(backend), I18NCat::AUDIO, screenManager()));
-	}
-#endif
 
 	bool sdlAudio = false;
+
 #if defined(SDL)
+	audioSettings->Add(new ItemHeader(a->T("Audio backend")));
 	std::vector<std::string> audioDeviceList;
 	SplitString(System_GetProperty(SYSPROP_AUDIO_DEVICE_LIST), '\0', audioDeviceList);
 	audioDeviceList.insert(audioDeviceList.begin(), a->T_cstr("Auto"));
@@ -702,7 +697,48 @@ void GameSettingsScreen::CreateAudioSettings(UI::ViewGroup *audioSettings) {
 	});
 #endif
 
-	if (sdlAudio || g_Config.iAudioBackend == AUDIO_BACKEND_WASAPI) {
+#if PPSSPP_PLATFORM(WINDOWS)
+	extern AudioBackend *g_audioBackend;
+
+	std::vector<std::string> audioDeviceNames;
+	std::vector<std::string> audioDeviceIds;
+
+	std::vector<AudioDeviceDesc> deviceDescs;
+	g_audioBackend->EnumerateDevices(&deviceDescs);
+	if (!deviceDescs.empty()) {
+		audioSettings->Add(new ItemHeader(a->T("Audio backend")));
+		for (auto &desc : deviceDescs) {
+			audioDeviceNames.push_back(desc.name);
+			audioDeviceIds.push_back(desc.uniqueId);
+		}
+
+		audioDeviceNames.insert(audioDeviceNames.begin(), std::string(a->T("Auto")));
+		audioDeviceIds.insert(audioDeviceIds.begin(), "");
+
+		PopupMultiChoiceDynamic *audioDevice = audioSettings->Add(new PopupMultiChoiceDynamic(&g_Config.sAudioDevice, a->T("Device"), audioDeviceNames, I18NCat::NONE, screenManager(), &audioDeviceIds));
+		audioDevice->OnChoice.Add([this](UI::EventParams &) {
+			bool reverted;
+			if (g_audioBackend->InitOutputDevice(g_Config.sAudioDevice, LatencyMode::Aggressive, &reverted)) {
+				if (reverted) {
+					WARN_LOG(Log::Audio, "Unexpected: After a direct choice, audio device reverted to default. '%s'", g_Config.sAudioDevice.c_str());
+				}
+			} else {
+				WARN_LOG(Log::Audio, "InitOutputDevice failed");
+			}
+			return UI::EVENT_DONE;
+		});
+		CheckBox *autoAudio = audioSettings->Add(new CheckBox(&g_Config.bAutoAudioDevice, a->T("Use new audio devices automatically")));
+		autoAudio->SetEnabledFunc([]()->bool {
+			return g_Config.sAudioDevice.empty();
+		});
+	}
+
+	const bool isWindows = true;
+#else
+	const bool isWindows = false;
+	audioSettings->Add(new ItemHeader(a->T("Audio backend")));
+
+	if (sdlAudio) {
 		audioSettings->Add(new CheckBox(&g_Config.bAutoAudioDevice, a->T("Use new audio devices automatically")));
 	}
 
@@ -714,6 +750,7 @@ void GameSettingsScreen::CreateAudioSettings(UI::ViewGroup *audioSettings) {
 	if (!audioErrorStr.empty()) {
 		audioSettings->Add(new InfoItem(a->T("Audio Error"), audioErrorStr));
 	}
+#endif
 #endif
 
 	std::vector<std::string> micList = Microphone::getDeviceList();
@@ -921,6 +958,7 @@ void GameSettingsScreen::CreateNetworkingSettings(UI::ViewGroup *networkingSetti
 
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
 	auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
+	auto di = GetI18NCategory(I18NCat::DIALOG);
 
 	networkingSettings->Add(new ItemHeader(ms->T("Networking")));
 
@@ -957,7 +995,7 @@ void GameSettingsScreen::CreateNetworkingSettings(UI::ViewGroup *networkingSetti
 	if (g_Config.sInfrastructureUsername.empty()) {
 		networkingSettings->Add(new NoticeView(NoticeLevel::WARN, n->T("To play in Infrastructure Mode, you must enter a username"), ""));
 	}
-	PopupTextInputChoice *usernameChoice = networkingSettings->Add(new PopupTextInputChoice(GetRequesterToken(), &g_Config.sInfrastructureUsername, n->T("Username"), "", 16, screenManager()));
+	PopupTextInputChoice *usernameChoice = networkingSettings->Add(new PopupTextInputChoice(GetRequesterToken(), &g_Config.sInfrastructureUsername, di->T("Username"), "", 16, screenManager()));
 	usernameChoice->SetRestriction(StringRestriction::AlphaNumDashUnderscore, 3);
 	usernameChoice->OnChange.Add([this](UI::EventParams &e) {
 		RecreateViews();
@@ -1019,12 +1057,11 @@ void GameSettingsScreen::CreateNetworkingSettings(UI::ViewGroup *networkingSetti
 	}
 #endif
 
-	auto di = GetI18NCategory(I18NCat::DIALOG);
-
 	networkingSettings->Add(new ItemHeader(n->T("Misc", "Misc (default = compatibility)")));
 	networkingSettings->Add(new PopupSliderChoice(&g_Config.iPortOffset, 0, 60000, 10000, n->T("Port offset", "Port offset (0 = PSP compatibility)"), 100, screenManager()));
 	networkingSettings->Add(new PopupSliderChoice(&g_Config.iMinTimeout, 0, 15000, 0, n->T("Minimum Timeout", "Minimum Timeout (override in ms, 0 = default)"), 50, screenManager()))->SetFormat(di->T("%d ms"));
 	networkingSettings->Add(new CheckBox(&g_Config.bForcedFirstConnect, n->T("Forced First Connect", "Forced First Connect (faster Connect)")));
+	networkingSettings->Add(new CheckBox(&g_Config.bAllowSpeedControlWhileConnected, n->T("Allow speed control while connected (not recommended)")));
 }
 
 void GameSettingsScreen::CreateToolsSettings(UI::ViewGroup *tools) {
@@ -1142,7 +1179,7 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 
 	systemSettings->Add(new PopupMultiChoice(&g_Config.iNotificationPos, sy->T("Notification screen position"), positions, -1, ARRAY_SIZE(positions), I18NCat::DIALOG, screenManager()));
 
-	static const char *backgroundAnimations[] = { "No animation", "Floating symbols", "Recent games", "Waves", "Moving background", "Bouncing icon" };
+	static const char *backgroundAnimations[] = { "No animation", "Floating symbols", "Recent games", "Waves", "Moving background", "Bouncing icon", "Colored floating symbols" };
 	systemSettings->Add(new PopupMultiChoice(&g_Config.iBackgroundAnimation, sy->T("UI background animation"), backgroundAnimations, 0, ARRAY_SIZE(backgroundAnimations), I18NCat::SYSTEM, screenManager()));
 
 	PopupMultiChoiceDynamic *theme = systemSettings->Add(new PopupMultiChoiceDynamic(&g_Config.sThemeName, sy->T("Theme"), GetThemeInfoNames(), I18NCat::THEMES, screenManager()));
@@ -1789,7 +1826,7 @@ UI::EventReturn GameSettingsScreen::OnChangeproAdhocServerAddress(UI::EventParam
 
 UI::EventReturn GameSettingsScreen::OnTextureShader(UI::EventParams &e) {
 	auto gr = GetI18NCategory(I18NCat::GRAPHICS);
-	auto shaderScreen = new TextureShaderScreen(gr->T("Texture Shader"));
+	auto shaderScreen = new TextureShaderScreen(gr->T("GPU texture upscaler (fast)"));
 	shaderScreen->OnChoice.Handle(this, &GameSettingsScreen::OnTextureShaderChange);
 	if (e.v)
 		shaderScreen->SetPopupOrigin(e.v);

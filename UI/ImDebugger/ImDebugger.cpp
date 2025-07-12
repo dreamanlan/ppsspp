@@ -9,8 +9,10 @@
 #include "Common/Data/Format/IniFile.h"
 #include "Common/Data/Text/Parsers.h"
 #include "Common/Log/LogManager.h"
+#include "Common/TimeUtil.h"
 #include "Core/Config.h"
 #include "Core/System.h"
+#include "Core/SaveState.h"
 #include "Core/Debugger/MemBlockInfo.h"
 #include "Core/RetroAchievements.h"
 #include "Core/Core.h"
@@ -34,6 +36,7 @@
 #include "Core/HLE/sceNetAdhoc.h"
 #include "Core/HLE/proAdhoc.h"
 #include "Core/HLE/sceNetAdhocMatching.h"
+#include "Core/HLE/NetAdhocCommon.h"
 #include "Common/System/Request.h"
 
 #include "Core/Util/AtracTrack.h"
@@ -45,6 +48,7 @@
 #include "Core/HLE/sceSas.h"
 #include "Core/HW/SasAudio.h"
 #include "Core/HW/Display.h"
+#include "Core/Dialog/PSPSaveDialog.h"
 
 #include "Core/CoreTiming.h"
 // Threads window
@@ -703,6 +707,11 @@ static void DrawInternals(ImConfig &cfg) {
 		ImGui::Text("WantTextInput: %s", BoolStr(io.WantTextInput));
 	}
 
+	if (ImGui::CollapsingHeader("Save detection")) {
+		ImGui::Text("Last in-game save/load: %0.1f seconds ago", SecondsSinceLastGameSave());
+		ImGui::Text("Last save/load state: %0.1f seconds ago", SaveState::SecondsSinceLastSavestate());
+	}
+
 	ImGui::End();
 }
 
@@ -1088,6 +1097,14 @@ void DrawMediaDecodersView(ImConfig &cfg, ImControl &control) {
 					ImGui::Checkbox("", mutePtr);
 				}
 				ImGui::TableNextColumn();
+
+				const AtracBase *ctx = __AtracGetCtx(i, &codecType);
+				if (!ctx) {
+					// Nothing more we can display about uninitialized contexts.
+					ImGui::PopID();
+					continue;
+				}
+
 				switch (codecType) {
 				case 0:
 					ImGui::TextUnformatted("-");  // Uninitialized
@@ -1103,12 +1120,6 @@ void DrawMediaDecodersView(ImConfig &cfg, ImControl &control) {
 					break;
 				}
 
-				const AtracBase *ctx = __AtracGetCtx(i, &codecType);
-				if (!ctx) {
-					// Nothing more we can display about uninitialized contexts.
-					ImGui::PopID();
-					continue;
-				}
 				ImGui::TableNextColumn();
 				ImGui::TextUnformatted(AtracStatusToString(ctx->BufferState()));
 				ImGui::TableNextColumn();

@@ -34,6 +34,7 @@ SDLJoystick *joystick = NULL;
 #include "Common/System/System.h"
 #include "Common/System/Request.h"
 #include "Common/System/NativeApp.h"
+#include "Common/Audio/AudioBackend.h"
 #include "ext/glslang/glslang/Public/ShaderLang.h"
 #include "Common/Data/Format/PNGLoad.h"
 #include "Common/Net/Resolve.h"
@@ -134,7 +135,7 @@ int getDisplayNumber(void) {
 }
 
 void sdl_mixaudio_callback(void *userdata, Uint8 *stream, int len) {
-	NativeMix((short *)stream, len / (2 * 2), g_sampleRate);
+	NativeMix((short *)stream, len / (2 * 2), g_sampleRate, userdata);
 }
 
 static SDL_AudioDeviceID audioDev = 0;
@@ -242,6 +243,11 @@ void System_ShowKeyboard() {
 
 void System_Vibrate(int length_ms) {
 	// Ignore on PC
+}
+
+AudioBackend *System_CreateAudioBackend() {
+	// Use legacy mechanisms.
+	return nullptr;
 }
 
 static void InitializeFilters(std::vector<std::string> &filters, BrowseFileType type) {
@@ -765,12 +771,11 @@ case SYSPROP_HAS_FILE_BROWSER:
 	case SYSPROP_CAN_READ_BATTERY_PERCENTAGE:
 		return true;
 	case SYSPROP_ENOUGH_RAM_FOR_FULL_ISO:
-#if defined(MOBILE_DEVICE)
-		return false;
-#else
+#if PPSSPP_ARCH(64BIT) && !defined(MOBILE_DEVICE)
 		return true;
+#else
+		return false;
 #endif
-
 	// hack for testing - do not commit
 	case SYSPROP_USE_IAP:
 		return false;
@@ -882,7 +887,7 @@ static void EmuThreadJoin() {
 
 struct InputStateTracker {
 	void MouseCaptureControl() {
-		bool captureMouseCondition = g_Config.bMouseControl && ((GetUIState() == UISTATE_INGAME && g_Config.bMouseConfine) || g_Config.bMapMouse);
+		bool captureMouseCondition = g_Config.bMouseControl && ((GetUIState() == UISTATE_INGAME && g_Config.bMouseConfine) || g_IsMappingMouseInput);
 		if (mouseCaptured != captureMouseCondition) {
 			mouseCaptured = captureMouseCondition;
 			if (captureMouseCondition)
@@ -1044,11 +1049,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 					// since SDL does not have a separate
 					// UI thread.
 				}
-				if (ctrl && (k == SDLK_b))
-				{
-					System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
-					Core_Resume();
-				}
+
 				/*
 				// TODO: Enable this?
 				if (k == SDLK_F11) {

@@ -18,7 +18,6 @@
 #include "Windows/W32Util/Misc.h"
 #include "Windows/MainWindow.h"
 #include "Windows/resource.h"
-#include "Windows/WindowsHost.h"
 #include "Core/Reporting.h"
 #include "Core/MemMap.h"
 #include "Core/Core.h"
@@ -141,7 +140,7 @@ bool CreateGraphicsBackend(std::string *error_message, GraphicsContext **ctx) {
 		return false;
 	}
 
-	if (graphicsContext->Init(MainWindow::GetHInstance(), MainWindow::GetDisplayHWND(), error_message)) {
+	if (graphicsContext->Init(MainWindow::GetHInstance(), MainWindow::GetHWND(), error_message)) {
 		*ctx = graphicsContext;
 		return true;
 	} else {
@@ -287,7 +286,7 @@ void MainThreadFunc() {
 		while (GetUIState() != UISTATE_EXIT) {  //  && GetUIState() != UISTATE_EXCEPTION
 			// We're here again, so the game quit.  Restart Run() which controls the UI.
 			// This way they can load a new game.
-			if (!Core_IsActive())
+			if (!(Core_IsActive() || Core_IsStepping()))
 				UpdateUIState(UISTATE_MENU);
 			Core_StateProcessed();
 			NativeFrame(graphicsContext);
@@ -299,7 +298,6 @@ void MainThreadFunc() {
 		Core_StateProcessed();
 		NativeFrame(graphicsContext);
 	}
-	Core_WaitInactive();
 
 	g_inLoop = false;
 

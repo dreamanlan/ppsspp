@@ -41,6 +41,8 @@
 #define Crash() {asm ("brk #0");}
 #elif PPSSPP_ARCH(RISCV64)
 #define Crash() {asm ("ebreak");}
+#elif PPSSPP_ARCH(LOONGARCH64)
+#define Crash() {asm ("break 0");}
 #else
 #include <signal.h>
 #define Crash() {kill(getpid(), SIGINT);}
@@ -88,7 +90,7 @@ inline u32 __rotl(u32 x, int shift) {
 inline u64 __rotl64(u64 x, unsigned int shift){
 #if defined(_MSC_VER)
 	return _rotl64(x, shift);
-#elif (PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64))
+#elif PPSSPP_ARCH(AMD64)
 	return __rolq(x, shift);
 #else
 	unsigned int n = shift % 64;
@@ -111,7 +113,7 @@ inline u32 __rotr(u32 x, int shift) {
 inline u64 __rotr64(u64 x, unsigned int shift){
 #if defined(_MSC_VER)
 	return _rotr64(x, shift);
-#elif (PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64))
+#elif PPSSPP_ARCH(AMD64)
 	return __rorq(x, shift);
 #else
 	unsigned int n = shift % 64;

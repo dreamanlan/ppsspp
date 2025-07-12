@@ -142,12 +142,6 @@ ENUM_CLASS_BITOPS(DisableHLEFlags);
 std::string GPUBackendToString(GPUBackend backend);
 GPUBackend GPUBackendFromString(std::string_view backend);
 
-enum AudioBackendType {
-	AUDIO_BACKEND_AUTO,
-	AUDIO_BACKEND_DSOUND,
-	AUDIO_BACKEND_WASAPI,
-};
-
 // For iIOTimingMethod.
 enum IOTimingMethods {
 	IOTIMING_FAST = 0,
@@ -174,6 +168,7 @@ enum class BackgroundAnimation {
 	WAVE = 3,
 	MOVING_BACKGROUND = 4,
 	BOUNCING_ICON = 5,
+	FLOATING_SYMBOLS_COLORED = 6,
 };
 
 // iOS only
