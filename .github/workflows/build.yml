@@ -3,7 +3,7 @@ name: Build
 on:
   push:
     branches:
-    - master
+    - '**'
     # For testing.
     - actions
     tags:
@@ -13,7 +13,7 @@ on:
     - 'Tools/**'
     - '.{editorconfig,gitattributes,gitignore}'
     - 'appveyor.yml'
-  pull_request:
+  pull_request_target:
     branches:
     - master
     paths-ignore:
@@ -24,6 +24,10 @@ on:
 
 env:
   BUILD_CONFIGURATION: Release
+
+permissions:
+  contents: read
+  pull-requests: read
 
 jobs:
   build-windows:
@@ -51,10 +55,11 @@ jobs:
 
     - name: Fetch upstream tags # Fallback to fetching tags from upstream
       if: steps.valid-tags.outputs.count == '0'
+      shell: bash
       run: |
         # TODO: should try to fetch tags from whereever this repo was forked from before fetching from official repo
         git remote add upstream https://github.com/hrydgard/ppsspp.git
-        git fetch --deepen=15000 --no-recurse-submodules --tags upstream || exit 0
+        git fetch --deepen=15000 --no-recurse-submodules --tags --force upstream || exit 0
 
     - name: Create git-version.cpp for Windows # Not sure why the one at git-version-gen.cmd couldn't get the version properly.
       #if: github.ref_type == 'tag'
