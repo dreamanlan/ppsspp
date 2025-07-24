@@ -211,7 +211,7 @@ static float DefaultUISaturation() {
 }
 
 static int DefaultUIScaleFactor() {
-#if PPSSPP_PLATFORM(WINDOWS)
+#if PPSSPP_PLATFORM(WINDOWS) || PPSSPP_PLATFORM(LINUX) || PPSSPP_PLATFORM(MAC)
 	return -1;
 #else
 	return 0;
@@ -456,8 +456,8 @@ static int DefaultGPUBackend() {
 	}
 
 #if PPSSPP_PLATFORM(WINDOWS)
-	// On Win11, there's a good chance Vulkan will work by default.
-	if (IsWin11OrHigher()) {
+	// On Win10, there's a good chance Vulkan will work by default.
+	if (IsWin10OrHigher()) {
 		return (int)GPUBackend::VULKAN;
 	}
 	// On older Windows, to be safe, use Direct3D 11.
@@ -769,6 +769,11 @@ static int DefaultAchievementVolume() {
 	return MultiplierToVolume100((float)g_Config.iLegacyAchievementVolume / 10.0f);
 }
 
+static int DefaultGamePreviewVolume() {
+	// This was previously controlled by the UI volume, so transfer the default value over.
+	return g_Config.iUIVolume;
+}
+
 static const ConfigSetting soundSettings[] = {
 	ConfigSetting("Enable", &g_Config.bEnableSound, true, CfgFlag::PER_GAME),
 	ConfigSetting("ExtraAudioBuffering", &g_Config.bExtraAudioBuffering, false, CfgFlag::DEFAULT),
@@ -786,6 +791,7 @@ static const ConfigSetting soundSettings[] = {
 	ConfigSetting("AltSpeedRelativeVolume", &g_Config.iAltSpeedVolume, VOLUMEHI_FULL, CfgFlag::PER_GAME),
 	ConfigSetting("AchievementVolume", &g_Config.iAchievementVolume, &DefaultAchievementVolume, CfgFlag::PER_GAME),
 	ConfigSetting("UIVolume", &g_Config.iUIVolume, 75, CfgFlag::DEFAULT),
+	ConfigSetting("GamePreviewVolume", &g_Config.iGamePreviewVolume, &DefaultGamePreviewVolume, CfgFlag::DEFAULT),
 
 	ConfigSetting("AudioDevice", &g_Config.sAudioDevice, "", CfgFlag::DEFAULT),
 	ConfigSetting("AutoAudioDevice", &g_Config.bAutoAudioDevice, true, CfgFlag::DEFAULT),

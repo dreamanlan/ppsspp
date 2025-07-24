@@ -669,21 +669,18 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 bool EmuScreen::UnsyncTouch(const TouchInput &touch) {
 	System_Notify(SystemNotification::ACTIVITY);
 
+	bool ignoreGamepad = false;
+
 	if (chatMenu_ && chatMenu_->GetVisibility() == UI::V_VISIBLE) {
 		// Avoid pressing touch button behind the chat
 		if (chatMenu_->Contains(touch.x, touch.y)) {
-			chatMenu_->Touch(touch);
-			return true;
-		} else if ((touch.flags & TOUCH_DOWN) != 0) {
-			chatMenu_->Close();
-			if (chatButton_)
-				chatButton_->SetVisibility(UI::V_VISIBLE);
-			UI::EnableFocusMovement(false);
+			ignoreGamepad = true;
 		}
 	}
 
 	if (touch.flags & TOUCH_DOWN) {
-		if (!(g_Config.bShowImDebugger && imguiInited_)) {
+		if (!(g_Config.bShowImDebugger && imguiInited_) && !ignoreGamepad) {
+			// This just prevents the gamepad from timing out.
 			GamepadTouch();
 		}
 	}
@@ -1072,7 +1069,9 @@ bool EmuScreen::UnsyncKey(const KeyInput &key) {
 		}
 	}
 
-	if (UI::IsFocusMovementEnabled() || (g_Config.bShowImDebugger && imguiInited_)) {
+	const bool chatMenuOpen = chatMenu_ && chatMenu_->GetVisibility() == UI::V_VISIBLE;
+
+	if (chatMenuOpen || (g_Config.bShowImDebugger && imguiInited_)) {
 		// Note: Allow some Vkeys through, so we can toggle the imgui for example (since we actually block the control mapper otherwise in imgui mode).
 		// We need to manually implement it here :/
 		if (g_Config.bShowImDebugger && imguiInited_) {
@@ -1104,6 +1103,11 @@ bool EmuScreen::UnsyncKey(const KeyInput &key) {
 			default:
 				controlMapper_.Key(key, &pauseTrigger_);
 				break;
+			}
+		} else {
+			// Let up-events through to the controlMapper_ so input doesn't get stuck.
+			if (key.flags & KEY_UP) {
+				controlMapper_.Key(key, &pauseTrigger_);
 			}
 		}
 
@@ -1147,7 +1151,22 @@ void EmuScreen::touch(const TouchInput &touch) {
 		if (!ImGui::GetIO().WantCaptureMouse) {
 			UIScreen::touch(touch);
 		}
+	} else if (g_Config.bMouseControl && !(touch.flags & TOUCH_UP)) {
+		// don't do anything as the mouse pointer is hidden in this case.
+		// But we let touch-up events through to avoid getting stuck if the user toggles mouse control.
 	} else {
+		// Handle closing the chat menu if touched outside it.
+		if (chatMenu_ && chatMenu_->GetVisibility() == UI::V_VISIBLE) {
+			// Avoid pressing touch button behind the chat
+			if (!chatMenu_->Contains(touch.x, touch.y)) {
+				if ((touch.flags & TOUCH_DOWN) != 0) {
+					chatMenu_->Close();
+					if (chatButton_)
+						chatButton_->SetVisibility(UI::V_VISIBLE);
+					UI::EnableFocusMovement(false);
+				}
+			}
+		}
 		UIScreen::touch(touch);
 	}
 }
@@ -1469,7 +1488,7 @@ void EmuScreen::update() {
 bool EmuScreen::checkPowerDown() {
 	// This is for handling things like sceKernelExitGame().
 	// Also for REQUEST_STOP.
-	if (coreState == CORE_POWERDOWN && (PSP_GetBootState() == BootState::Complete || PSP_GetBootState() == BootState::Off) && !bootPending_) {
+	if (coreState == CORE_POWERDOWN && PSP_GetBootState() == BootState::Complete && !bootPending_) {
 		INFO_LOG(Log::System, "SELF-POWERDOWN!");
 		screenManager()->switchScreen(new MainScreen());
 		return true;
@@ -1822,11 +1841,13 @@ void EmuScreen::runImDebugger() {
 			imDebugger_ = std::make_unique<ImDebugger>();
 
 			// Read the TTF font
-			size_t size = 0;
-			uint8_t *fontData = g_VFS.ReadFile("Roboto-Condensed.ttf", &size);
+			size_t propSize = 0;
+			uint8_t *propFontData = g_VFS.ReadFile("Roboto-Condensed.ttf", &propSize);
+			size_t fixedSize = 0;
+			uint8_t *fixedFontData = g_VFS.ReadFile("Inconsolata-Medium.ttf", &fixedSize);
 			// This call works even if fontData is nullptr, in which case the font just won't get loaded.
 			// This takes ownership of the font array.
-			ImGui_ImplThin3d_Init(draw, fontData, size);
+			ImGui_ImplThin3d_Init(draw, propFontData, propSize, fixedFontData, fixedSize);
 			imguiInited_ = true;
 		}
 
