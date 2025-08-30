@@ -53,6 +53,7 @@
 #include "Common/StringUtils.h"
 #include "Common/GPU/ShaderWriter.h"
 
+#include "Core/WebServer.h"
 #include "Core/MemMap.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
@@ -156,6 +157,21 @@ void DevMenuScreen::CreatePopupContents(UI::ViewGroup *parent) {
 		return UI::EVENT_DONE;
 	});
 
+	if (WebServerRunning(WebServerFlags::DEBUGGER)) {
+		items->Add(new Choice(dev->T("Remote debugger")))->OnClick.Add([](UI::EventParams &e) {
+			int port = g_Config.iRemoteISOPort;  // Also used for serving a local remote debugger.
+			if (g_Config.bRemoteDebuggerLocal) {
+				// TODO: Need to modify this URL to add /cpu when we upgrade to the latest version of the web debugger.
+				char uri[64];
+				snprintf(uri, sizeof(uri), "http://localhost:%d/debugger/", port);
+				System_LaunchUrl(LaunchUrlType::BROWSER_URL, uri);
+			} else {
+				System_LaunchUrl(LaunchUrlType::BROWSER_URL, "http://ppsspp-debugger.unknownbrackets.org/cpu");  // NOTE: https doesn't work
+			}
+			return UI::EVENT_DONE;
+		});
+	}
+
 	items->Add(new Choice(sy->T("Developer Tools")))->OnClick.Handle(this, &DevMenuScreen::OnDeveloperTools);
 
 	// Debug overlay
@@ -244,23 +260,13 @@ void GPIGPOScreen::CreatePopupContents(UI::ViewGroup *parent) {
 
 void LogViewScreen::UpdateLog() {
 	using namespace UI;
-	const RingbufferLog *ring = g_logManager.GetRingbuffer();
-	if (!ring)
-		return;
+	const RingbufferLog &ring = g_logManager.GetRingbuffer();
 	vert_->Clear();
 
 	// TODO: Direct rendering without TextViews.
-	for (int i = ring->GetCount() - 1; i >= 0; i--) {
-		TextView *v = vert_->Add(new TextView(StripSpaces(ring->TextAt(i)), FLAG_DYNAMIC_ASCII, true));
-		uint32_t color = 0xFFFFFF;
-		switch (ring->LevelAt(i)) {
-		case LogLevel::LDEBUG: color = 0xE0E0E0; break;
-		case LogLevel::LWARNING: color = 0x50FFFF; break;
-		case LogLevel::LERROR: color = 0x5050FF; break;
-		case LogLevel::LNOTICE: color = 0x30FF30; break;
-		case LogLevel::LINFO: color = 0xFFFFFF; break;
-		case LogLevel::LVERBOSE: color = 0xC0C0C0; break;
-		}
+	for (int i = ring.GetCount() - 1; i >= 0; i--) {
+		TextView *v = vert_->Add(new TextView(StripSpaces(ring.TextAt(i)), FLAG_DYNAMIC_ASCII, true));
+		uint32_t color = LogManager::GetLevelColor(ring.LevelAt(i));
 		v->SetTextColor(0xFF000000 | color);
 	}
 	toBottom_ = true;
@@ -553,7 +559,7 @@ void SystemInfoScreen::CreateDeviceInfoTab(UI::LinearLayout *deviceSpecs) {
 	UI::CollapsibleSection *systemInfo = deviceSpecs->Add(new UI::CollapsibleSection(si->T("System Information")));
 
 	systemInfo->Add(new Choice(si->T("Copy summary to clipboard")))->OnClick.Handle(this, &SystemInfoScreen::CopySummaryToClipboard);
-	systemInfo->Add(new InfoItem(si->T("System Name", "Name"), System_GetProperty(SYSPROP_NAME)));
+	systemInfo->Add(new InfoItem(si->T("System Name"), System_GetProperty(SYSPROP_NAME)));
 #if PPSSPP_PLATFORM(ANDROID)
 	systemInfo->Add(new InfoItem(si->T("System Version"), StringFromInt(System_GetPropertyInt(SYSPROP_SYSTEMVERSION))));
 #elif PPSSPP_PLATFORM(WINDOWS)
@@ -575,7 +581,7 @@ void SystemInfoScreen::CreateDeviceInfoTab(UI::LinearLayout *deviceSpecs) {
 
 	// Don't bother showing the CPU name if we don't have one.
 	if (strcmp(cpu_info.brand_string, "Unknown") != 0) {
-		cpuInfo->Add(new InfoItem(si->T("CPU Name", "Name"), cpu_info.brand_string));
+		cpuInfo->Add(new InfoItem(si->T("CPU Name"), cpu_info.brand_string));
 	}
 
 	int totalThreads = cpu_info.num_cores * cpu_info.logical_cpu_count;

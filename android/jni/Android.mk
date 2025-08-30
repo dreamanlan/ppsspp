@@ -585,6 +585,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HW/SasAudio.cpp.arm \
   $(SRC)/Core/HW/SasReverb.cpp.arm \
   $(SRC)/Core/HW/StereoResampler.cpp.arm \
+  $(SRC)/Core/HW/GranularMixer.cpp.arm \
   $(SRC)/Core/ControlMapper.cpp \
   $(SRC)/Core/Core.cpp \
   $(SRC)/Core/Compatibility.cpp \
@@ -857,6 +858,7 @@ LIBZSTD_FILES := \
   $(SRC)/ext/zstd/lib/compress/zstd_lazy.c \
   $(SRC)/ext/zstd/lib/compress/zstd_ldm.c \
   $(SRC)/ext/zstd/lib/compress/zstd_opt.c \
+  $(SRC)/ext/zstd/lib/compress/zstd_preSplit.c \
   $(SRC)/ext/zstd/lib/compress/zstdmt_compress.c \
   $(SRC)/ext/zstd/lib/decompress/huf_decompress.c \
   $(SRC)/ext/zstd/lib/decompress/zstd_ddict.c \

@@ -300,6 +300,7 @@ static const ConfigSetting generalSettings[] = {
 	ConfigSetting("RemoteShareOnStartup", &g_Config.bRemoteShareOnStartup, false, CfgFlag::DEFAULT),
 	ConfigSetting("RemoteISOSubdir", &g_Config.sRemoteISOSubdir, "/", CfgFlag::DEFAULT),
 	ConfigSetting("RemoteDebuggerOnStartup", &g_Config.bRemoteDebuggerOnStartup, false, CfgFlag::DEFAULT),
+	ConfigSetting("RemoteDebuggerLocal", &g_Config.bRemoteDebuggerLocal, false, CfgFlag::DEFAULT),
 	ConfigSetting("RemoteTab", &g_Config.bRemoteTab, false, CfgFlag::DEFAULT),
 	ConfigSetting("RemoteISOSharedDir", &g_Config.sRemoteISOSharedDir, "", CfgFlag::DEFAULT),
 	ConfigSetting("RemoteISOShareType", &g_Config.iRemoteISOShareType, (int)RemoteISOShareType::RECENT, CfgFlag::DEFAULT),
@@ -783,6 +784,9 @@ static const ConfigSetting soundSettings[] = {
 	ConfigSetting("Enable", &g_Config.bEnableSound, true, CfgFlag::PER_GAME),
 	ConfigSetting("ExtraAudioBuffering", &g_Config.bExtraAudioBuffering, false, CfgFlag::DEFAULT),
 	ConfigSetting("AudioBufferSize", &g_Config.iSDLAudioBufferSize, 256, CfgFlag::DEFAULT),
+
+	ConfigSetting("FillAudioGaps", &g_Config.bFillAudioGaps, true, CfgFlag::DEFAULT),
+	ConfigSetting("AudioSyncMode", &g_Config.iAudioSyncMode, (int)AudioSyncMode::CLASSIC_PITCH, CfgFlag::DEFAULT),
 
 	// Legacy volume settings, these get auto upgraded through default handlers on the new settings. NOTE: Must be before the new ones in the order here.
 	// The default settings here are still relevant, they will get propagated into the new ones.

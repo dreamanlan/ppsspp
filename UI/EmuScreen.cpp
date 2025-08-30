@@ -455,7 +455,7 @@ EmuScreen::~EmuScreen() {
 	SetExtraAssertInfo(nullptr);
 	SetAssertCancelCallback(nullptr, nullptr);
 
-	g_logManager.EnableOutput(LogOutput::RingBuffer);
+	g_logManager.DisableOutput(LogOutput::RingBuffer);
 
 #ifndef MOBILE_DEVICE
 	if (g_Config.bDumpFrames && startDumping_)
@@ -1431,12 +1431,13 @@ void EmuScreen::update() {
 
 	if (errorMessage_.size()) {
 		auto err = GetI18NCategory(I18NCat::ERRORS);
+		auto di = GetI18NCategory(I18NCat::DIALOG);
 		std::string errLoadingFile = gamePath_.ToVisualString() + "\n";
 		errLoadingFile.append(err->T("Error loading file", "Could not load game"));
 		errLoadingFile.append(" ");
 		errLoadingFile.append(err->T(errorMessage_.c_str()));
 
-		screenManager()->push(new PromptScreen(gamePath_, errLoadingFile, "OK", ""));
+		screenManager()->push(new PromptScreen(gamePath_, errLoadingFile, di->T("OK"), ""));
 		errorMessage_.clear();
 		quit_ = true;
 		return;
@@ -1807,7 +1808,6 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 	if (hasVisibleUI()) {
 		draw->SetViewport(viewport);
 		cardboardDisableButton_->SetVisibility(g_Config.bEnableCardboardVR ? UI::V_VISIBLE : UI::V_GONE);
-		screenManager()->getUIContext()->BeginFrame();
 		renderUI();
 	}
 

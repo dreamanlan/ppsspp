@@ -451,7 +451,7 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	altSpeed2->SetNegativeDisable(gr->T("Disabled"));
 
 	if (analogSpeedMapped_) {
-		PopupSliderChoice *analogSpeed = graphicsSettings->Add(new PopupSliderChoice(&iAlternateSpeedPercentAnalog_, 1, 1000, NO_DEFAULT_INT, gr->T("Analog Alternative Speed", "Analog alternative speed (in %)"), 5, screenManager(), gr->T("%")));
+		PopupSliderChoice *analogSpeed = graphicsSettings->Add(new PopupSliderChoice(&iAlternateSpeedPercentAnalog_, 1, 1000, NO_DEFAULT_INT, gr->T("Analog alternative speed", "Analog alternative speed (in %)"), 5, screenManager(), "%"));
 		altSpeed2->SetFormat("%i%%");
 	}
 
@@ -673,6 +673,14 @@ void GameSettingsScreen::CreateAudioSettings(UI::ViewGroup *audioSettings) {
 	});
 	mixWithOthers->SetEnabledPtr(&g_Config.bEnableSound);
 #endif
+	audioSettings->Add(new ItemHeader(a->T("Audio playback")));
+
+	static const char *syncModes[] = { "Smooth (reduces artifacts)", "Classic (lowest latency)" };
+
+	audioSettings->Add(new PopupMultiChoice(&g_Config.iAudioSyncMode, a->T("Synchronization mode"), syncModes, 0, ARRAY_SIZE(syncModes), I18NCat::AUDIO, screenManager()));
+	audioSettings->Add(new CheckBox(&g_Config.bFillAudioGaps, a->T("Fill audio gaps")))->SetEnabledFunc([]() {
+		return g_Config.iAudioSyncMode == (int)AudioSyncMode::GRANULAR;
+	});
 
 	audioSettings->Add(new ItemHeader(a->T("Game volume")));
 
@@ -1367,7 +1375,7 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	systemSettings->Add(new CheckBox(&g_Config.bIgnoreBadMemAccess, sy->T("Ignore bad memory accesses")));
 
 	static const char *ioTimingMethods[] = { "Fast (lag on slow storage)", "Host (bugs, less lag)", "Simulate UMD delays", "Simulate UMD slow reading speed"};
-	View *ioTimingMethod = systemSettings->Add(new PopupMultiChoice(&g_Config.iIOTimingMethod, sy->T("IO timing method"), ioTimingMethods, 0, ARRAY_SIZE(ioTimingMethods), I18NCat::SYSTEM, screenManager()));
+	View *ioTimingMethod = systemSettings->Add(new PopupMultiChoice(&g_Config.iIOTimingMethod, sy->T("I/O timing method"), ioTimingMethods, 0, ARRAY_SIZE(ioTimingMethods), I18NCat::SYSTEM, screenManager()));
 	systemSettings->Add(new CheckBox(&g_Config.bForceLagSync, sy->T("Force real clock sync (slower, less lag)")))->SetDisabledPtr(&g_Config.bAutoFrameSkip);
 	PopupSliderChoice *lockedMhz = systemSettings->Add(new PopupSliderChoice(&g_Config.iLockedCPUSpeed, 0, 1000, 0, sy->T("Change CPU Clock", "Change CPU Clock (unstable)"), screenManager(), sy->T("MHz, 0:default")));
 	lockedMhz->OnChange.Add([&](UI::EventParams &) {
@@ -1406,7 +1414,7 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 		systemSettings->Add(new CheckBox(&g_Config.bBypassOSKWithKeyboard, sy->T("Use system native keyboard")));
 
 	if (System_GetPropertyBool(SYSPROP_ENOUGH_RAM_FOR_FULL_ISO)) {
-		systemSettings->Add(new CheckBox(&g_Config.bCacheFullIsoInRam, sy->T("Cache ISO in RAM", "Cache full ISO in RAM")))->SetEnabled(!PSP_IsInited());
+		systemSettings->Add(new CheckBox(&g_Config.bCacheFullIsoInRam, sy->T("Cache full ISO in RAM")))->SetEnabled(!PSP_IsInited());
 	}
 
 	systemSettings->Add(new CheckBox(&g_Config.bCheckForNewVersion, sy->T("VersionCheck", "Check for new versions of PPSSPP")));
@@ -1442,7 +1450,7 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 		}
 		return UI::EVENT_DONE;
 	});
-	systemSettings->Add(new CheckBox(&g_Config.bDayLightSavings, sy->T("Day Light Saving")));
+	systemSettings->Add(new CheckBox(&g_Config.bDayLightSavings, sy->T("Daylight savings")));
 	static const char *dateFormat[] = { "YYYYMMDD", "MMDDYYYY", "DDMMYYYY" };
 	systemSettings->Add(new PopupMultiChoice(&g_Config.iDateFormat, sy->T("Date Format"), dateFormat, 0, ARRAY_SIZE(dateFormat), I18NCat::SYSTEM, screenManager()));
 	static const char *timeFormat[] = { "24HR", "12HR" };

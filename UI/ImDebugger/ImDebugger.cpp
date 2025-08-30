@@ -64,6 +64,7 @@
 
 #include "UI/ImDebugger/ImDebugger.h"
 #include "UI/ImDebugger/ImGe.h"
+#include "UI/AudioCommon.h"
 
 extern bool g_TakeScreenshot;
 static ImVec4 g_normalTextColor;
@@ -1339,6 +1340,39 @@ void DrawMediaDecodersView(ImConfig &cfg, ImControl &control) {
 	ImGui::End();
 }
 
+
+void DrawAudioOut(ImConfig &cfg, ImControl &control) {
+	if (!ImGui::Begin("Audio output", &cfg.audioOutOpen)) {
+		ImGui::End();
+		return;
+	}
+
+	if (g_Config.iAudioSyncMode == (int)AudioSyncMode::GRANULAR) {
+		// Show granular stats
+		GranularStats stats;
+		g_granular.GetStats(&stats);
+		ImGui::Text("Granules");
+		ImGui::Text("Read size: %0.2f", stats.smoothedReadSize);
+		ImGui::Text("Frame time estimate: %0.1f ms", stats.frameTimeEstimate * 1000.0f);
+		ImGui::Text("Queued samples target: %d", stats.queuedSamplesTarget);
+		ImGui::Text("Queued min/max: %d / %d", stats.queuedGranulesMin, stats.queuedGranulesMax);
+		ImGui::Text("Queued (smooth): %0.3f", stats.smoothedQueuedGranules);
+		ImGui::Text("Target: %d", stats.targetQueueSize);
+		ImGui::Text("Max: %d", stats.maxQueuedGranules);
+		ImGui::Text("Computed queue latency: %d ms", (int)(stats.smoothedQueuedGranules * (GranularMixer::GRANULE_SIZE * 1000.0 / 44100.0)));
+		ImGui::Text("Fade volume: %0.2f", stats.fadeVolume);
+		ImGui::Text("Looping: %s", BoolStr(stats.looping));
+		ImGui::Text("Under/Over: %d / %d", stats.underruns, stats.overruns);
+	} else {
+		ImGui::Text("StereoResampler classic");
+		char buf[1024];
+		g_resampler.GetAudioDebugStats(buf, sizeof(buf));
+		ImGui::Text("%s", buf);
+	}
+
+	ImGui::End();
+}
+
 void DrawAudioChannels(ImConfig &cfg, ImControl &control) {
 	if (!ImGui::Begin("Raw audio channels", &cfg.audioChannelsOpen)) {
 		ImGui::End();
@@ -1403,6 +1437,60 @@ void DrawAudioChannels(ImConfig &cfg, ImControl &control) {
 
 		ImGui::EndTable();
 	}
+	ImGui::End();
+}
+
+void ImLogWindow::Draw(ImConfig &cfg) {
+	ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
+	if (!ImGui::Begin("Log", &cfg.logOpen)) {
+		ImGui::End();
+		return;
+	}
+
+	const RingbufferLog &ring = g_logManager.GetRingbuffer();
+
+	// Options menu
+	if (ImGui::BeginPopup("Options")) {
+		ImGui::Checkbox("Auto-scroll", &AutoScroll);
+		ImGui::EndPopup();
+	}
+
+	// Main window
+	if (ImGui::Button("Options"))
+		ImGui::OpenPopup("Options");
+	ImGui::SameLine();
+	bool copy = ImGui::Button("Copy");
+	ImGui::Separator();
+
+	if (ImGui::BeginChild("scrolling", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
+		if (copy)
+			ImGui::LogToClipboard();
+
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
+
+		ImGuiListClipper clipper;
+		clipper.Begin(ring.GetCount());
+		while (clipper.Step()) {
+			for (int line_no = clipper.DisplayStart; line_no < clipper.DisplayEnd; line_no++) {
+				int n = ring.GetCount() - 1 - line_no;
+
+				const std::string_view line = ring.TextAt(n);
+				const LogLevel level = ring.LevelAt(n);
+				const u32 color = 0xFF000000 | LogManager::GetLevelColor(level);
+				ImGui::PushStyleColor(ImGuiCol_Text, color);
+				ImGui::TextUnformatted(line);
+				ImGui::PopStyleColor();
+			}
+		}
+		clipper.End();
+		ImGui::PopStyleVar();
+
+		// Keep up at the bottom of the scroll region if we were already at the bottom at the beginning of the frame.
+		// Using a scrollbar or mouse-wheel will take away from the bottom edge.
+		if (AutoScroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 20)
+			ImGui::SetScrollHereY(1.0f);
+	}
+	ImGui::EndChild();
 	ImGui::End();
 }
 
@@ -1820,7 +1908,7 @@ static void DrawSymbols(const MIPSDebugInterface *debug, ImConfig &cfg, ImContro
 ImWatchWindow::ImWatchWindow() {}
 
 void ImWatchWindow::Draw(ImConfig &cfg, ImControl &control, MIPSDebugInterface *mipsDebug) {
-	if (!ImGui::Begin("Watch", &cfg.atracToolOpen) || !g_symbolMap) {
+	if (!ImGui::Begin("Watch", &cfg.watchOpen) || !g_symbolMap) {
 		ImGui::End();
 		return;
 	}
@@ -1865,7 +1953,7 @@ void ImWatchWindow::Draw(ImConfig &cfg, ImControl &control, MIPSDebugInterface *
 				}
 				bool confirmed = ImGui::InputText("##edit", editBuffer_, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
 				// Filter for only enter presses
-				confirmed = confirmed && ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter);
+				confirmed = confirmed && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter));
 				if (confirmed || ImGui::IsItemDeactivated()) {
 					watch.SetExpression(editBuffer_, mipsDebug);
 					editingWatchIndex_ = -1;
@@ -1901,7 +1989,7 @@ void ImWatchWindow::Draw(ImConfig &cfg, ImControl &control, MIPSDebugInterface *
 					break;
 				case WatchFormat::FLOAT:
 					memcpy(&valuef, &value, sizeof(valuef));
-					ImGui::Text("%f", value);
+					ImGui::Text("%f", static_cast<float>(value));
 					break;
 				case WatchFormat::STR:
 					if (Memory::IsValidAddress(value)) {
@@ -2081,6 +2169,9 @@ ImDebugger::ImDebugger() {
 	reqToken_ = g_requestManager.GenerateRequesterToken();
 	cfg_.LoadConfig(ConfigPath());
 	g_normalTextColor = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+
+	// Just enable ring buffer logging here, it's cheap (but needed for the log window)
+	g_logManager.EnableOutput(LogOutput::RingBuffer);
 }
 
 ImDebugger::~ImDebugger() {
@@ -2261,6 +2352,8 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 			ImGui::MenuItem("SasAudio mixer", nullptr, &cfg_.sasAudioOpen);
 			ImGui::MenuItem("Raw audio channels", nullptr, &cfg_.audioChannelsOpen);
 			ImGui::MenuItem("AV Decoder contexts", nullptr, &cfg_.mediaDecodersOpen);
+			ImGui::Separator();
+			ImGui::MenuItem("Audio output / buffer", nullptr, &cfg_.audioOutOpen);
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Network")) {
@@ -2272,6 +2365,7 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 		}
 		if (ImGui::BeginMenu("Tools")) {
 			ImGui::MenuItem("Lua Console", nullptr, &cfg_.luaConsoleOpen);
+			ImGui::MenuItem("Log", nullptr, &cfg_.logOpen);
 			ImGui::MenuItem("Debug stats", nullptr, &cfg_.debugStatsOpen);
 			ImGui::MenuItem("Struct viewer", nullptr, &cfg_.structViewerOpen);
 			ImGui::MenuItem("Log channels", nullptr, &cfg_.logConfigOpen);
@@ -2340,6 +2434,10 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 		DrawAudioChannels(cfg_, control);
 	}
 
+	if (cfg_.audioOutOpen) {
+		DrawAudioOut(cfg_, control);
+	}
+
 	if (cfg_.sasAudioOpen) {
 		DrawSasAudio(cfg_);
 	}
@@ -2390,6 +2488,10 @@ void ImDebugger::Frame(MIPSDebugInterface *mipsDebug, GPUDebugInterface *gpuDebu
 
 	if (cfg_.logConfigOpen) {
 		DrawLogConfig(cfg_);
+	}
+
+	if (cfg_.logOpen) {
+		logWindow_.Draw(cfg_);
 	}
 
 	if (cfg_.displayOpen) {
@@ -2589,6 +2691,7 @@ void ImConfig::SyncConfig(IniFile *ini, bool save) {
 	sync.Sync("filesystemBrowserOpen", &filesystemBrowserOpen, false);
 	sync.Sync("kernelObjectsOpen", &kernelObjectsOpen, false);
 	sync.Sync("audioChannelsOpen", &audioChannelsOpen, false);
+	sync.Sync("audioOutOpen", &audioOutOpen, false);
 	sync.Sync("texturesOpen", &texturesOpen, false);
 	sync.Sync("debugStatsOpen", &debugStatsOpen, false);
 	sync.Sync("geDebuggerOpen", &geDebuggerOpen, false);
@@ -2604,6 +2707,7 @@ void ImConfig::SyncConfig(IniFile *ini, bool save) {
 	sync.Sync("internalsOpen", &internalsOpen, false);
 	sync.Sync("sasAudioOpen", &sasAudioOpen, false);
 	sync.Sync("logConfigOpen", &logConfigOpen, false);
+	sync.Sync("logOpen", &logOpen, false);
 	sync.Sync("luaConsoleOpen", &luaConsoleOpen, false);
 	sync.Sync("utilityModulesOpen", &utilityModulesOpen, false);
 	sync.Sync("memDumpOpen", &memDumpOpen, false);

@@ -125,7 +125,7 @@ public:
 	bool bAutoSaveSymbolMap;
 	bool bCompressSymbols;
 	bool bCacheFullIsoInRam;
-	int iRemoteISOPort;
+	int iRemoteISOPort; // Also used for serving a local remote debugger.
 	std::string sLastRemoteISOServer;
 	int iLastRemoteISOPort;
 	bool bRemoteISOManual;
@@ -134,6 +134,7 @@ public:
 	std::string sRemoteISOSharedDir;
 	int iRemoteISOShareType;
 	bool bRemoteDebuggerOnStartup;
+	bool bRemoteDebuggerLocal;
 	bool bRemoteTab;
 	bool bMemStickInserted;
 	int iMemStickSizeGB;
@@ -289,6 +290,9 @@ public:
 	// Sound
 	bool bEnableSound;
 	int iSDLAudioBufferSize;
+	int iAudioBufferSize;
+	bool bFillAudioGaps;
+	int iAudioSyncMode;
 
 	// Legacy volume settings, 0-10. These get auto-upgraded and should not be used.
 	int iLegacyGameVolume;
