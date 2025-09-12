@@ -1415,7 +1415,6 @@ namespace Libretro
             default:
             case EmuThreadState::QUIT_REQUESTED:
                emuThreadState = EmuThreadState::STOPPED;
-               ctx->StopThread();
                return;
          }
       }
@@ -1441,8 +1440,9 @@ namespace Libretro
       emuThreadState = EmuThreadState::QUIT_REQUESTED;
 
       // Need to keep eating frames to allow the EmuThread to exit correctly.
-      while (ctx->ThreadFrame())
-         ;
+      ctx->ThreadFrameUntilCondition([]() -> bool {
+         return emuThreadState == EmuThreadState::STOPPED;
+      });
 
       emuThread.join();
       emuThread = std::thread();
@@ -1456,7 +1456,8 @@ namespace Libretro
 
       emuThreadState = EmuThreadState::PAUSE_REQUESTED;
 
-      ctx->ThreadFrame(); // Eat 1 frame
+      // Is this safe?
+      ctx->ThreadFrame(true); // Eat 1 frame
 
       while (emuThreadState != EmuThreadState::PAUSED)
          sleep_ms(1, "libretro-pause-poll");
@@ -1510,7 +1511,7 @@ bool retro_load_game(const struct retro_game_info *game)
 
    CoreParameter coreParam   = {};
    coreParam.enableSound     = true;
-   coreParam.fileToStart     = Path(std::string(game->path));
+   coreParam.fileToStart     = Path(game->path);
    coreParam.startBreak      = false;
    coreParam.headLess        = true;  // really?
    coreParam.graphicsContext = ctx;
@@ -1748,7 +1749,7 @@ void retro_run(void)
       if (emuThreadState != EmuThreadState::RUNNING)
          EmuThreadStart();
 
-      if (!ctx->ThreadFrame())
+      if (!ctx->ThreadFrame(true))
       {
          VsyncSwapIntervalDetect();
          return;
@@ -1998,7 +1999,7 @@ void System_Notify(SystemNotification notification) {
    }
 }
 bool System_MakeRequest(SystemRequestType type, int requestId, const std::string &param1, const std::string &param2, int64_t param3, int64_t param4) { return false; }
-void System_PostUIMessage(UIMessage message, const std::string &param) {}
+void System_PostUIMessage(UIMessage message, std::string_view param) {}
 void System_RunOnMainThread(std::function<void()>) {}
 void NativeFrame(GraphicsContext *graphicsContext) {}
 void NativeResized() {}

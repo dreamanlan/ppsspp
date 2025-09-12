@@ -548,7 +548,9 @@ int Config::NextValidBackend() {
 #endif
 
 		// They've all failed.  Let them try the default - or on Android, OpenGL.
-		sFailedGPUBackends += ",ALL";
+		if (sFailedGPUBackends.find(",ALL") == std::string::npos) {
+			sFailedGPUBackends += ",ALL";
+		}
 		ERROR_LOG(Log::Loader, "All graphics backends failed");
 #if PPSSPP_PLATFORM(ANDROID)
 		return (int)GPUBackend::OPENGL;
@@ -1673,6 +1675,8 @@ bool Config::saveGameConfig(const std::string &pGameId, const std::string &title
 
 	KeyMap::SaveToIni(iniFile);
 	iniFile.Save(fullIniFilePath);
+
+	INFO_LOG(Log::Loader, "Game-specific config saved: '%s'", fullIniFilePath.c_str());
 
 	PostSaveCleanup(true);
 	return true;

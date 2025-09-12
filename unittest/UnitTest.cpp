@@ -112,7 +112,7 @@ bool System_GetPropertyBool(SystemProperty prop) {
 	}
 }
 void System_Notify(SystemNotification notification) {}
-void System_PostUIMessage(UIMessage message, const std::string &param) {}
+void System_PostUIMessage(UIMessage message, std::string_view param) {}
 void System_RunOnMainThread(std::function<void()>) {}
 void System_AudioGetDebugStats(char *buf, size_t bufSize) { if (buf) buf[0] = '\0'; }
 void System_AudioClear() {}
@@ -755,15 +755,15 @@ static bool TestAndroidContentURI() {
 	static const char *downloadURIString = "content://com.android.providers.downloads.documents/document/msf%3A10000000006";
 
 	AndroidContentURI treeURI;
-	EXPECT_TRUE(treeURI.Parse(std::string(treeURIString)));
+	EXPECT_TRUE(treeURI.Parse(treeURIString));
 	AndroidContentURI dirURI;
-	EXPECT_TRUE(dirURI.Parse(std::string(directoryURIString)));
+	EXPECT_TRUE(dirURI.Parse(directoryURIString));
 	AndroidContentURI fileTreeURI;
-	EXPECT_TRUE(fileTreeURI.Parse(std::string(fileTreeURIString)));
+	EXPECT_TRUE(fileTreeURI.Parse(fileTreeURIString));
 	AndroidContentURI fileTreeURICopy;
-	EXPECT_TRUE(fileTreeURICopy.Parse(std::string(fileTreeURIString)));
+	EXPECT_TRUE(fileTreeURICopy.Parse(fileTreeURIString));
 	AndroidContentURI fileURI;
-	EXPECT_TRUE(fileURI.Parse(std::string(fileNonTreeString)));
+	EXPECT_TRUE(fileURI.Parse(fileNonTreeString));
 
 	EXPECT_EQ_STR(fileTreeURI.GetLastPart(), std::string("Tekken 6.iso"));
 

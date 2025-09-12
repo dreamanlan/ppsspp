@@ -827,7 +827,7 @@ void GameBrowser::Refresh() {
 		Add(topBar);
 
 		if (*gridStyle_) {
-			gameList_ = new UI::GridLayoutList(UI::GridLayoutSettings(150*g_Config.fGameGridScale, 85*g_Config.fGameGridScale), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
+			gameList_ = new UI::GridLayoutList(UI::GridLayoutSettings(150*g_Config.fGameGridScale, 85*g_Config.fGameGridScale), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(10, 0, 0, 0)));
 		} else {
 			UI::LinearLayout *gl = new UI::LinearLayoutList(UI::ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 			gl->SetSpacing(4.0f);
@@ -835,7 +835,7 @@ void GameBrowser::Refresh() {
 		}
 	} else {
 		if (*gridStyle_) {
-			gameList_ = new UI::GridLayoutList(UI::GridLayoutSettings(150*g_Config.fGameGridScale, 85*g_Config.fGameGridScale), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
+			gameList_ = new UI::GridLayoutList(UI::GridLayoutSettings(150*g_Config.fGameGridScale, 85*g_Config.fGameGridScale), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(10, 0, 0, 0)));
 		} else {
 			UI::LinearLayout *gl = new UI::LinearLayout(UI::ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 			gl->SetSpacing(4.0f);
@@ -913,7 +913,7 @@ void GameBrowser::Refresh() {
 
 	if (browseFlags_ & BrowseFlags::NAVIGATE) {
 		if (path_.CanNavigateUp()) {
-			gameList_->Add(new DirButton(Path(std::string("..")), *gridStyle_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)))->
+			gameList_->Add(new DirButton(Path(".."), *gridStyle_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)))->
 				OnClick.Handle(this, &GameBrowser::NavigateClick);
 		}
 
@@ -960,7 +960,7 @@ void GameBrowser::Refresh() {
 
 	if (!lastText_.empty()) {
 		Add(new Spacer());
-		Add(new Choice(lastText_, new UI::LinearLayoutParams(UI::WRAP_CONTENT, UI::WRAP_CONTENT)))->OnClick.Handle(this, &GameBrowser::LastClick);
+		Add(new Choice(lastText_, new UI::LinearLayoutParams(UI::WRAP_CONTENT, UI::WRAP_CONTENT, Margins(10, 0, 0, 10))))->OnClick.Handle(this, &GameBrowser::LastClick);
 	}
 }
 
@@ -1388,7 +1388,7 @@ void MainScreen::sendMessage(UIMessage message, const char *value) {
 	UIScreenWithBackground::sendMessage(message, value);
 
 	if (message == UIMessage::REQUEST_GAME_BOOT) {
-		LaunchFile(screenManager(), this, Path(std::string(value)));
+		LaunchFile(screenManager(), this, Path(value));
 	} else if (message == UIMessage::PERMISSION_GRANTED && !strcmp(value, "storage")) {
 		RecreateViews();
 	} else if (message == UIMessage::RECENT_FILES_CHANGED) {

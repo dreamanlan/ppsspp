@@ -475,10 +475,10 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 #elif PPSSPP_PLATFORM(IOS)
 	g_Config.defaultCurrentDirectory = g_Config.internalDataDirectory;
 	g_Config.memStickDirectory = DarwinFileSystemServices::appropriateMemoryStickDirectoryToUse();
-	g_Config.flash0Directory = Path(std::string(external_dir)) / "flash0";
+	g_Config.flash0Directory = Path(external_dir) / "flash0";
 #elif PPSSPP_PLATFORM(MAC)
 	g_Config.memStickDirectory = DarwinFileSystemServices::appropriateMemoryStickDirectoryToUse();
-	g_Config.flash0Directory = Path(std::string(external_dir)) / "flash0";
+	g_Config.flash0Directory = Path(external_dir) / "flash0";
 #elif PPSSPP_PLATFORM(SWITCH)
 	g_Config.memStickDirectory = g_Config.internalDataDirectory / "config/ppsspp";
 	g_Config.flash0Directory = g_Config.internalDataDirectory / "assets/flash0";
@@ -580,7 +580,7 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 				if (!strncmp(argv[i], "--log=", strlen("--log=")) && strlen(argv[i]) > strlen("--log="))
 					fileToLog = argv[i] + strlen("--log=");
 				if (!strncmp(argv[i], "--state=", strlen("--state=")) && strlen(argv[i]) > strlen("--state="))
-					stateToLoad = Path(std::string(argv[i] + strlen("--state=")));
+					stateToLoad = Path(argv[i] + strlen("--state="));
 				if (!strncmp(argv[i], "--escape-exit", strlen("--escape-exit")))
 					g_Config.bPauseExitsEmulator = true;
 				if (!strncmp(argv[i], "--pause-menu-exit", strlen("--pause-menu-exit")))
@@ -600,7 +600,7 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 				if (!strcmp(argv[i], "--developertools"))
 					gotoDeveloperTools = true;
 				if (!strncmp(argv[i], "--appendconfig=", strlen("--appendconfig=")) && strlen(argv[i]) > strlen("--appendconfig=")) {
-					g_Config.SetAppendedConfigIni(Path(std::string(argv[i] + strlen("--appendconfig="))));
+					g_Config.SetAppendedConfigIni(Path(argv[i] + strlen("--appendconfig=")));
 					g_Config.LoadAppendedConfig();
 				}
 				break;
@@ -672,6 +672,7 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 	}
 
 	if (forceLogLevel) {
+		NOTICE_LOG(Log::System, "Setting log level to %d due to command line override", (int)logLevel);
 		g_logManager.SetAllLogLevels(logLevel);
 	}
 
@@ -953,7 +954,7 @@ bool CreateGlobalPipelines() {
 }
 
 void NativeShutdownGraphics() {
-	INFO_LOG(Log::System, "NativeShutdownGraphics");
+	INFO_LOG(Log::System, "NativeShutdownGraphics begin");
 
 	if (g_screenManager) {
 		g_screenManager->deviceLost();
@@ -1001,7 +1002,7 @@ void NativeShutdownGraphics() {
 		texColorPipeline = nullptr;
 	}
 
-	INFO_LOG(Log::System, "NativeShutdownGraphics done");
+	INFO_LOG(Log::System, "NativeShutdownGraphics end");
 }
 
 static void TakeScreenshot(Draw::DrawContext *draw) {
@@ -1508,11 +1509,11 @@ void NativeAccelerometer(float tiltX, float tiltY, float tiltZ) {
 	HLEPlugins::PluginDataAxis[JOYSTICK_AXIS_ACCELEROMETER_Z] = tiltZ;
 }
 
-void System_PostUIMessage(UIMessage message, const std::string &value) {
+void System_PostUIMessage(UIMessage message, std::string_view param) {
 	std::lock_guard<std::mutex> lock(g_pendingMutex);
 	PendingMessage pendingMessage;
 	pendingMessage.message = message;
-	pendingMessage.value = value;
+	pendingMessage.value = param;
 	pendingMessages.push_back(pendingMessage);
 }
 
@@ -1536,6 +1537,8 @@ bool NativeIsRestarting() {
 }
 
 void NativeShutdown() {
+	INFO_LOG(Log::System, "NativeShutdown begin");
+
 	Achievements::Shutdown();
 
 	if (g_Config.bAchievementsEnable) {
@@ -1554,15 +1557,9 @@ void NativeShutdown() {
 
 	g_Config.Save("NativeShutdown");
 
-	INFO_LOG(Log::System, "NativeShutdown called");
-
 	g_i18nrepo.LogMissingKeys();
 
 	ShutdownWebServer();
-
-#if PPSSPP_PLATFORM(ANDROID)
-	System_ExitApp();
-#endif
 
 	__UPnPShutdown();
 
@@ -1581,12 +1578,13 @@ void NativeShutdown() {
 
 	g_threadManager.Teardown();
 
-#if !(PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS))
+#if !PPSSPP_PLATFORM(IOS)
 	System_ExitApp();
 #endif
 
 	// Previously we did exit() here on Android but that makes it hard to do things like restart on backend change.
 	// I think we handle most globals correctly or correct-enough now.
+	INFO_LOG(Log::System, "NativeShutdown end");
 }
 
 // In the future, we might make this more sophisticated, such as storing in the app private directory on Android.

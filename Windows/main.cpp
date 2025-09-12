@@ -66,9 +66,7 @@
 
 #include "UI/GameInfoCache.h"
 #include "Windows/resource.h"
-#include "Windows/DinputDevice.h"
-#include "Windows/XinputDevice.h"
-#include "Windows/HidInputDevice.h"
+#include "Windows/InputDevice.h"
 #include "Windows/MainWindow.h"
 #include "Windows/Debugger/Debugger_Disasm.h"
 #include "Windows/Debugger/Debugger_MemoryDlg.h"
@@ -740,6 +738,9 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 
 			icoPath = iconFolder / (info->id + ".ico");
 			if (!File::Exists(icoPath)) {
+				// NOTE: This simply wraps raw PNG data in an ICO container, which works fine for Windows.
+				// However, this doesn't allow us to modify the aspect ratio - it gets displayed as a square, even though it isn't.
+				// So ideally we should re-encode.
 				if (!W32Util::CreateICOFromPNGData((const uint8_t *)info->icon.data.data(), info->icon.data.size(), icoPath)) {
 					ERROR_LOG(Log::System, "ICO creation failed");
 					icoPath.clear();
@@ -1140,10 +1141,6 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 		MainWindow::Minimize();
 	}
 
-	//add first XInput device to respond
-	g_InputManager.AddDevice(new XinputDevice());
-	g_InputManager.AddDevice(new DInputMetaDevice());
-	g_InputManager.AddDevice(new HidInputDevice());
 	// Emu thread (and render thread, if any) is always running!
 	// Only OpenGL uses an externally managed render thread (due to GL's single-threaded context design). Vulkan
 	// manages its own render thread.

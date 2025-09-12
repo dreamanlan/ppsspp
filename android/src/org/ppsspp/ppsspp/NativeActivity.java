@@ -19,6 +19,10 @@ import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.res.Configuration;
 import android.database.Cursor;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
@@ -28,7 +32,10 @@ import android.os.PowerManager;
 import android.os.Vibrator;
 import android.provider.MediaStore;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.NonNull;
+import androidx.annotation.RequiresApi;
+import androidx.appcompat.app.AppCompatActivity;
 import androidx.documentfile.provider.DocumentFile;
 import android.text.InputType;
 import android.util.Log;
@@ -55,7 +62,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @SuppressWarnings("ConstantConditions")
-public abstract class NativeActivity extends Activity {
+public abstract class NativeActivity extends AppCompatActivity implements SensorEventListener {
 	// Remember to loadLibrary your JNI .so in a static {} block
 
 	// Adjust these as necessary
@@ -67,13 +74,20 @@ public abstract class NativeActivity extends Activity {
 	// False to use Vulkan, queried from C++ after NativeApp.init.
 	private static boolean javaGL = true;
 
+	// Lifecycle tracker, to detect erroneous states.
+	private final LifeCycle lifeCycle = new LifeCycle();
+
 	// Graphics and audio interfaces for Vulkan (javaGL = false)
 	private NativeSurfaceView mSurfaceView;
 	private Surface mSurface;
 
 	// Graphics and audio interfaces for Java EGL (javaGL = true)
-	private NativeGLView mGLSurfaceView;
+	private NativeGLSurfaceView mGLSurfaceView;
 	protected NativeRenderer nativeRenderer;
+
+	// For accelerometer sensing.
+	private SensorManager mSensorManager;
+	private Sensor mAccelerometer;
 
 	private String shortcutParam = "";
 	private static String overrideShortcutParam = null;
@@ -173,7 +187,6 @@ public abstract class NativeActivity extends Activity {
 		return libdir;
 	}
 
-	@TargetApi(Build.VERSION_CODES.M)
 	boolean askForPermissions(String[] permissions, int requestCode) {
 		boolean shouldAsk = false;
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -189,7 +202,6 @@ public abstract class NativeActivity extends Activity {
 		return shouldAsk;
 	}
 
-	@TargetApi(Build.VERSION_CODES.M)
 	public void sendInitialGrants() {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
 			// Let's start out granted if it was granted already.
@@ -211,6 +223,7 @@ public abstract class NativeActivity extends Activity {
 
 	@Override
 	public void onRequestPermissionsResult(int requestCode, @NonNull String [] permissions, @NonNull int[] grantResults) {
+		super.onRequestPermissionsResult(requestCode, permissions, grantResults);
 		switch (requestCode) {
 		case REQUEST_CODE_STORAGE_PERMISSION:
 			if (permissionsGranted(permissions, grantResults)) {
@@ -254,7 +267,6 @@ public abstract class NativeActivity extends Activity {
 		if (list == null) {
 			Log.i(TAG, "getSdCardPaths: Attempting fallback");
 			// Try another method.
-			String removableStoragePath;
 			list = new ArrayList<>();
 			File[] fileList = new File("/storage/").listFiles();
 			if (fileList != null) {
@@ -286,8 +298,7 @@ public abstract class NativeActivity extends Activity {
 		}
 	}
 
-	private static ArrayList<String> getSdCardPaths19(final Context context)
-	{
+	private static ArrayList<String> getSdCardPaths19(final Context context) {
 		final File[] externalCacheDirs = context.getExternalCacheDirs();
 		if (externalCacheDirs == null || externalCacheDirs.length==0)
 			return null;
@@ -322,8 +333,7 @@ public abstract class NativeActivity extends Activity {
 	}
 
 	/** Given any file/folder inside an sd card, this will return the path of the sd card */
-	private static String getRootOfInnerSdCardFolder(File file)
-	{
+	private static String getRootOfInnerSdCardFolder(File file) {
 		if (file == null)
 			return null;
 		final long totalSpace = file.getTotalSpace();
@@ -341,6 +351,18 @@ public abstract class NativeActivity extends Activity {
 			file = parentFile;
 		}
 		return file.getAbsolutePath();
+	}
+
+	private boolean detectOpenGLES20() {
+		ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+		ConfigurationInfo info = am.getDeviceConfigurationInfo();
+		return info.reqGlEsVersion >= 0x20000;
+	}
+
+	private boolean detectOpenGLES30() {
+		ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+		ConfigurationInfo info = am.getDeviceConfigurationInfo();
+		return info.reqGlEsVersion >= 0x30000;
 	}
 
 	public void Initialize() {
@@ -547,7 +569,7 @@ public abstract class NativeActivity extends Activity {
 		if (decorView != null) {
 			decorView.setSystemUiVisibility(flags);
 		} else {
-			Log.e(TAG, "updateSystemUiVisibility: decor view not yet created, ignoring for now");
+			Log.i(TAG, "updateSystemUiVisibility: decor view not yet created, ignoring for now");
 		}
 		sizeManager.checkDisplayMeasurements();
 	}
@@ -559,6 +581,12 @@ public abstract class NativeActivity extends Activity {
 	@Override
 	public void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
+
+		lifeCycle.onCreate();
+
+		mSensorManager = (SensorManager)getSystemService(Activity.SENSOR_SERVICE);
+		mAccelerometer = mSensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+
 		sizeManager = new SizeManager(this);
 		TextRenderer.init(this);
 		shuttingDown = false;
@@ -588,9 +616,10 @@ public abstract class NativeActivity extends Activity {
 		NativeApp.audioInit();
 
 		if (javaGL) {
-			mGLSurfaceView = new NativeGLView(this);
+			mGLSurfaceView = new NativeGLSurfaceView(this);
 			nativeRenderer = new NativeRenderer();
 			mGLSurfaceView.setEGLContextClientVersion(isVRDevice() ? 3 : 2);
+
 			sizeManager.setSurfaceView(mGLSurfaceView);
 
 			// Setup the GLSurface and ask android for the correct
@@ -621,11 +650,9 @@ public abstract class NativeActivity extends Activity {
 		} else {
 			updateSystemUiVisibility();
 
-			mSurfaceView = new NativeSurfaceView(NativeActivity.this);
+			mSurfaceView = new NativeSurfaceView(this);
 			sizeManager.setSurfaceView(mSurfaceView);
-			Log.i(TAG, "setcontentview before");
 			setContentView(mSurfaceView);
-			Log.i(TAG, "setcontentview after");
 			startRenderLoopThread();
 		}
 
@@ -635,16 +662,43 @@ public abstract class NativeActivity extends Activity {
 			NativeApp.sendMessageFromJava("shortcutParam", shortcutParam);
 			shortcutParam = null;
 		}
+
+		// Set up the back key handling to be future-compatible
+		OnBackPressedCallback callback = new OnBackPressedCallback(true) {
+			// Note: For "pretty" back handling internally, we could handle things like handleOnBackProgressed etc
+			// if we want to implement our own back previews.
+			@Override
+			public void handleOnBackPressed() {
+				if (NativeApp.isAtTopLevel()) {
+					// Pass through to normal logic, allowing backing out of the main screen.
+					// The setEnabled dance seems to be the normal way of handling this, to avoid recursive loops.
+					setEnabled(false);
+					NativeActivity.this.getOnBackPressedDispatcher().onBackPressed();
+					setEnabled(true);
+				} else {
+					// Pass straight into the native code.
+					NativeApp.keyDown(NativeApp.DEVICE_ID_DEFAULT, KeyEvent.KEYCODE_BACK, false);
+					NativeApp.keyUp(NativeApp.DEVICE_ID_DEFAULT, KeyEvent.KEYCODE_BACK);
+				}
+			}
+		};
+
+		// Add the callback to the dispatcher
+		getOnBackPressedDispatcher().addCallback(this, callback);
+
+		Log.i(TAG, "onCreate end");
 	}
 
 	@Override
 	public void onWindowFocusChanged(boolean hasFocus) {
+		Log.i(TAG, "onWindowFocusChanged");
 		super.onWindowFocusChanged(hasFocus);
 		updateSustainedPerformanceMode();
 		updateSystemUiVisibility();
 	}
 
 	private void applyFrameRate(Surface surface, float frameRateHz) {
+		Log.i(TAG, "applyFramerate");
 		if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R)
 			return;
 		if (surface != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -676,24 +730,26 @@ public abstract class NativeActivity extends Activity {
 	}
 
 	public void notifySurface(Surface surface) {
+		Log.i(TAG, "notifySurface begin");
 		mSurface = surface;
 
-		if (!initialized) {
-			Log.e(TAG, "Can't deal with surfaces while not initialized");
-			return;
-		}
-
 		if (!javaGL) {
+			if (!initialized) {
+				Log.e(TAG, "notifySurface end: Saving surface, but can't start/stop threads while not initialized");
+				return;
+			}
+
 			// If we got a surface, this starts the thread. If not, it doesn't.
-			if (mSurface == null) {
-				joinRenderLoopThread();
-			} else {
+			// NOTE: We do not try to join the thread here
+			if (mSurface != null) {
+				// applyFramerate is called in here.
 				startRenderLoopThread();
 			}
 		} else if (mSurface != null) {
 			applyFrameRate(mSurface, 60.0f);
 		}
 		updateSustainedPerformanceMode();
+		Log.i(TAG, "notifySurface end");
 	}
 
 	// The render loop thread (EmuThread) is now spawned from the native side.
@@ -737,29 +793,18 @@ public abstract class NativeActivity extends Activity {
 	@Override
 	protected void onDestroy() {
 		super.onDestroy();
-		Log.i(TAG, "onDestroy");
+		lifeCycle.onDestroy();
+
 		if (javaGL) {
-			if (nativeRenderer != null) {
-				if (nativeRenderer.isRenderingFrame()) {
-					Log.i(TAG, "Waiting for renderer to finish.");
-					int tries = 200;
-					do {
-						try {
-							Thread.sleep(10);
-						} catch (InterruptedException ignored) {
-						}
-						tries--;
-					} while (nativeRenderer.isRenderingFrame() && tries > 0);
-				} else {
-					Log.i(TAG, "nativerenderer done.");
-					nativeRenderer = null;
-				}
-			}
+			nativeRenderer = null;
 			mGLSurfaceView = null;
 		} else {
 			mSurfaceView = null;
 			mSurface = null;
 		}
+
+		mSensorManager = null;
+		mAccelerometer = null;
 
 		// Probably vain attempt to help the garbage collector...
 		audioFocusChangeListener = null;
@@ -775,59 +820,63 @@ public abstract class NativeActivity extends Activity {
 		// I've seen crashes that seem to indicate that sometimes it hasn't...
 		NativeApp.audioShutdown();
 		if (shuttingDown) {
+			Log.i(TAG, "in onDestroy, shutting down. Calling NativeApp.shutdown().");
 			NativeApp.shutdown();
 			unregisterCallbacks();
 			initialized = false;
+		} else {
+			Log.i(TAG, "in onDestroy, but not shutting down.");
 		}
 		navigationCallbackView = null;
 
-		// Workaround for VR issues when PPSSPP restarts
+		// Really ugly workaround for VR issues when PPSSPP restarts
 		if (isVRDevice()) {
 			System.exit(0);
 		}
-		Log.i(TAG, "onDestroy");
+		Log.i(TAG, "onDestroy end");
+	}
+
+	@Override
+	protected void onStart() {
+		super.onStart();
+		lifeCycle.onStart();
+	}
+
+	@Override
+	protected void onStop() {
+		super.onStop();
+		lifeCycle.onStop();
 	}
 
 	@Override
 	protected void onPause() {
 		super.onPause();
-		Log.i(TAG, "onPause");
-		loseAudioFocus(this.audioManager, this.audioFocusChangeListener);
-		sizeManager.onPause();
-		NativeApp.pause();
+		lifeCycle.onPause();
+
 		if (!javaGL) {
-			mSurfaceView.onPause();
 			Log.i(TAG, "Joining render thread...");
 			joinRenderLoopThread();
 			Log.i(TAG, "Joined render thread");
-		} else {
-			if (mGLSurfaceView != null) {
-				mGLSurfaceView.onPause();
-			} else {
-				Log.e(TAG, "mGLSurfaceView really shouldn't be null in onPause");
-			}
+		} else if (mGLSurfaceView != null) {
+			mGLSurfaceView.onPause();
 		}
+
+		mSensorManager.unregisterListener(this);
+
+		loseAudioFocus(this.audioManager, this.audioFocusChangeListener);
+		sizeManager.onPause();
+		NativeApp.pause();
 		if (mCameraHelper != null) {
 			mCameraHelper.pause();
 		}
-		Log.i(TAG, "onPause completed");
-	}
-
-	private boolean detectOpenGLES20() {
-		ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
-		ConfigurationInfo info = am.getDeviceConfigurationInfo();
-		return info.reqGlEsVersion >= 0x20000;
-	}
-
-	private boolean detectOpenGLES30() {
-		ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
-		ConfigurationInfo info = am.getDeviceConfigurationInfo();
-		return info.reqGlEsVersion >= 0x30000;
+		Log.i(TAG, "onPause end");
 	}
 
 	@Override
 	protected void onResume() {
 		super.onResume();
+		lifeCycle.onResume();
+
 		updateSustainedPerformanceMode();
 		sizeManager.onResume();
 		updateSystemUiVisibility();
@@ -835,29 +884,34 @@ public abstract class NativeActivity extends Activity {
 		// OK, config should be initialized, we can query for screen rotation.
 		updateScreenRotation("onResume");
 
-		Log.i(TAG, "onResume");
-		if (javaGL) {
-			if (mGLSurfaceView != null) {
-				mGLSurfaceView.onResume();
-			} else {
-				Log.e(TAG, "mGLSurfaceView really shouldn't be null in onResume");
-			}
-		} else {
-			if (mSurfaceView != null) {
-				mSurfaceView.onResume();
-			}
-		}
 		if (mCameraHelper != null) {
 			mCameraHelper.resume();
 		}
 
 		gainAudioFocus(this.audioManager, this.audioFocusChangeListener);
 		NativeApp.resume();
+		mSensorManager.registerListener(this, mAccelerometer, SensorManager.SENSOR_DELAY_GAME);
 
 		if (!javaGL) {
 			// Restart the render loop.
 			startRenderLoopThread();
+		} else if (mGLSurfaceView != null) {
+			mGLSurfaceView.onResume();
 		}
+		Log.i(TAG, "onResume end");
+	}
+
+	// Sensor management
+	@Override
+	public void onAccuracyChanged(Sensor sensor, int arg1) {}
+
+	@Override
+	public void onSensorChanged(SensorEvent event) {
+		if (event.sensor.getType() != Sensor.TYPE_ACCELEROMETER) {
+			return;
+		}
+		// Can also look at event.timestamp for accuracy magic
+		NativeApp.accelerometer(event.values[0], event.values[1], event.values[2]);
 	}
 
 	@Override
@@ -934,9 +988,8 @@ public abstract class NativeActivity extends Activity {
 	@Override
 	public boolean dispatchKeyEvent(KeyEvent event) {
 		// Log.d(TAG, "key event source: " + event.getSource());
-		if (NativeSurfaceView.isFromSource(event, InputDevice.SOURCE_MOUSE)) {
-			Log.i(TAG, "Forwarding key event from mouse: " + event.getKeyCode());
-			Log.i(TAG, "usemodernb2: " + useModernMouseEventsB2);
+		if (NativeApp.isFromSource(event, InputDevice.SOURCE_MOUSE)) {
+			Log.i(TAG, "Forwarding key event from mouse: " + event.getKeyCode() + " useModernB2: " + useModernMouseEventsB2);
 			if (event.getKeyCode() == KeyEvent.KEYCODE_BACK && !useModernMouseEventsB2) {
 				// Probably a right click
 				switch (event.getAction()) {
@@ -1001,7 +1054,7 @@ public abstract class NativeActivity extends Activity {
 		return super.dispatchKeyEvent(event);
 	}
 
-	@TargetApi(Build.VERSION_CODES.N)
+	@RequiresApi(Build.VERSION_CODES.N)
 	void sendMouseDelta(float dx, float dy) {
 		// Ignore zero deltas.
 		if (Math.abs(dx) > 0.001 || Math.abs(dx) > 0.001) {
@@ -1011,7 +1064,6 @@ public abstract class NativeActivity extends Activity {
 
 	@Override
 	public boolean onGenericMotionEvent(MotionEvent event) {
-		// Log.i(TAG, "NativeActivity onGenericMotionEvent: " + event);
 		if (InputDeviceState.inputSourceIsJoystick(event.getSource())) {
 			InputDeviceState state = getInputDeviceState(event);
 			if (state == null) {
@@ -1082,12 +1134,8 @@ public abstract class NativeActivity extends Activity {
 		case KeyEvent.KEYCODE_BACK:
 			if (event.isAltPressed()) {
 				NativeApp.keyDown(NativeApp.DEVICE_ID_PAD_0, 1004, repeat); // special custom keycode for the O button on Xperia Play
-			} else if (NativeApp.isAtTopLevel()) {
-				Log.i(TAG, "IsAtTopLevel returned true.");
-				// Pass through the back event.
-				return super.onKeyDown(keyCode, event);
 			} else {
-				NativeApp.keyDown(NativeApp.DEVICE_ID_DEFAULT, keyCode, repeat);
+				super.onKeyDown(keyCode, event);
 			}
 			return true;
 		case KeyEvent.KEYCODE_MENU:
@@ -1120,11 +1168,8 @@ public abstract class NativeActivity extends Activity {
 		case KeyEvent.KEYCODE_BACK:
 			if (event.isAltPressed()) {
 				NativeApp.keyUp(NativeApp.DEVICE_ID_PAD_0, 1004); // special custom keycode
-			} else if (NativeApp.isAtTopLevel()) {
-				Log.i(TAG, "IsAtTopLevel returned true.");
-				return super.onKeyUp(keyCode, event);
 			} else {
-				NativeApp.keyUp(NativeApp.DEVICE_ID_DEFAULT, keyCode);
+				return super.onKeyUp(keyCode, event);
 			}
 			return true;
 		case KeyEvent.KEYCODE_MENU:
@@ -1253,7 +1298,7 @@ public abstract class NativeActivity extends Activity {
 		return bld;
 	}
 
-	@TargetApi(Build.VERSION_CODES.M)
+	@RequiresApi(Build.VERSION_CODES.M)
 	private AlertDialog.Builder createDialogBuilderNew() {
 		AlertDialog.Builder bld = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert);
 		bld.setOnDismissListener(new DialogInterface.OnDismissListener() {
@@ -1285,12 +1330,12 @@ public abstract class NativeActivity extends Activity {
 		input.setText(defaultText);
 		input.selectAll();
 
-		// Lovely!
 		AlertDialog.Builder bld;
-		if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M)
-			bld = createDialogBuilderWithDeviceThemeAndUiVisibility();
-		else
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
 			bld = createDialogBuilderNew();
+		} else {
+			bld = createDialogBuilderWithDeviceThemeAndUiVisibility();
+		}
 
 		AlertDialog.Builder builder = bld
 			.setView(fl)
@@ -1515,27 +1560,34 @@ public abstract class NativeActivity extends Activity {
 			Log.i(TAG, "Setting shuttingDown = true and calling Finish");
 			shuttingDown = true;
 			finish();
+			return true;
 		} else if (command.equals("rotate")) {
 			updateScreenRotation("rotate");
+			return true;
 		} else if (command.equals("sustainedPerfMode")) {
 			updateSustainedPerformanceMode();
+			return true;
 		} else if (command.equals("immersive")) {
 			updateSystemUiVisibility();
+			return true;
 		} else if (command.equals("recreate")) {
 			recreate();
+			return true;
 		} else if (command.equals("graphics_restart")) {
-			Log.i(TAG, "graphics_restart");
+			Log.i(TAG, "graphics_restart: Calling recreate() on activity");
 			if (params != null && !params.isEmpty()) {
 				overrideShortcutParam = params;
 			}
 			shuttingDown = true;
 			recreate();
+			return true;
 		} else if (command.equals("ask_permission") && params.equals("storage")) {
 			if (askForPermissions(permissionsForStorage, REQUEST_CODE_STORAGE_PERMISSION)) {
 				NativeApp.sendMessageFromJava("permission_pending", "storage");
 			} else {
 				NativeApp.sendMessageFromJava("permission_granted", "storage");
 			}
+			return true;
 		} else if (command.equals("gps_command")) {
 			if (params.equals("open")) {
 				if (!askForPermissions(permissionsForLocation, REQUEST_CODE_LOCATION_PERMISSION)) {
@@ -1544,6 +1596,7 @@ public abstract class NativeActivity extends Activity {
 			} else if (params.equals("close")) {
 				mLocationHelper.stopLocationUpdates();
 			}
+			return true;
 		} else if (command.equals("infrared_command")) {
 			if (mInfraredHelper == null) {
 				return false;
@@ -1559,6 +1612,7 @@ public abstract class NativeActivity extends Activity {
 				int ir_count   = Integer.parseInt(matcher.group(4));
 				mInfraredHelper.sendSircCommand(ir_version, ir_command, ir_address, ir_count);
 			}
+			return true;
 		} else if (command.equals("camera_command")) {
 			if (mCameraHelper == null) {
 				return false;
@@ -1577,6 +1631,7 @@ public abstract class NativeActivity extends Activity {
 			} else if (mCameraHelper != null && params.equals("stopVideo")) {
 				mCameraHelper.stopCamera();
 			}
+			return true;
 		} else if (command.equals("microphone_command")) {
 			if (params.startsWith("startRecording:")) {
 				int sampleRate = Integer.parseInt(params.replace("startRecording:", ""));
@@ -1597,12 +1652,14 @@ public abstract class NativeActivity extends Activity {
 				// Only keep the screen bright ingame.
 				window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 			}
+			return true;
 		} else if (command.equals("testException")) {
 			try {
 				throw new Exception();
 			} catch (Exception e) {
 				NativeApp.reportException(e, params);
 			}
+			return true;
 		} else if (command.equals("show_folder")) {
 			try {
 				Uri selectedUri = Uri.parse(params);
@@ -1626,8 +1683,10 @@ public abstract class NativeActivity extends Activity {
 			ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
 			ClipData clip = ClipData.newPlainText("Copied Text", params);
 			clipboard.setPrimaryClip(clip);
+			return true;
 		} else {
 			Log.w(TAG, "Unknown string command " + command);
+			return false;
 		}
 		return false;
 	}
