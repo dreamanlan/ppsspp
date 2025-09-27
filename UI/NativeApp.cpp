@@ -87,7 +87,6 @@
 #include "Common/VR/PPSSPPVR.h"
 #include "Common/Thread/ThreadManager.h"
 #include "Common/Audio/AudioBackend.h"
-
 #include "Core/ControlMapper.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
@@ -131,6 +130,7 @@
 #include "UI/OnScreenDisplay.h"
 #include "UI/RemoteISOScreen.h"
 #include "UI/Theme.h"
+#include "UI/UIAtlas.h"
 
 #if defined(USING_QT_UI)
 #include <QFontDatabase>
@@ -842,14 +842,16 @@ bool NativeInitGraphics(GraphicsContext *graphicsContext) {
 	ui_draw2d.SetFontAtlas(GetFontAtlas());
 
 	uiContext = new UIContext();
-	uiContext->theme = GetTheme();
-	UpdateTheme(uiContext);
+	uiContext->SetTheme(GetTheme());
+	uiContext->SetAtlasProvider(&AtlasProvider);
+	UpdateTheme();
 
 	ui_draw2d.Init(g_draw, texColorPipeline);
 
 	uiContext->Init(g_draw, texColorPipeline, colorPipeline, &ui_draw2d);
-	if (uiContext->Text())
+	if (uiContext->Text()) {
 		uiContext->Text()->SetFont("Tahoma", 20, 0);
+	}
 
 	g_screenManager->setUIContext(uiContext);
 	g_screenManager->setPostRenderCallback(&CallbackPostRender, nullptr);

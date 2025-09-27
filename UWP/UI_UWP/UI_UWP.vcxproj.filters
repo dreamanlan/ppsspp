@@ -59,6 +59,8 @@
       <Filter>ImDebugger</Filter>
     </ClCompile>
     <ClCompile Include="..\..\UI\DeveloperToolsScreen.cpp" />
+    <ClCompile Include="..\..\UI\UIAtlas.cpp" />
+    <ClCompile Include="..\..\UI\SystemInfoScreen.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -119,6 +121,8 @@
       <Filter>ImDebugger</Filter>
     </ClInclude>
     <ClInclude Include="..\..\UI\DeveloperToolsScreen.h" />
+    <ClInclude Include="..\..\UI\UIAtlas.h" />
+    <ClInclude Include="..\..\UI\SystemInfoScreen.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="ImDebugger">

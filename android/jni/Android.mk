@@ -324,6 +324,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Common/GPU/ShaderTranslation.cpp \
   $(SRC)/Common/Render/ManagedTexture.cpp \
   $(SRC)/Common/Render/DrawBuffer.cpp \
+  $(SRC)/Common/Render/AtlasGen.cpp \
   $(SRC)/Common/Render/TextureAtlas.cpp \
   $(SRC)/Common/Render/Text/draw_text.cpp \
   $(SRC)/Common/Render/Text/draw_text_android.cpp \
@@ -914,6 +915,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/PauseScreen.cpp \
   $(SRC)/UI/SavedataScreen.cpp \
   $(SRC)/UI/Store.cpp \
+  $(SRC)/UI/SystemInfoScreen.cpp \
   $(SRC)/UI/GamepadEmu.cpp \
   $(SRC)/UI/JoystickHistoryView.cpp \
   $(SRC)/UI/GameInfoCache.cpp \
@@ -932,6 +934,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/ProfilerDraw.cpp \
   $(SRC)/UI/NativeApp.cpp \
   $(SRC)/UI/Theme.cpp \
+  $(SRC)/UI/UIAtlas.cpp \
   $(SRC)/UI/CustomButtonMappingScreen.cpp \
   $(SRC)/UI/RetroAchievementScreens.cpp
 

@@ -307,7 +307,7 @@ class BouncingIconAnimation : public Animation {
 			// Draw the image.
 			float xpos = xbase + dc.GetBounds().x;
 			float ypos = ybase + dc.GetBounds().y;
-			ImageID icon = !color_ix && System_GetPropertyBool(SYSPROP_APP_GOLD) ? ImageID("I_ICONGOLD") : ImageID("I_ICON");
+			ImageID icon = !color_ix && System_GetPropertyBool(SYSPROP_APP_GOLD) ? ImageID("I_ICON_GOLD") : ImageID("I_ICON");
 			ui_draw2d.DrawImage(icon, xpos, ypos, scale, COLORS[color_ix], ALIGN_CENTER);
 			dc.Flush();
 
@@ -458,7 +458,7 @@ void DrawBackground(UIContext &dc, float alpha, float x, float y, float z) {
 		// I_BG original color: 0xFF754D24
 		ImageID img = ImageID("I_BG");
 		dc.Begin();
-		dc.Draw()->DrawImageStretch(img, dc.GetBounds(), bgColor & dc.theme->backgroundColor);
+		dc.Draw()->DrawImageStretch(img, dc.GetBounds(), bgColor & dc.GetTheme().backgroundColor);
 		dc.Flush();
 	}
 
@@ -531,7 +531,6 @@ void HandleCommonMessages(UIMessage message, const char *value, ScreenManager *m
 		langScreen->OnChoice.Add([](UI::EventParams &) {
 			System_PostUIMessage(UIMessage::RECREATE_VIEWS);
 			System_Notify(SystemNotification::UI);
-			return UI::EVENT_DONE;
 		});
 		manager->push(langScreen);
 	} else if (message == UIMessage::WINDOW_MINIMIZED) {
@@ -649,14 +648,12 @@ void PromptScreen::CreateViews() {
 	yesButton->SetCentered(vertical);
 	yesButton->OnClick.Add([this](UI::EventParams &e) {
 		TriggerFinish(DR_OK);
-		return UI::EVENT_DONE;
 	});
 	if (!noButtonText_.empty()) {
 		Choice *noButton = rightColumnItems->Add(new Choice(noButtonText_, vertical ? new LinearLayoutParams(1.0f) : nullptr));
 		noButton->SetCentered(vertical);
 		noButton->OnClick.Add([this](UI::EventParams &e) {
 			TriggerFinish(DR_CANCEL);
-			return UI::EVENT_DONE;
 		});
 		root_->SetDefaultFocusView(noButton);
 	} else {
@@ -873,7 +870,7 @@ void LogoScreen::DrawForeground(UIContext &dc) {
 	float alphaText = alpha;
 	if (t > 2.0f)
 		alphaText = 3.0f - t;
-	uint32_t textColor = colorAlpha(dc.theme->infoStyle.fgColor, alphaText);
+	uint32_t textColor = colorAlpha(dc.GetTheme().infoStyle.fgColor, alphaText);
 
 	auto cr = GetI18NCategory(I18NCat::PSPCREDITS);
 	auto gr = GetI18NCategory(I18NCat::GRAPHICS);
@@ -881,15 +878,15 @@ void LogoScreen::DrawForeground(UIContext &dc) {
 	// Manually formatting UTF-8 is fun.  \xXX doesn't work everywhere.
 	snprintf(temp, sizeof(temp), "%s Henrik Rydg%c%crd", cr->T_cstr("created", "Created by"), 0xC3, 0xA5);
 	if (System_GetPropertyBool(SYSPROP_APP_GOLD)) {
-		UI::DrawIconShine(dc, Bounds::FromCenter(bounds.centerX() - 120, bounds.centerY() - 30, 60.0f), 0.7f, true);
-		dc.Draw()->DrawImage(ImageID("I_ICONGOLD"), bounds.centerX() - 120, bounds.centerY() - 30, 1.2f, 0xFFFFFFFF, ALIGN_CENTER);
+		UI::DrawIconShine(dc, Bounds::FromCenter(bounds.centerX() - 125, bounds.centerY() - 30, 60.0f), 0.7f, true);
+		dc.Draw()->DrawImage(ImageID("I_ICON_GOLD"), bounds.centerX() - 125, bounds.centerY() - 30, 1.2f, 0xFFFFFFFF, ALIGN_CENTER);
 	} else {
-		dc.Draw()->DrawImage(ImageID("I_ICON"), bounds.centerX() - 120, bounds.centerY() - 30, 1.2f, 0xFFFFFFFF, ALIGN_CENTER);
+		dc.Draw()->DrawImage(ImageID("I_ICON"), bounds.centerX() - 125, bounds.centerY() - 30, 1.2f, 0xFFFFFFFF, ALIGN_CENTER);
 	}
-	dc.Draw()->DrawImage(ImageID("I_LOGO"), bounds.centerX() + 40, bounds.centerY() - 30, 1.5f, 0xFFFFFFFF, ALIGN_CENTER);
+	dc.Draw()->DrawImage(ImageID("I_LOGO"), bounds.centerX() + 45, bounds.centerY() - 30, 1.5f, 0xFFFFFFFF, ALIGN_CENTER);
 	//dc.Draw()->DrawTextShadow(UBUNTU48, "PPSSPP", bounds.w / 2, bounds.h / 2 - 30, textColor, ALIGN_CENTER);
 	dc.SetFontScale(1.0f, 1.0f);
-	dc.SetFontStyle(dc.theme->uiFont);
+	dc.SetFontStyle(dc.GetTheme().uiFont);
 	dc.DrawText(temp, bounds.centerX(), bounds.centerY() + 40, textColor, ALIGN_CENTER);
 	dc.DrawText(cr->T_cstr("license", "Free Software under GPL 2.0+"), bounds.centerX(), bounds.centerY() + 70, textColor, ALIGN_CENTER);
 
@@ -930,7 +927,6 @@ void CreditsScreen::CreateViews() {
 		ScreenManager *sm = screenManager();
 		root_->Add(new Button(mm->T("Buy PPSSPP Gold"), new AnchorLayoutParams(260, 64, NONE, NONE, 10, 84, false)))->OnClick.Add([sm](UI::EventParams) {
 			LaunchBuyGold(sm);
-			return UI::EVENT_DONE;
 		});
 		rightYOffset = 74;
 	}
@@ -945,42 +941,36 @@ void CreditsScreen::CreateViews() {
 #endif
 
 	if (System_GetPropertyBool(SYSPROP_APP_GOLD)) {
-		root_->Add(new ShinyIcon(ImageID("I_ICONGOLD"), new AnchorLayoutParams(WRAP_CONTENT, WRAP_CONTENT, 10, 10, NONE, NONE, false)))->SetScale(1.5f);
+		root_->Add(new ShinyIcon(ImageID("I_ICON_GOLD"), new AnchorLayoutParams(WRAP_CONTENT, WRAP_CONTENT, 10, 10, NONE, NONE, false)))->SetScale(1.5f);
 	} else {
 		root_->Add(new ImageView(ImageID("I_ICON"), "", IS_DEFAULT, new AnchorLayoutParams(WRAP_CONTENT, WRAP_CONTENT, 10, 10, NONE, NONE, false)))->SetScale(1.5f);
 	}
 }
 
-UI::EventReturn CreditsScreen::OnX(UI::EventParams &e) {
+void CreditsScreen::OnX(UI::EventParams &e) {
 	// Not sure we should change to x.com here, given various platform URL handlers etc. We can probably change it soon.
 	System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://twitter.com/PPSSPP_emu");
-	return UI::EVENT_DONE;
 }
 
-UI::EventReturn CreditsScreen::OnPPSSPPOrg(UI::EventParams &e) {
+void CreditsScreen::OnPPSSPPOrg(UI::EventParams &e) {
 	System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org");
-	return UI::EVENT_DONE;
 }
 
-UI::EventReturn CreditsScreen::OnPrivacy(UI::EventParams &e) {
+void CreditsScreen::OnPrivacy(UI::EventParams &e) {
 	System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org/privacy");
-	return UI::EVENT_DONE;
 }
 
-UI::EventReturn CreditsScreen::OnForums(UI::EventParams &e) {
+void CreditsScreen::OnForums(UI::EventParams &e) {
 	System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://forums.ppsspp.org");
-	return UI::EVENT_DONE;
 }
 
-UI::EventReturn CreditsScreen::OnDiscord(UI::EventParams &e) {
+void CreditsScreen::OnDiscord(UI::EventParams &e) {
 	System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://discord.gg/5NJB6dD");
-	return UI::EVENT_DONE;
 }
 
-UI::EventReturn CreditsScreen::OnShare(UI::EventParams &e) {
+void CreditsScreen::OnShare(UI::EventParams &e) {
 	auto cr = GetI18NCategory(I18NCat::PSPCREDITS);
 	System_ShareText(cr->T("CheckOutPPSSPP", "Check out PPSSPP, the awesome PSP emulator: https://www.ppsspp.org/"));
-	return UI::EVENT_DONE;
 }
 
 CreditsScreen::CreditsScreen() {
@@ -1161,7 +1151,7 @@ void CreditsScreen::DrawForeground(UIContext &dc) {
 	float y = bounds.y2() - fmodf(t, (float)totalHeight);
 	for (int i = 0; i < numItems; i++) {
 		float alpha = linearInOut(y+32, 64, bounds.y2() - 192, 64);
-		uint32_t textColor = colorAlpha(dc.theme->infoStyle.fgColor, alpha);
+		uint32_t textColor = colorAlpha(dc.GetTheme().infoStyle.fgColor, alpha);
 
 		if (alpha > 0.0f) {
 			dc.SetFontScale(ease(alpha), ease(alpha));
@@ -1217,7 +1207,7 @@ void SettingInfoMessage::Draw(UIContext &dc) {
 		alpha = MAX_ALPHA - MAX_ALPHA * (float)((sinceShow - timeToShow) / FADE_TIME);
 	}
 
-	UI::Style style = dc.theme->tooltipStyle;
+	UI::Style style = dc.GetTheme().tooltipStyle;
 
 	if (alpha >= 0.001f) {
 		uint32_t bgColor = alphaMul(style.background.color, alpha);
