@@ -67,12 +67,16 @@ struct Image {
 	void SavePNG(const char *png_name);
 	void SaveZIM(const char *zim_name, int zim_format);
 	bool IsEmpty() const { return dat.empty(); }
+	void ConvertToPremultipliedAlpha();
 // private:
 	std::vector<u32> dat;
 };
 
 // Slow.
 void AddDropShadow(Image &img, int shadowSize, float intensity);
+
+// To improve filtering.
+void Add1PxTransparentBorder(Image &img);
 
 struct Data {
 	// item ID

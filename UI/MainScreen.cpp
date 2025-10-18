@@ -1306,7 +1306,7 @@ void MainScreen::CreateViews() {
 		rightColumnChoices->Add(new Choice(mm->T("Load", "Load...")))->OnClick.Handle(this, &MainScreen::OnLoadFile);
 	}
 	rightColumnChoices->Add(new Choice(mm->T("Game Settings", "Settings")))->OnClick.Handle(this, &MainScreen::OnGameSettings);
-	rightColumnChoices->Add(new Choice(mm->T("Credits")))->OnClick.Handle(this, &MainScreen::OnCredits);
+	rightColumnChoices->Add(new Choice(mm->T("About PPSSPP")))->OnClick.Handle(this, &MainScreen::OnCredits);
 
 	if (!vertical) {
 		rightColumnChoices->Add(new Choice(mm->T("www.ppsspp.org")))->OnClick.Handle(this, &MainScreen::OnPPSSPPOrg);
@@ -1321,7 +1321,10 @@ void MainScreen::CreateViews() {
 		}
 	}
 
-	rightColumnChoices->Add(new Spacer(25.0));
+	if (!vertical) {
+		rightColumnChoices->Add(new Spacer(25.0));
+	}
+
 #if !PPSSPP_PLATFORM(IOS_APP_STORE)
 	// Officially, iOS apps should not have exit buttons. Remove it to maximize app store review chances.
 	rightColumnChoices->Add(new Choice(mm->T("Exit")))->OnClick.Handle(this, &MainScreen::OnExit);
@@ -1528,7 +1531,7 @@ void LaunchBuyGold(ScreenManager *screenManager) {
 		screenManager->push(new IAPScreen());
 	} else {
 #if PPSSPP_PLATFORM(IOS_APP_STORE)
-		System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://apps.apple.com/us/app/ppsspp-gold-psp-emulator/id6502287918");
+		System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org/buygold_ios");
 #elif PPSSPP_PLATFORM(ANDROID)
 		System_LaunchUrl(LaunchUrlType::BROWSER_URL, "market://details?id=org.ppsspp.ppssppgold");
 #else
