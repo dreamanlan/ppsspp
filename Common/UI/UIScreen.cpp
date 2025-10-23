@@ -18,14 +18,14 @@ static const bool ClickDebug = false;
 
 UIScreen::UIScreen()
 	: Screen() {
-	lastVertical_ = UseVerticalLayout();
+	lastPortrait_ = UsePortraitLayout();
 }
 
 UIScreen::~UIScreen() {
 	delete root_;
 }
 
-bool UIScreen::UseVerticalLayout() const {
+bool UIScreen::UsePortraitLayout() const {
 	return g_display.dp_yres > g_display.dp_xres * 1.1f;
 }
 
@@ -140,16 +140,19 @@ bool UIScreen::UnsyncKey(const KeyInput &key) {
 }
 
 void UIScreen::update() {
-	bool vertical = UseVerticalLayout();
-	if (vertical != lastVertical_) {
+	bool portrait = UsePortraitLayout();
+	if (portrait != lastPortrait_) {
 		RecreateViews();
-		lastVertical_ = vertical;
+		lastPortrait_ = portrait;
 	}
 
 	DoRecreateViews();
 
 	if (root_) {
-		UpdateViewHierarchy(root_);
+		DialogResult result = UpdateViewHierarchy(root_);
+		if (result != DR_NONE) {
+			TriggerFinish(result);
+		}
 	}
 
 	while (true) {

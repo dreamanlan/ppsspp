@@ -78,6 +78,7 @@ static const ImageMeta imageIDs[] = {
 	{"I_FOLDER", false},
 	{"I_UP_DIRECTORY", false},
 	{"I_GEAR", false},
+	{"I_GEAR_SMALL", true},
 	{"I_1", true},
 	{"I_2", true},
 	{"I_3", true},
@@ -129,6 +130,14 @@ static const ImageMeta imageIDs[] = {
 	{"I_PIN", false},
 	{"I_UNPIN", false},
 	{"I_FOLDER_PINNED", false},
+	{"I_FILLED_CIRCLE_1", false},
+	{"I_FILLED_CIRCLE_2", false},
+	{"I_FILLED_CIRCLE_3", false},
+	{"I_FILLED_CIRCLE_4", false},
+	{"I_FILLED_CIRCLE_5", false},
+	{"I_SETTINGS_DISPLAY", false},
+	{"I_NAVIGATE_BACK", false},
+	{"I_NAVIGATE_FORWARD", false},
 };
 
 static std::string PNGNameFromID(std::string_view id) {

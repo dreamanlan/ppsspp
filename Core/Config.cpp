@@ -213,6 +213,14 @@ static int DefaultUIScaleFactor() {
 #endif
 }
 
+static int DefaultScreenRotation() {
+#if PPSSPP_PLATFORM(ANDROID)
+	return ROTATION_LOCKED_HORIZONTAL;
+#else
+	return ROTATION_AUTO;
+#endif
+}
+
 static const ConfigSetting generalSettings[] = {
 	ConfigSetting("FirstRun", &g_Config.bFirstRun, true, CfgFlag::DEFAULT),
 	ConfigSetting("RunCount", &g_Config.iRunCount, 0, CfgFlag::DEFAULT),
@@ -237,6 +245,8 @@ static const ConfigSetting generalSettings[] = {
 	ConfigSetting("CwCheatRefreshRate", &g_Config.iCwCheatRefreshIntervalMs, 77, CfgFlag::PER_GAME),
 	ConfigSetting("CwCheatScrollPosition", &g_Config.fCwCheatScrollPosition, 0.0f, CfgFlag::PER_GAME),
 	ConfigSetting("GameListScrollPosition", &g_Config.fGameListScrollPosition, 0.0f, CfgFlag::DEFAULT),
+	ConfigSetting("HomebrewScrollPosition", &g_Config.fHomebrewScrollPosition, 0.0f, CfgFlag::DEFAULT),
+	ConfigSetting("RemoteScrollPosition", &g_Config.fRemoteScrollPosition, 0.0f, CfgFlag::DEFAULT),
 	ConfigSetting("DebugOverlay", &g_Config.iDebugOverlay, 0, CfgFlag::DONT_SAVE),
 	ConfigSetting("DefaultTab", &g_Config.iDefaultTab, 0, CfgFlag::DEFAULT),
 	ConfigSetting("DisableHLEFlags", &g_Config.iDisableHLE, 0, CfgFlag::PER_GAME),
@@ -262,6 +272,7 @@ static const ConfigSetting generalSettings[] = {
 	ConfigSetting("GridView1", &g_Config.bGridView1, true, CfgFlag::DEFAULT),
 	ConfigSetting("GridView2", &g_Config.bGridView2, true, CfgFlag::DEFAULT),
 	ConfigSetting("GridView3", &g_Config.bGridView3, false, CfgFlag::DEFAULT),
+	ConfigSetting("GridView4", &g_Config.bGridView4, false, CfgFlag::DEFAULT),
 	ConfigSetting("RightAnalogUp", &g_Config.iRightAnalogUp, 0, CfgFlag::PER_GAME),
 	ConfigSetting("RightAnalogDown", &g_Config.iRightAnalogDown, 0, CfgFlag::PER_GAME),
 	ConfigSetting("RightAnalogLeft", &g_Config.iRightAnalogLeft, 0, CfgFlag::PER_GAME),
@@ -297,9 +308,10 @@ static const ConfigSetting generalSettings[] = {
 	ConfigSetting("RemoteISOShareType", &g_Config.iRemoteISOShareType, (int)RemoteISOShareType::RECENT, CfgFlag::DEFAULT),
 	ConfigSetting("AskForExitConfirmationAfterSeconds", &g_Config.iAskForExitConfirmationAfterSeconds, 60, CfgFlag::PER_GAME),
 
-#ifdef __ANDROID__
-	ConfigSetting("ScreenRotation", &g_Config.iScreenRotation, ROTATION_AUTO_HORIZONTAL),
+#if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
+	ConfigSetting("ScreenRotation", &g_Config.iScreenRotation, &DefaultScreenRotation, CfgFlag::DEFAULT),
 #endif
+
 	ConfigSetting("InternalScreenRotation", &g_Config.iInternalScreenRotation, ROTATION_LOCKED_HORIZONTAL, CfgFlag::PER_GAME),
 
 	ConfigSetting("BackgroundAnimation", &g_Config.iBackgroundAnimation, 1, CfgFlag::DEFAULT),

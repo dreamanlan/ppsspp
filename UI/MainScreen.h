@@ -18,10 +18,12 @@
 #pragma once
 
 #include <functional>
+#include <string_view>
 
 #include "Common/File/Path.h"
 #include "Common/UI/UIScreen.h"
 #include "Common/UI/ViewGroup.h"
+#include "Common/UI/TabHolder.h"
 #include "UI/MiscScreens.h"
 #include "Common/File/PathBrowser.h"
 
@@ -74,7 +76,6 @@ protected:
 private:
 	bool IsCurrentPathPinned();
 	std::vector<Path> GetPinnedPaths() const;
-	std::string GetBaseName(const std::string &path) const;
 
 	void GameButtonClick(UI::EventParams &e);
 	void GameButtonHoldClick(UI::EventParams &e);
@@ -132,6 +133,11 @@ public:
 
 protected:
 	void CreateViews() override;
+	void CreateRecentTab();
+	GameBrowser *CreateBrowserTab(const Path &path, std::string_view title, std::string_view howToTitle, std::string_view howToUri, BrowseFlags browseFlags, bool *bGridView, float *scrollPos);
+	UI::ViewGroup *CreateLogoView(UI::LayoutParams *layoutParams);
+	void CreateMainButtons(UI::ViewGroup *parent, bool vertical);
+
 	void DrawBackground(UIContext &dc) override;
 	void update() override;
 	void sendMessage(UIMessage message, const char *value) override;
@@ -166,7 +172,6 @@ protected:
 	bool lockBackgroundAudio_ = false;
 	bool lastVertical_ = false;
 	bool confirmedTemporary_ = false;
-	UI::ScrollView *scrollAllGames_ = nullptr;
 	bool searchKeyModifier_ = false;
 	bool searchChanged_ = false;
 	std::string searchFilter_;
