@@ -909,9 +909,11 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/EmuScreen.cpp \
   $(SRC)/UI/MainScreen.cpp \
   $(SRC)/UI/TabbedDialogScreen.cpp \
+  $(SRC)/UI/SimpleDialogScreen.cpp \
   $(SRC)/UI/MemStickScreen.cpp \
   $(SRC)/UI/IAPScreen.cpp \
   $(SRC)/UI/MiscScreens.cpp \
+  $(SRC)/UI/MiscViews.cpp \
   $(SRC)/UI/RemoteISOScreen.cpp \
   $(SRC)/UI/ReportScreen.cpp \
   $(SRC)/UI/PauseScreen.cpp \
@@ -922,6 +924,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/JoystickHistoryView.cpp \
   $(SRC)/UI/GameInfoCache.cpp \
   $(SRC)/UI/GameScreen.cpp \
+  $(SRC)/UI/UploadScreen.cpp \
   $(SRC)/UI/ControlMappingScreen.cpp \
   $(SRC)/UI/GameSettingsScreen.cpp \
   $(SRC)/UI/DeveloperToolsScreen.cpp \
@@ -929,6 +932,8 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/TiltAnalogSettingsScreen.cpp \
   $(SRC)/UI/TouchControlLayoutScreen.cpp \
   $(SRC)/UI/TouchControlVisibilityScreen.cpp \
+  $(SRC)/UI/BaseScreens.cpp \
+  $(SRC)/UI/Background.cpp \
   $(SRC)/UI/CwCheatScreen.cpp \
   $(SRC)/UI/InstallZipScreen.cpp \
   $(SRC)/UI/JitCompareScreen.cpp \

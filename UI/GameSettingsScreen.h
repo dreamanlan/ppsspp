@@ -23,15 +23,16 @@
 #include <thread>
 
 #include "Common/UI/UIScreen.h"
+#include "Common/UI/PopupScreens.h"
 #include "Core/ConfigValues.h"
-#include "UI/MiscScreens.h"
+#include "UI/BaseScreens.h"
 #include "UI/TabbedDialogScreen.h"
 
 class Path;
 
 // Per-game settings screen - enables you to configure graphic options, control options, etc
 // per game.
-class GameSettingsScreen : public TabbedUIDialogScreenWithGameBackground {
+class GameSettingsScreen : public UITabbedBaseDialogScreen {
 public:
 	GameSettingsScreen(const Path &gamePath, std::string gameID = "", bool editThenRestore = false);
 
@@ -182,13 +183,15 @@ private:
 	bool lastResolvedResult_ = false;
 };
 
-
-class GestureMappingScreen : public UIDialogScreenWithGameBackground {
+class GestureMappingScreen : public UITabbedBaseDialogScreen {
 public:
-	GestureMappingScreen(const Path &gamePath) : UIDialogScreenWithGameBackground(gamePath) {}
-	void CreateViews() override;
+	GestureMappingScreen(const Path &gamePath) : UITabbedBaseDialogScreen(gamePath) {}
 
+	void CreateTabs() override;
 	const char *tag() const override { return "GestureMapping"; }
+	bool ShowSearchControls() const override { return false; }
+protected:
+	void CreateGestureTab(UI::LinearLayout *parent);
 };
 
 class RestoreSettingsScreen : public PopupScreen {

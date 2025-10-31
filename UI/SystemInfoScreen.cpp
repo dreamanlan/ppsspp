@@ -16,19 +16,20 @@
 #include "Common/Data/Text/Parsers.h"
 #include "Common/Data/Encoding/Utf8.h"
 #include "Common/Render/Text/draw_text.h"
+#include "Common/System/Request.h"
 #include "Common/UI/Context.h"
 #include "Core/System.h"
 #include "Core/Config.h"
 #include "GPU/GPUState.h"  // ugh
 #include "UI/SystemInfoScreen.h"
 #include "UI/IconCache.h"
-#include "UI/MiscScreens.h"
+#include "UI/BaseScreens.h"
 #include "UI/OnScreenDisplay.h"
 #include "android/jni/app-android.h"
 
 void SystemInfoScreen::update() {
-	TabbedUIDialogScreenWithGameBackground::update();
-	g_OSD.NudgeSidebar();
+	UITabbedBaseDialogScreen::update();
+	g_OSD.NudgeIngameNotifications();
 }
 
 // TODO: How can we de-duplicate this and SystemInfoScreen::CreateTabs?
@@ -111,7 +112,7 @@ void SystemInfoScreen::CreateDeviceInfoTab(UI::LinearLayout *deviceSpecs) {
 
 	UI::CollapsibleSection *systemInfo = deviceSpecs->Add(new UI::CollapsibleSection(si->T("System Information")));
 
-	systemInfo->Add(new Choice(si->T("Copy summary to clipboard")))->OnClick.Handle(this, &SystemInfoScreen::CopySummaryToClipboard);
+	systemInfo->Add(new Choice(si->T("Copy summary to clipboard"), ImageID("I_FILE_COPY")))->OnClick.Handle(this, &SystemInfoScreen::CopySummaryToClipboard);
 	systemInfo->Add(new InfoItem(si->T("System Name"), System_GetProperty(SYSPROP_NAME)));
 #if PPSSPP_PLATFORM(ANDROID)
 	systemInfo->Add(new InfoItem(si->T("System Version"), StringFromInt(System_GetPropertyInt(SYSPROP_SYSTEMVERSION))));

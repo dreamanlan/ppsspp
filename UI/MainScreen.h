@@ -24,7 +24,7 @@
 #include "Common/UI/UIScreen.h"
 #include "Common/UI/ViewGroup.h"
 #include "Common/UI/TabHolder.h"
-#include "UI/MiscScreens.h"
+#include "UI/BaseScreens.h"
 #include "Common/File/PathBrowser.h"
 
 enum GameBrowserFlags {
@@ -38,7 +38,8 @@ enum class BrowseFlags {
 	ARCHIVES = 4,
 	PIN = 8,
 	HOMEBREW_STORE = 16,
-	STANDARD = 1 | 2 | 4 | 8,
+	UPLOAD_BUTTON = 32,
+	STANDARD = 1 | 2 | 4 | 8 | 32,
 };
 ENUM_CLASS_BITOPS(BrowseFlags);
 
@@ -117,7 +118,7 @@ private:
 
 class RemoteISOBrowseScreen;
 
-class MainScreen : public UIScreenWithBackground {
+class MainScreen : public UIBaseScreen {
 public:
 	MainScreen();
 	~MainScreen();
@@ -135,7 +136,7 @@ protected:
 	void CreateViews() override;
 	void CreateRecentTab();
 	GameBrowser *CreateBrowserTab(const Path &path, std::string_view title, std::string_view howToTitle, std::string_view howToUri, BrowseFlags browseFlags, bool *bGridView, float *scrollPos);
-	UI::ViewGroup *CreateLogoView(UI::LayoutParams *layoutParams);
+	UI::ViewGroup *CreateLogoView(bool portrait, UI::LayoutParams *layoutParams);
 	void CreateMainButtons(UI::ViewGroup *parent, bool vertical);
 
 	void DrawBackground(UIContext &dc) override;
@@ -179,7 +180,7 @@ protected:
 	friend class RemoteISOBrowseScreen;
 };
 
-class UmdReplaceScreen : public UIDialogScreenWithBackground {
+class UmdReplaceScreen : public UIBaseDialogScreen {
 public:
 	const char *tag() const override { return "UmdReplace"; }
 

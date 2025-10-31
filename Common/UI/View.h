@@ -184,15 +184,6 @@ enum class BorderStyle {
 	ITEM_DOWN_BG,
 };
 
-enum Orientation {
-	ORIENT_HORIZONTAL,
-	ORIENT_VERTICAL,
-};
-
-inline Orientation Opposite(Orientation o) {
-	if (o == ORIENT_HORIZONTAL) return ORIENT_VERTICAL; else return ORIENT_HORIZONTAL;
-}
-
 inline FocusDirection Opposite(FocusDirection d) {
 	switch (d) {
 	case FOCUS_UP: return FOCUS_DOWN;
@@ -753,6 +744,9 @@ public:
 	}
 	void SetImageScale(float scale) {
 		imgScale_ = scale;
+	}
+	void SetText(std::string_view text) {
+		text_ = text;
 	}
 
 protected:

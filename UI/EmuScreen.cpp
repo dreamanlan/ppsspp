@@ -84,10 +84,11 @@ using namespace std::placeholders;
 #include "UI/GamepadEmu.h"
 #include "UI/PauseScreen.h"
 #include "UI/MainScreen.h"
+#include "UI/Background.h"
 #include "UI/EmuScreen.h"
 #include "UI/DevScreens.h"
 #include "UI/GameInfoCache.h"
-#include "UI/MiscScreens.h"
+#include "UI/BaseScreens.h"
 #include "UI/ControlMappingScreen.h"
 #include "UI/DisplayLayoutScreen.h"
 #include "UI/GameSettingsScreen.h"
@@ -1604,7 +1605,7 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 		framebufferBound = true;
 	}
 
-	g_OSD.NudgeSidebar();
+	g_OSD.NudgeIngameNotifications();
 
 	if (mode & ScreenRenderMode::TOP) {
 		System_Notify(SystemNotification::KEEP_SCREEN_AWAKE);
@@ -1941,7 +1942,7 @@ void EmuScreen::renderUI() {
 	thin3d->SetViewport(viewport);
 
 	if (root_) {
-		UI::LayoutViewHierarchy(*ctx, root_, false);
+		UI::LayoutViewHierarchy(*ctx, root_, false, false);
 		root_->Draw(*ctx);
 	}
 

@@ -40,11 +40,11 @@
 #include "Common/Math/curves.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/Data/Encoding/Utf8.h"
+#include "Common/UI/PopupScreens.h"
 #include "UI/EmuScreen.h"
 #include "UI/GameSettingsScreen.h"
 #include "UI/GameInfoCache.h"
 #include "UI/GamepadEmu.h"
-#include "UI/MiscScreens.h"
 #include "UI/ControlMappingScreen.h"
 #include "UI/DevScreens.h"
 #include "UI/DeveloperToolsScreen.h"
@@ -60,6 +60,7 @@
 #include "UI/RetroAchievementScreens.h"
 #include "UI/OnScreenDisplay.h"
 #include "UI/DiscordIntegration.h"
+#include "UI/Background.h"
 #include "UI/BackgroundAudio.h"
 
 #include "Common/File/FileUtil.h"
@@ -115,7 +116,7 @@ void SetMemStickDirDarwin(int requesterToken) {
 #endif
 
 GameSettingsScreen::GameSettingsScreen(const Path &gamePath, std::string gameID, bool editThenRestore)
-	: TabbedUIDialogScreenWithGameBackground(gamePath), gameID_(gameID), editThenRestore_(editThenRestore) {
+	: UITabbedBaseDialogScreen(gamePath), gameID_(gameID), editThenRestore_(editThenRestore) {
 	prevInflightFrames_ = g_Config.iInflightFrames;
 	analogSpeedMapped_ = KeyMap::InputMappingsFromPspButton(VIRTKEY_SPEED_ANALOG, nullptr, true);
 }
@@ -790,11 +791,11 @@ void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings)
 	int deviceType = System_GetPropertyInt(SYSPROP_DEVICE_TYPE);
 
 	controlsSettings->Add(new ItemHeader(ms->T("Controls")));
-	controlsSettings->Add(new Choice(co->T("Control Mapping")))->OnClick.Add([this](UI::EventParams &e) {
+	controlsSettings->Add(new Choice(co->T("Control mapping")))->OnClick.Add([this](UI::EventParams &e) {
 		screenManager()->push(new ControlMappingScreen(gamePath_));
 	});
-	controlsSettings->Add(new Choice(co->T("Calibrate Analog Stick")))->OnClick.Add([this](UI::EventParams &e) {
-		screenManager()->push(new AnalogSetupScreen(gamePath_));
+	controlsSettings->Add(new Choice(co->T("Calibrate analog stick")))->OnClick.Add([this](UI::EventParams &e) {
+		screenManager()->push(new AnalogCalibrationScreen(gamePath_));
 	});
 	controlsSettings->Add(new PopupSliderChoiceFloat(&g_Config.fAnalogTriggerThreshold, 0.02f, 0.98f, 0.75f, co->T("Analog trigger threshold"), screenManager()));
 
@@ -823,9 +824,9 @@ void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings)
 
 	// TVs don't have touch control, at least not yet.
 	if ((deviceType != DEVICE_TYPE_TV) && (deviceType != DEVICE_TYPE_VR)) {
-		controlsSettings->Add(new ItemHeader(co->T("OnScreen", "On-Screen Touch Controls")));
-		controlsSettings->Add(new CheckBox(&g_Config.bShowTouchControls, co->T("OnScreen", "On-Screen Touch Controls")));
-		layoutEditorChoice_ = controlsSettings->Add(new Choice(co->T("Customize Touch Controls")));
+		controlsSettings->Add(new ItemHeader(co->T("On-screen touch controls")));
+		controlsSettings->Add(new CheckBox(&g_Config.bShowTouchControls, co->T("On-screen touch controls")));
+		layoutEditorChoice_ = controlsSettings->Add(new Choice(co->T("Edit touch control layout...")));
 		layoutEditorChoice_->OnClick.Add([this](UI::EventParams &e) {
 			screenManager()->push(new TouchControlLayoutScreen(gamePath_));
 		});
@@ -936,7 +937,7 @@ public:
 	MacAddressChooser(RequesterToken token, Path gamePath, std::string *value, std::string_view title, ScreenManager *screenManager, UI::LayoutParams *layoutParams = nullptr);
 };
 
-MacAddressChooser::MacAddressChooser(RequesterToken token, Path gamePath_, std::string *value, std::string_view title, ScreenManager *screenManager, UI::LayoutParams *layoutParams) : UI::LinearLayout(UI::ORIENT_HORIZONTAL, layoutParams) {
+MacAddressChooser::MacAddressChooser(RequesterToken token, Path gamePath_, std::string *value, std::string_view title, ScreenManager *screenManager, UI::LayoutParams *layoutParams) : UI::LinearLayout(ORIENT_HORIZONTAL, layoutParams) {
 	using namespace UI;
 	SetSpacing(5.0f);
 	if (!layoutParams) {
@@ -1874,7 +1875,7 @@ void HostnameSelectScreen::CreatePopupContents(UI::ViewGroup *parent) {
 	}
 	// Add non-editable items
 	listIP.push_back("localhost");
-	net::GetIPList(listIP);
+	net::GetLocalIP4List(listIP);
 
 	ipRows_ = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(1.0));
 	ScrollView* scrollView = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
@@ -2034,21 +2035,17 @@ void HostnameSelectScreen::OnCompleted(DialogResult result) {
 		*value_ = StripSpaces(addrView_->GetText());
 }
 
-void GestureMappingScreen::CreateViews() {
+void GestureMappingScreen::CreateTabs() {
+	auto co = GetI18NCategory(I18NCat::CONTROLS);
+	AddTab("Gesture", co->T("Gesture"), [this](UI::LinearLayout *parent) { CreateGestureTab(parent); });
+}
+
+void GestureMappingScreen::CreateGestureTab(UI::LinearLayout *vert) {
 	using namespace UI;
 
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 	auto co = GetI18NCategory(I18NCat::CONTROLS);
 	auto mc = GetI18NCategory(I18NCat::MAPPABLECONTROLS);
-
-	root_ = new AnchorLayout(new LayoutParams(FILL_PARENT, FILL_PARENT));
-	AddStandardBack(root_);
-	TabHolder *tabHolder = new TabHolder(ORIENT_VERTICAL, 200, TabHolderFlags::Default, nullptr, new AnchorLayoutParams(10, 0, 10, 0, false));
-	root_->Add(tabHolder);
-	ScrollView *rightPanel = new ScrollView(ORIENT_VERTICAL);
-	tabHolder->AddTab(co->T("Gesture"), rightPanel);
-	LinearLayout *vert = rightPanel->Add(new LinearLayout(ORIENT_VERTICAL, new LayoutParams(FILL_PARENT, FILL_PARENT)));
-	vert->SetSpacing(0);
 
 	static const char *gestureButton[ARRAY_SIZE(GestureKey::keyList)+1];
 	gestureButton[0] = "None";

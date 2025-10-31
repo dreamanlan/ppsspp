@@ -22,9 +22,7 @@
 #include "Common/GPU/thin3d.h"
 #include "Common/UI/AsyncImageFileView.h"
 #include "Common/UI/Context.h"
-#include "UI/PauseScreen.h"
-#include "UI/ReportScreen.h"
-
+#include "Common/UI/ScrollView.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/File/FileUtil.h"
 #include "Common/Log.h"
@@ -36,6 +34,8 @@
 #include "Core/Reporting.h"
 #include "Core/Screenshot.h"
 #include "Core/System.h"
+#include "UI/PauseScreen.h"
+#include "UI/ReportScreen.h"
 
 using namespace UI;
 
@@ -309,8 +309,8 @@ void ReportScreen::CreateViews() {
 	overallDescription_ = leftColumnItems->Add(new TextView("", FLAG_WRAP_TEXT, false, new LinearLayoutParams(Margins(10, 0))));
 	overallDescription_->SetShadow(true);
 
-	UI::Orientation ratingsOrient = leftColumnWidth >= 750.0f ? ORIENT_HORIZONTAL : ORIENT_VERTICAL;
-	UI::LinearLayout *ratingsHolder = new LinearLayoutList(ratingsOrient, new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT));
+	Orientation ratingsOrient = leftColumnWidth >= 750.0f ? ORIENT_HORIZONTAL : ORIENT_VERTICAL;
+	LinearLayout *ratingsHolder = new LinearLayoutList(ratingsOrient, new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT));
 	leftColumnItems->Add(ratingsHolder);
 	ratingsHolder->Add(new RatingChoice("Graphics", &graphics_))->SetEnabledPtrs(&ratingEnabled_)->OnChoice.Handle(this, &ReportScreen::HandleChoice);
 	ratingsHolder->Add(new RatingChoice("Speed", &speed_))->SetEnabledPtrs(&ratingEnabled_)->OnChoice.Handle(this, &ReportScreen::HandleChoice);

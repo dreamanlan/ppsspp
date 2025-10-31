@@ -1,8 +1,11 @@
 #include "Common/File/VFS/ZipFileReader.h"
 #include "Common/Data/Format/JSONReader.h"
+#include "Common/Data/Text/I18n.h"
+#include "Common/System/Request.h"
 #include "Common/System/OSD.h"
 #include "Common/Log.h"
 #include "Common/StringUtils.h"
+#include "Common/UI/PopupScreens.h"
 
 #include "Core/Config.h"
 #include "Core/System.h"
@@ -11,6 +14,7 @@
 #include "UI/DriverManagerScreen.h"
 #include "UI/GameSettingsScreen.h"  // for triggerrestart
 #include "UI/OnScreenDisplay.h"
+#include "UI/MiscScreens.h"
 
 static Path GetDriverPath() {
 	if (g_Config.internalDataDirectory.empty()) {
@@ -79,7 +83,7 @@ public:
 	std::string name_;
 };
 
-DriverChoice::DriverChoice(const std::string &driverName, bool current, UI::LayoutParams *layoutParams) : UI::LinearLayout(UI::ORIENT_VERTICAL, layoutParams), name_(driverName) {
+DriverChoice::DriverChoice(const std::string &driverName, bool current, UI::LayoutParams *layoutParams) : UI::LinearLayout(ORIENT_VERTICAL, layoutParams), name_(driverName) {
 	using namespace UI;
 	SetSpacing(2.0f);
 	if (!layoutParams) {
@@ -116,7 +120,7 @@ DriverChoice::DriverChoice(const std::string &driverName, bool current, UI::Layo
 		Add(new NoticeView(NoticeLevel::SUCCESS, gr->T("Current GPU driver"), ""));
 	}
 
-	auto horizBar = Add(new UI::LinearLayout(UI::ORIENT_HORIZONTAL));
+	auto horizBar = Add(new UI::LinearLayout(ORIENT_HORIZONTAL));
 	std::string desc = meta.description;
 	if (!desc.empty()) desc += "\n";
 	if (!isDefault)
@@ -142,7 +146,7 @@ DriverChoice::DriverChoice(const std::string &driverName, bool current, UI::Layo
 	}
 }
 
-DriverManagerScreen::DriverManagerScreen(const Path & gamePath) : TabbedUIDialogScreenWithGameBackground(gamePath) {}
+DriverManagerScreen::DriverManagerScreen(const Path & gamePath) : UITabbedBaseDialogScreen(gamePath) {}
 
 void DriverManagerScreen::CreateTabs() {
 	using namespace UI;
