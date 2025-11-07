@@ -77,6 +77,7 @@
 #include "Core/Reporting.h"
 #include "Core/HLE/sceUsbCam.h"
 #include "Core/HLE/sceUsbMic.h"
+#include "Core/HLE/sceUtility.h"
 #include "GPU/Common/TextureReplacer.h"
 #include "GPU/Common/PostShader.h"
 #include "GPU/GPUCommon.h"
@@ -116,7 +117,7 @@ void SetMemStickDirDarwin(int requesterToken) {
 #endif
 
 GameSettingsScreen::GameSettingsScreen(const Path &gamePath, std::string gameID, bool editThenRestore)
-	: UITabbedBaseDialogScreen(gamePath), gameID_(gameID), editThenRestore_(editThenRestore) {
+	: UITabbedBaseDialogScreen(gamePath, TabDialogFlags::HorizontalOnlyIcons | TabDialogFlags::VerticalShowIcons), gameID_(gameID), editThenRestore_(editThenRestore) {
 	prevInflightFrames_ = g_Config.iInflightFrames;
 	analogSpeedMapped_ = KeyMap::InputMappingsFromPspButton(VIRTKEY_SPEED_ANALOG, nullptr, true);
 }
@@ -208,7 +209,7 @@ void GameSettingsScreen::PreCreateViews() {
 
 	if (editThenRestore_) {
 		std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(nullptr, gamePath_, GameInfoFlags::PARAM_SFO);
-		g_Config.loadGameConfig(gameID_, info->GetTitle());
+		g_Config.LoadGameConfig(gameID_);
 	}
 
 	iAlternateSpeedPercent1_ = g_Config.iFpsLimit1 < 0 ? -1 : (g_Config.iFpsLimit1 * 100) / 60;
@@ -220,35 +221,34 @@ void GameSettingsScreen::CreateTabs() {
 	using namespace UI;
 	auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
 
-	AddTab("GameSettingsGraphics", ms->T("Graphics"), [this](UI::LinearLayout *parent) {
+	AddTab("GameSettingsGraphics", ms->T("Graphics"), ImageID("I_DISPLAY"), [this](UI::LinearLayout *parent) {
 		CreateGraphicsSettings(parent);
 	});
 
-	AddTab("GameSettingsControls", ms->T("Controls"), [this](UI::LinearLayout *parent) {
+	AddTab("GameSettingsControls", ms->T("Controls"), ImageID("I_CONTROLLER"), [this](UI::LinearLayout *parent) {
 		CreateControlsSettings(parent);
 	});
 
-	AddTab("GameSettingsAudio", ms->T("Audio"), [this](UI::LinearLayout *parent) {
+	AddTab("GameSettingsAudio", ms->T("Audio"), ImageID("I_SPEAKER_MAX"), [this](UI::LinearLayout *parent) {
 		CreateAudioSettings(parent);
 	});
 
-	AddTab("GameSettingsNetworking", ms->T("Networking"), [this](UI::LinearLayout *parent) {
+	AddTab("GameSettingsNetworking", ms->T("Networking"), ImageID("I_WIFI"), [this](UI::LinearLayout *parent) {
 		CreateNetworkingSettings(parent);
 	});
 
-	AddTab("GameSettingsTools", ms->T("Tools"), [this](UI::LinearLayout *parent) {
+	AddTab("GameSettingsTools", ms->T("Tools"), ImageID("I_TOOLS"), [this](UI::LinearLayout *parent) {
 		CreateToolsSettings(parent);
 	});
 
-	AddTab("GameSettingsSystem", ms->T("System"), [this](UI::LinearLayout *parent) {
+	AddTab("GameSettingsSystem", ms->T("System"), ImageID("I_PSP"), [this](UI::LinearLayout *parent) {
 		parent->SetSpacing(0);
 		CreateSystemSettings(parent);
 	});
-	
 
 	int deviceType = System_GetPropertyInt(SYSPROP_DEVICE_TYPE);
 	if ((deviceType == DEVICE_TYPE_VR) || g_Config.bForceVR) {
-		AddTab("GameSettingsVR", ms->T("VR"), [this](UI::LinearLayout *parent) {
+		AddTab("GameSettingsVR", ms->T("VR"), ImageID::invalid(), [this](UI::LinearLayout *parent) {
 			CreateVRSettings(parent);
 		});
 	}
@@ -579,21 +579,22 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	CheckBox *smartFiltering = graphicsSettings->Add(new CheckBox(&g_Config.bSmart2DTexFiltering, gr->T("Smart 2D texture filtering")));
 	smartFiltering->SetDisabledPtr(&g_Config.bSoftwareRendering);
 
+	DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(GetDeviceOrientation());
 #if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
 	bool showCardboardSettings = deviceType != DEVICE_TYPE_VR;
 #else
 	// If you enabled it through the ini, you can see this. Useful for testing.
-	bool showCardboardSettings = g_Config.bEnableCardboardVR;
+	bool showCardboardSettings = config.bEnableCardboardVR;
 #endif
 	if (showCardboardSettings) {
 		graphicsSettings->Add(new ItemHeader(gr->T("Cardboard VR Settings", "Cardboard VR Settings")));
-		graphicsSettings->Add(new CheckBox(&g_Config.bEnableCardboardVR, gr->T("Enable Cardboard VR", "Enable Cardboard VR")));
-		PopupSliderChoice *cardboardScreenSize = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iCardboardScreenSize, 30, 150, 50, gr->T("Cardboard Screen Size", "Screen Size (in % of the viewport)"), 1, screenManager(), gr->T("% of viewport")));
-		cardboardScreenSize->SetEnabledPtr(&g_Config.bEnableCardboardVR);
-		PopupSliderChoice *cardboardXShift = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iCardboardXShift, -150, 150, 0, gr->T("Cardboard Screen X Shift", "X Shift (in % of the void)"), 1, screenManager(), gr->T("% of the void")));
-		cardboardXShift->SetEnabledPtr(&g_Config.bEnableCardboardVR);
-		PopupSliderChoice *cardboardYShift = graphicsSettings->Add(new PopupSliderChoice(&g_Config.iCardboardYShift, -100, 100, 0, gr->T("Cardboard Screen Y Shift", "Y Shift (in % of the void)"), 1, screenManager(), gr->T("% of the void")));
-		cardboardYShift->SetEnabledPtr(&g_Config.bEnableCardboardVR);
+		graphicsSettings->Add(new CheckBox(&config.bEnableCardboardVR, gr->T("Enable Cardboard VR", "Enable Cardboard VR")));
+		PopupSliderChoice *cardboardScreenSize = graphicsSettings->Add(new PopupSliderChoice(&config.iCardboardScreenSize, 30, 150, 50, gr->T("Cardboard Screen Size", "Screen Size (in % of the viewport)"), 1, screenManager(), gr->T("% of viewport")));
+		cardboardScreenSize->SetEnabledPtr(&config.bEnableCardboardVR);
+		PopupSliderChoice *cardboardXShift = graphicsSettings->Add(new PopupSliderChoice(&config.iCardboardXShift, -150, 150, 0, gr->T("Cardboard Screen X Shift", "X Shift (in % of the void)"), 1, screenManager(), gr->T("% of the void")));
+		cardboardXShift->SetEnabledPtr(&config.bEnableCardboardVR);
+		PopupSliderChoice *cardboardYShift = graphicsSettings->Add(new PopupSliderChoice(&config.iCardboardYShift, -100, 100, 0, gr->T("Cardboard Screen Y Shift", "Y Shift (in % of the void)"), 1, screenManager(), gr->T("% of the void")));
+		cardboardYShift->SetEnabledPtr(&config.bEnableCardboardVR);
 	}
 
 	std::vector<std::string> cameraList = Camera::getDeviceList();
@@ -853,8 +854,10 @@ void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings)
 		CheckBox *touchGliding = controlsSettings->Add(new CheckBox(&g_Config.bTouchGliding, co->T("Keep first touched button pressed when dragging")));
 		touchGliding->SetEnabledPtr(&g_Config.bShowTouchControls);
 
+		TouchControlConfig &touch = g_Config.GetTouchControlsConfig(GetDeviceOrientation());
+
 		// Hide stick background, useful when increasing the size
-		CheckBox *hideStickBackground = controlsSettings->Add(new CheckBox(&g_Config.bHideStickBackground, co->T("Hide touch analog stick background circle")));
+		CheckBox *hideStickBackground = controlsSettings->Add(new CheckBox(&touch.bHideStickBackground, co->T("Hide touch analog stick background circle")));
 		hideStickBackground->SetEnabledPtr(&g_Config.bShowTouchControls);
 
 		// Sticky D-pad.
@@ -1132,7 +1135,7 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	systemSettings->Add(new ItemHeader(sy->T("UI")));
 
 	auto langCodeToName = [](std::string_view value) -> std::string {
-		auto &mapping = g_Config.GetLangValuesMapping();
+		auto &mapping = GetLangValuesMapping();
 		auto iter = mapping.find(value);
 		if (iter != mapping.end()) {
 			return iter->second.first;
@@ -1624,8 +1627,8 @@ void GameSettingsScreen::onFinish(DialogResult result) {
 	if (editThenRestore_) {
 		// In case we didn't have the title yet before, try again.
 		std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(nullptr, gamePath_, GameInfoFlags::PARAM_SFO);
-		g_Config.changeGameSpecific(gameID_, info->GetTitle());
-		g_Config.unloadGameConfig();
+		g_Config.ChangeGameSpecific(gameID_, info->GetTitle());
+		g_Config.UnloadGameConfig();
 	}
 
 	System_Notify(SystemNotification::UI);
@@ -1820,7 +1823,7 @@ void GameSettingsScreen::CallbackRestoreDefaults(bool yes) {
 
 void GameSettingsScreen::OnRestoreDefaultSettings(UI::EventParams &e) {
 	auto sy = GetI18NCategory(I18NCat::SYSTEM);
-	if (g_Config.bGameSpecific) {
+	if (g_Config.IsGameSpecific()) {
 		auto dev = GetI18NCategory(I18NCat::DEVELOPER);
 		auto di = GetI18NCategory(I18NCat::DIALOG);
 		screenManager()->push(

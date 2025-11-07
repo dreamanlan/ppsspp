@@ -390,10 +390,20 @@ void GamePauseScreen::CreateSavestateControls(UI::LinearLayout *leftColumnItems,
 	}
 }
 
+UI::Margins GamePauseScreen::RootMargins() const {
+	if (System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_MOBILE) {
+		// Add some top margin on mobile so it isn't too close to the status bar, as we place buttons
+		// very close to the top of the screen.
+		return UI::Margins(0, 30, 0, 0);
+	} else {
+		return UI::Margins(0);
+	}
+}
+
 void GamePauseScreen::CreateViews() {
 	using namespace UI;
 
-	bool portrait = UsePortraitLayout();
+	bool portrait = GetDeviceOrientation() == DeviceOrientation::Portrait;
 
 	Margins scrollMargins(0, 10, 0, 0);
 	Margins actionMenuMargins(0, 10, 15, 0);
@@ -411,12 +421,8 @@ void GamePauseScreen::CreateViews() {
 	LinearLayout *leftColumnItems = new LinearLayoutList(ORIENT_VERTICAL, new LayoutParams(FILL_PARENT, WRAP_CONTENT));
 	leftColumn->Add(leftColumnItems);
 
-	// If no other banner added, we want to add a spacer to move the Save/Load state buttons down a bit.
-	bool bannerAdded = false;
-
 	leftColumnItems->SetSpacing(5.0f);
 	if (Achievements::IsActive()) {
-		bannerAdded = true;
 		leftColumnItems->Add(new GameAchievementSummaryView());
 
 		char buf[512];
@@ -427,7 +433,6 @@ void GamePauseScreen::CreateViews() {
 	}
 
 	if (IsNetworkConnected()) {
-		bannerAdded = true;
 		leftColumnItems->Add(new NoticeView(NoticeLevel::INFO, nw->T("Network connected"), ""));
 
 		const InfraDNSConfig &dnsConfig = GetInfraDNSConfig();
@@ -474,7 +479,6 @@ void GamePauseScreen::CreateViews() {
 
 	if (showSavestateControls) {
 		if (PSP_CoreParameter().compat.flags().SaveStatesNotRecommended) {
-			bannerAdded = true;
 			LinearLayout *horiz = new LinearLayout(ORIENT_HORIZONTAL);
 			leftColumnItems->Add(horiz);
 			horiz->Add(new NoticeView(NoticeLevel::WARN, pa->T("Using save states is not recommended in this game"), "", new LinearLayoutParams(1.0f)));
@@ -482,13 +486,6 @@ void GamePauseScreen::CreateViews() {
 				System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org/docs/troubleshooting/save-state-time-warps");
 			});
 		}
-
-		if (!bannerAdded && System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_MOBILE) {
-			// Enough so that it's possible to click the save/load buttons of Save 1 without activating
-			// a pulldown on Android for example.
-			leftColumnItems->Add(new Spacer(30.0f));
-		}
-
 		CreateSavestateControls(leftColumnItems, portrait);
 	} else {
 		// Let's show the active challenges.
@@ -534,7 +531,7 @@ void GamePauseScreen::CreateViews() {
 
 	rightColumnItems->Add(new Spacer(20.0));
 
-	if (g_paramSFO.IsValid() && g_Config.hasGameConfig(g_paramSFO.GetDiscID())) {
+	if (g_paramSFO.IsValid() && g_Config.HasGameConfig(g_paramSFO.GetDiscID())) {
 		rightColumnItems->Add(new Choice(pa->T("Game Settings")))->OnClick.Handle(this, &GamePauseScreen::OnGameSettings);
 		Choice *delGameConfig = rightColumnItems->Add(new Choice(pa->T("Delete Game Config")));
 		delGameConfig->OnClick.Handle(this, &GamePauseScreen::OnDeleteConfig);
@@ -755,8 +752,8 @@ void GamePauseScreen::CallbackDeleteConfig(bool yes) {
 	if (yes) {
 		std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(NULL, gamePath_, GameInfoFlags::PARAM_SFO);
 		if (info->Ready(GameInfoFlags::PARAM_SFO)) {
-			g_Config.unloadGameConfig();
-			g_Config.deleteGameConfig(info->id);
+			g_Config.UnloadGameConfig();
+			g_Config.DeleteGameConfig(info->id);
 			info->hasConfig = false;
 			screenManager()->RecreateAllViews();
 		}
@@ -767,9 +764,9 @@ void GamePauseScreen::OnCreateConfig(UI::EventParams &e) {
 	std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(NULL, gamePath_, GameInfoFlags::PARAM_SFO);
 	if (info->Ready(GameInfoFlags::PARAM_SFO)) {
 		std::string gameId = info->id;
-		g_Config.createGameConfig(gameId);
-		g_Config.changeGameSpecific(gameId, info->GetTitle());
-		g_Config.saveGameConfig(gameId, info->GetTitle());
+		g_Config.CreateGameConfig(gameId);
+		g_Config.ChangeGameSpecific(gameId, info->GetTitle());
+		g_Config.SaveGameConfig(gameId, info->GetTitle());
 		if (info) {
 			info->hasConfig = true;
 		}

@@ -57,11 +57,13 @@ public:
 	void OnCancel(UI::EventParams &e);
 	void OnBack(UI::EventParams &e);
 
+	virtual UI::Margins RootMargins() const { return UI::Margins(0); }
+
 protected:
 	virtual void CreateViews() = 0;
 
 	void RecreateViews() override { recreateViews_ = true; }
-	bool UsePortraitLayout() const;
+	DeviceOrientation GetDeviceOrientation() const;
 
 	UI::ViewGroup *root_ = nullptr;
 	Vec3 translation_ = Vec3(0.0f);
@@ -79,7 +81,7 @@ protected:
 	void DoRecreateViews();
 
 	bool recreateViews_ = true;
-	bool lastPortrait_;
+	DeviceOrientation lastOrientation_ = DeviceOrientation::Landscape;
 
 private:
 	std::mutex eventQueueLock_;

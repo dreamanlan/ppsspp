@@ -16,17 +16,18 @@
 
 static const bool ClickDebug = false;
 
-UIScreen::UIScreen()
-	: Screen() {
-	lastPortrait_ = UsePortraitLayout();
+UIScreen::UIScreen() : Screen() {
+	lastOrientation_ = GetDeviceOrientation();
 }
 
 UIScreen::~UIScreen() {
 	delete root_;
 }
 
-bool UIScreen::UsePortraitLayout() const {
-	return g_display.dp_yres > g_display.dp_xres * 1.1f;
+// This is the source of truth for orientation for configuration and rendering.
+DeviceOrientation UIScreen::GetDeviceOrientation() const {
+	// TODO: On some platforms, we can do a more sophisticated check.
+	return g_display.GetDeviceOrientation();
 }
 
 void UIScreen::DoRecreateViews() {
@@ -56,7 +57,7 @@ void UIScreen::DoRecreateViews() {
 
 		// Update layout and refocus so things scroll into view.
 		// This is for resizing down, when focused on something now offscreen.
-		UI::LayoutViewHierarchy(*screenManager()->getUIContext(), root_, ignoreInsets_, ignoreBottomInset_);
+		UI::LayoutViewHierarchy(*screenManager()->getUIContext(), RootMargins(), root_, ignoreInsets_, ignoreBottomInset_);
 		UI::View *focused = UI::GetFocusedView();
 		if (focused) {
 			root_->SubviewFocused(focused);
@@ -140,10 +141,10 @@ bool UIScreen::UnsyncKey(const KeyInput &key) {
 }
 
 void UIScreen::update() {
-	bool portrait = UsePortraitLayout();
-	if (portrait != lastPortrait_) {
+	DeviceOrientation orientation = GetDeviceOrientation();
+	if (orientation != lastOrientation_) {
 		RecreateViews();
-		lastPortrait_ = portrait;
+		lastOrientation_ = orientation;
 	}
 
 	DoRecreateViews();
@@ -229,7 +230,7 @@ ScreenRenderFlags UIScreen::render(ScreenRenderMode mode) {
 
 	UIContext &uiContext = *screenManager()->getUIContext();
 	if (root_) {
-		UI::LayoutViewHierarchy(uiContext, root_, ignoreInsets_, ignoreBottomInset_);
+		UI::LayoutViewHierarchy(uiContext, RootMargins(), root_, ignoreInsets_, ignoreBottomInset_);
 	}
 
 	uiContext.PushTransform({translation_, scale_, alpha_});
