@@ -62,6 +62,7 @@
 #include "UI/DiscordIntegration.h"
 #include "UI/Background.h"
 #include "UI/BackgroundAudio.h"
+#include "UI/MiscViews.h"
 
 #include "Common/File/FileUtil.h"
 #include "Common/File/AndroidContentURI.h"
@@ -222,27 +223,38 @@ void GameSettingsScreen::CreateTabs() {
 	auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
 
 	AddTab("GameSettingsGraphics", ms->T("Graphics"), ImageID("I_DISPLAY"), [this](UI::LinearLayout *parent) {
+		auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
+		parent->Add(new PaneTitleBar(gamePath_, ms->T("Graphics"), "graphics", new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
 		CreateGraphicsSettings(parent);
 	});
 
 	AddTab("GameSettingsControls", ms->T("Controls"), ImageID("I_CONTROLLER"), [this](UI::LinearLayout *parent) {
+		auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
+		parent->Add(new PaneTitleBar(gamePath_, ms->T("Controls"), "controls"));
 		CreateControlsSettings(parent);
 	});
 
 	AddTab("GameSettingsAudio", ms->T("Audio"), ImageID("I_SPEAKER_MAX"), [this](UI::LinearLayout *parent) {
+		auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
+		parent->Add(new PaneTitleBar(gamePath_, ms->T("Audio"), "audio"));
 		CreateAudioSettings(parent);
 	});
 
 	AddTab("GameSettingsNetworking", ms->T("Networking"), ImageID("I_WIFI"), [this](UI::LinearLayout *parent) {
+		auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
+		parent->Add(new PaneTitleBar(gamePath_, ms->T("Networking"), "network"));
 		CreateNetworkingSettings(parent);
 	});
 
 	AddTab("GameSettingsTools", ms->T("Tools"), ImageID("I_TOOLS"), [this](UI::LinearLayout *parent) {
+		auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
+		parent->Add(new PaneTitleBar(gamePath_, ms->T("Tools"), "tools"));
 		CreateToolsSettings(parent);
 	});
 
 	AddTab("GameSettingsSystem", ms->T("System"), ImageID("I_PSP"), [this](UI::LinearLayout *parent) {
-		parent->SetSpacing(0);
+		auto ms = GetI18NCategory(I18NCat::MAINSETTINGS);
+		parent->Add(new PaneTitleBar(gamePath_, ms->T("System"), "system"));
 		CreateSystemSettings(parent);
 	});
 
@@ -1146,10 +1158,7 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	systemSettings->Add(new ChoiceWithValueDisplay(&g_Config.sLanguageIni, sy->T("Language"), langCodeToName))->OnClick.Add([&](UI::EventParams &e) {
 		auto sy = GetI18NCategory(I18NCat::SYSTEM);
 		auto langScreen = new NewLanguageScreen(sy->T("Language"));
-		langScreen->OnChoice.Add([&](UI::EventParams &e) {
-			screenManager()->RecreateAllViews();
-			System_Notify(SystemNotification::UI);
-		});
+		// The actual switching is handled in OnCompleted in NewLanguageScreen.
 		if (e.v)
 			langScreen->SetPopupOrigin(e.v);
 		screenManager()->push(langScreen);
@@ -1700,17 +1709,23 @@ void TriggerRestart(const char *why, bool editThenRestore, const Path &gamePath)
 	System_RestartApp(param);
 }
 
+void GameSettingsScreen::TriggerRestartOrDo(std::function<void()> callback) {
+	auto di = GetI18NCategory(I18NCat::DIALOG);
+	screenManager()->push(new UI::MessagePopupScreen(di->T("Restart"), di->T("Changing this setting requires PPSSPP to restart."), di->T("Restart"), di->T("Cancel"), [=](bool yes) {
+		if (yes) {
+			TriggerRestart("GameSettingsScreen::RenderingBackendYes", editThenRestore_, gamePath_);
+		} else {
+			callback();
+		}
+	}));
+}
+
 void GameSettingsScreen::OnRenderingBackend(UI::EventParams &e) {
 	// It only makes sense to show the restart prompt if the backend was actually changed.
 	if (g_Config.iGPUBackend != (int)GetGPUBackend()) {
-		auto di = GetI18NCategory(I18NCat::DIALOG);
-		screenManager()->push(new PromptScreen(gamePath_, di->T("Changing this setting requires PPSSPP to restart."), di->T("Restart"), di->T("Cancel"), [=](bool yes) {
-			if (yes) {
-				TriggerRestart("GameSettingsScreen::RenderingBackendYes", editThenRestore_, gamePath_);
-			} else {
-				g_Config.iGPUBackend = (int)GetGPUBackend();
-			}
-		}));
+		TriggerRestartOrDo([]() {
+			g_Config.iGPUBackend = (int)GetGPUBackend();
+		});
 	}
 }
 
@@ -1719,32 +1734,22 @@ void GameSettingsScreen::OnRenderingDevice(UI::EventParams &e) {
 	std::string *deviceNameSetting = GPUDeviceNameSetting();
 	if (deviceNameSetting && *deviceNameSetting != GetGPUBackendDevice()) {
 		auto di = GetI18NCategory(I18NCat::DIALOG);
-		screenManager()->push(new PromptScreen(gamePath_, di->T("Changing this setting requires PPSSPP to restart."), di->T("Restart"), di->T("Cancel"), [=](bool yes) {
-			// If the user ends up deciding not to restart, set the config back to the current backend
-			// so it doesn't get switched by accident.
-			if (yes) {
-				TriggerRestart("GameSettingsScreen::RenderingDeviceYes", editThenRestore_, gamePath_);
-			} else {
-				std::string *deviceNameSetting = GPUDeviceNameSetting();
-				if (deviceNameSetting)
-					*deviceNameSetting = GetGPUBackendDevice();
-				// Needed to redraw the setting.
-				RecreateViews();
-			}
-		}));
+		TriggerRestartOrDo([this]() {
+			std::string *deviceNameSetting = GPUDeviceNameSetting();
+			if (deviceNameSetting)
+				*deviceNameSetting = GetGPUBackendDevice();
+			// Needed to redraw the setting.
+			RecreateViews();
+		});
 	}
 }
 
 void GameSettingsScreen::OnInflightFramesChoice(UI::EventParams &e) {
 	if (g_Config.iInflightFrames != prevInflightFrames_) {
 		auto di = GetI18NCategory(I18NCat::DIALOG);
-		screenManager()->push(new PromptScreen(gamePath_, di->T("Changing this setting requires PPSSPP to restart."), di->T("Restart"), di->T("Cancel"), [=](bool yes) {
-			if (yes) {
-				TriggerRestart("GameSettingsScreen::InflightFramesYes", editThenRestore_, gamePath_);
-			} else {
-				g_Config.iInflightFrames = prevInflightFrames_;
-			}
-		}));
+		TriggerRestartOrDo([this]() {
+			g_Config.iInflightFrames = prevInflightFrames_;
+		});
 	}
 }
 
@@ -1853,7 +1858,7 @@ void HostnameSelectScreen::CreatePopupContents(UI::ViewGroup *parent) {
 	parent->Add(buttonsRow1);
 	parent->Add(buttonsRow2);
 
-	buttonsRow1->Add(new Spacer(new LinearLayoutParams(1.0, G_LEFT)));
+	buttonsRow1->Add(new Spacer(new LinearLayoutParams(1.0, Gravity::G_LEFT)));
 	for (char c = '0'; c <= '9'; ++c) {
 		char label[] = { c, '\0' };
 		auto button = buttonsRow1->Add(new Button(label));
@@ -1861,16 +1866,16 @@ void HostnameSelectScreen::CreatePopupContents(UI::ViewGroup *parent) {
 		button->SetTag(label);
 	}
 	buttonsRow1->Add(new Button("."))->OnClick.Handle(this, &HostnameSelectScreen::OnPointClick);
-	buttonsRow1->Add(new Spacer(new LinearLayoutParams(1.0, G_RIGHT)));
+	buttonsRow1->Add(new Spacer(new LinearLayoutParams(1.0, Gravity::G_RIGHT)));
 
-	buttonsRow2->Add(new Spacer(new LinearLayoutParams(1.0, G_LEFT)));
+	buttonsRow2->Add(new Spacer(new LinearLayoutParams(1.0, Gravity::G_LEFT)));
 	if (System_GetPropertyBool(SYSPROP_HAS_TEXT_INPUT_DIALOG)) {
 		buttonsRow2->Add(new Button(di->T("Edit")))->OnClick.Handle(this, &HostnameSelectScreen::OnEditClick);
 	}
 	buttonsRow2->Add(new Button(di->T("Delete")))->OnClick.Handle(this, &HostnameSelectScreen::OnDeleteClick);
 	buttonsRow2->Add(new Button(di->T("Delete all")))->OnClick.Handle(this, &HostnameSelectScreen::OnDeleteAllClick);
 	buttonsRow2->Add(new Button(di->T("Toggle List")))->OnClick.Handle(this, &HostnameSelectScreen::OnShowIPListClick);
-	buttonsRow2->Add(new Spacer(new LinearLayoutParams(1.0, G_RIGHT)));
+	buttonsRow2->Add(new Spacer(new LinearLayoutParams(1.0, Gravity::G_RIGHT)));
 
 	std::vector<std::string> listIP;
 	if (listItems_) {
