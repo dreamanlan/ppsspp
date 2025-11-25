@@ -88,6 +88,7 @@ struct DisplayLayoutConfig : public ConfigBlock {
 	int iCardboardScreenSize = 50; // Screen Size (in %)
 	int iCardboardXShift = 0; // X-Shift of Screen (in %)
 	int iCardboardYShift = 0; // Y-Shift of Screen (in %)
+	bool bImmersiveMode = true;  // Mode on Android Kitkat 4.4 and later that hides the back button etc.
 
 	bool InternalRotationIsPortrait() const;
 	bool CanResetToDefault() const override { return true; }
@@ -96,15 +97,22 @@ struct DisplayLayoutConfig : public ConfigBlock {
 };
 
 struct TouchControlConfig : public ConfigBlock {
-	//space between PSP buttons
-	//the PSP button's center (triangle, circle, square, cross)
+	constexpr TouchControlConfig() {
+		// Hide all extras and custom buttons by default.
+		touchRightAnalogStick.show = false;
+		for (size_t i = 0; i < CUSTOM_BUTTON_COUNT; i++) {
+			touchCustom[i].show = false;
+		}
+	}
+	// the PSP button's center (triangle, circle, square, cross)
 	ConfigTouchPos touchActionButtonCenter;
-	float fActionButtonSpacing = 0.0f;
-	//radius of the D-pad (PSP cross)
-	// int iDpadRadius;
-	//the D-pad (PSP cross) position
+	// space between those PSP buttons
+	float fActionButtonSpacing = 1.0f;
+	// the D-pad (PSP cross) position
 	ConfigTouchPos touchDpad;
-	float fDpadSpacing = 0.0f;
+	// And its spacing.
+	float fDpadSpacing = 1.0f;
+
 	ConfigTouchPos touchStartKey;
 	ConfigTouchPos touchSelectKey;
 	ConfigTouchPos touchFastForwardKey;
@@ -271,7 +279,6 @@ public:
 
 	bool bDisplayCropTo16x9;  // Crops to 16:9 if the resolution is very close.
 
-	bool bImmersiveMode;  // Mode on Android Kitkat 4.4 and later that hides the back button etc.
 	bool bSustainedPerformanceMode;  // Android: Slows clocks down to avoid overheating/speed fluctuations.
 
 	bool bShowImDebugger;
@@ -361,7 +368,7 @@ public:
 	int iSDLAudioBufferSize;
 	int iAudioBufferSize;
 	bool bFillAudioGaps;
-	int iAudioSyncMode;
+	int iAudioPlaybackMode;
 
 	// Legacy volume settings, 0-10. These get auto-upgraded and should not be used.
 	int iLegacyGameVolume;
@@ -642,6 +649,7 @@ public:
 	// Still, we may wanna store it more securely than in PPSSPP.ini, especially on Android.
 	std::string sAchievementsUserName;
 	std::string sAchievementsToken;  // Not saved, to be used if you want to manually make your RA login persistent. See Native_SaveSecret for the normal case.
+	std::string sAchievementsHost;  // Optional custom host for debugging against alternate RA servers.
 
 	// Various directories. Autoconfigured, not read from ini.
 	Path currentDirectory;  // The directory selected in the game browsing window.
@@ -657,9 +665,6 @@ public:
 	void Reload();
 	void RestoreDefaults(RestoreSettingsBits whatToRestore, bool log = false);
 
-	// Per-game config management.
-	void ChangeGameSpecific(const std::string &gameId = "", std::string_view title = "");
-
 	// Note: This doesn't switch to the config, just creates it.
 	bool CreateGameConfig(std::string_view gameId);
 	bool DeleteGameConfig(std::string_view gameId);
@@ -667,12 +672,10 @@ public:
 	bool SaveGameConfig(const std::string &pGameId, std::string_view titleForComment);
 	void UnloadGameConfig();
 
-	Path GetGameConfigFilePath(std::string_view gameId, bool *exists);
 	bool HasGameConfig(std::string_view gameId);
-	bool IsGameSpecific() const { return gameSpecific_; }
+	bool IsGameSpecific() const { return !gameId_.empty(); }
 
 	void SetSearchPath(const Path &path);
-	Path FindConfigFile(std::string_view baseFilename, bool *exists) const;
 
 	void UpdateIniLocation(const char *iniFileName = nullptr, const char *controllerIniFilename = nullptr);
 
@@ -721,15 +724,17 @@ private:
 	// Applies defaults for missing settings.
 	void ReadAllSettings(const IniFile &iniFile);
 
-	bool reload_ = false;
+	bool inReload_ = false;
 
-	bool gameSpecific_ = false;
+	// If not empty, we're using a game-specific config.
 	std::string gameId_;
 
 	PlayTimeTracker playTimeTracker_;
 
+	// Always the paths to the main configs, doesn't change with game-specific overlay.
 	Path iniFilename_;
 	Path controllerIniFilename_;
+
 	Path searchPath_;
 	Path appendedConfigFileName_;
 	// A set make more sense, but won't have many entry, and I dont want to include the whole std::set header here
@@ -737,7 +742,6 @@ private:
 };
 
 std::string CreateRandMAC();
-bool TryUpdateSavedPath(Path *path);
 
 // TODO: Find a better place for this.
 extern http::RequestManager g_DownloadManager;

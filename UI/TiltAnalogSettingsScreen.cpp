@@ -83,12 +83,12 @@ std::string_view TiltAnalogSettingsScreen::GetTitle() const {
 	return co->T("Tilt control setup");
 }
 
-void TiltAnalogSettingsScreen::CreateContentViews(UI::LinearLayout *parent) {
+void TiltAnalogSettingsScreen::CreateContentViews(UI::ViewGroup *parent) {
 	using namespace UI;
 	CreateCalibrationView(parent, new LinearLayoutParams(300.0f, 300.0f, 1.0f, Gravity::G_CENTER));
 }
 
-void TiltAnalogSettingsScreen::CreateSettingsViews(UI::LinearLayout *settings) {
+void TiltAnalogSettingsScreen::CreateSettingsViews(UI::ViewGroup *settings) {
 	using namespace UI;
 	auto co = GetI18NCategory(I18NCat::CONTROLS);
 
@@ -109,7 +109,7 @@ void TiltAnalogSettingsScreen::CreateSettingsViews(UI::LinearLayout *settings) {
 	settings->Add(new ItemHeader(co->T("Calibration")));
 	TextView *calibrationInfo = new TextView(co->T("To Calibrate", "Hold device at your preferred angle and press Calibrate."));
 	calibrationInfo->SetSmall(true);
-	calibrationInfo->SetPadding(5);
+	calibrationInfo->SetPadding(Margins(5));
 	settings->Add(calibrationInfo);
 	Choice *calibrate = new Choice(co->T("Calibrate"));
 	calibrate->OnClick.Handle(this, &TiltAnalogSettingsScreen::OnCalibrate);

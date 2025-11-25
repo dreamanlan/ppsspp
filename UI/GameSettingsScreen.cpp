@@ -81,7 +81,6 @@
 #include "Core/HLE/sceUtility.h"
 #include "GPU/Common/TextureReplacer.h"
 #include "GPU/Common/PostShader.h"
-#include "GPU/GPUCommon.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
 
 #include "Core/Core.h" // for Core_IsStepping
@@ -117,10 +116,61 @@ void SetMemStickDirDarwin(int requesterToken) {
 }
 #endif
 
+class SettingHint : public UI::TextView {
+public:
+	SettingHint(std::string_view text)
+		: UI::TextView(text, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::WRAP_CONTENT)) {
+		SetTextSize(UI::TextSize::Tiny);
+		SetPadding(UI::Margins(14, 0, 0, 8));
+	}
+
+	void Draw(UIContext &dc) override {
+		UI::Style style = dc.GetTheme().itemStyle;
+		dc.FillRect(style.background, bounds_);
+		UI::TextView::Draw(dc);
+	}
+};
+
 GameSettingsScreen::GameSettingsScreen(const Path &gamePath, std::string gameID, bool editThenRestore)
-	: UITabbedBaseDialogScreen(gamePath, TabDialogFlags::HorizontalOnlyIcons | TabDialogFlags::VerticalShowIcons), gameID_(gameID), editThenRestore_(editThenRestore) {
+	: UITabbedBaseDialogScreen(gamePath, TabDialogFlags::HorizontalOnlyIcons | TabDialogFlags::VerticalShowIcons), gameID_(gameID), editGameSpecificThenRestore_(editThenRestore) {
 	prevInflightFrames_ = g_Config.iInflightFrames;
 	analogSpeedMapped_ = KeyMap::InputMappingsFromPspButton(VIRTKEY_SPEED_ANALOG, nullptr, true);
+
+	if (editGameSpecificThenRestore_) {
+		std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(nullptr, gamePath_, GameInfoFlags::PARAM_SFO);
+		g_Config.LoadGameConfig(gameID_);
+	}
+
+	iAlternateSpeedPercent1_ = g_Config.iFpsLimit1 < 0 ? -1 : (g_Config.iFpsLimit1 * 100) / 60;
+	iAlternateSpeedPercent2_ = g_Config.iFpsLimit2 < 0 ? -1 : (g_Config.iFpsLimit2 * 100) / 60;
+	iAlternateSpeedPercentAnalog_ = (g_Config.iAnalogFpsLimit * 100) / 60;
+}
+
+GameSettingsScreen::~GameSettingsScreen() {
+	Reporting::Enable(enableReports_, "report.ppsspp.org");
+	Reporting::UpdateConfig();
+	if (!g_Config.Save("GameSettingsScreen::onFinish")) {
+		System_Toast("Failed to save settings!\nCheck permissions, or try to restart the device.");
+	}
+
+	if (editGameSpecificThenRestore_) {
+		// We already saved above. Just unload the game config.
+		// Note that we are leaving the screen here in practice, we don't need to reset the bool.
+		g_Config.UnloadGameConfig();
+	}
+
+	System_Notify(SystemNotification::UI);
+
+	KeyMap::UpdateNativeMenuKeys();
+
+	// Wipe some caches after potentially changing settings.
+	// Let's not send resize messages here, handled elsewhere.
+	System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
+}
+
+void GameSettingsScreen::PreCreateViews() {
+	ReloadAllPostShaderInfo(screenManager()->getDrawContext());
+	ReloadAllThemeInfo();
 }
 
 // This needs before run CheckGPUFeatures()
@@ -202,20 +252,6 @@ static bool PathToVisualUsbPath(Path path, std::string &outPath) {
 		break;
 	}
 	return false;
-}
-
-void GameSettingsScreen::PreCreateViews() {
-	ReloadAllPostShaderInfo(screenManager()->getDrawContext());
-	ReloadAllThemeInfo();
-
-	if (editThenRestore_) {
-		std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(nullptr, gamePath_, GameInfoFlags::PARAM_SFO);
-		g_Config.LoadGameConfig(gameID_);
-	}
-
-	iAlternateSpeedPercent1_ = g_Config.iFpsLimit1 < 0 ? -1 : (g_Config.iFpsLimit1 * 100) / 60;
-	iAlternateSpeedPercent2_ = g_Config.iFpsLimit2 < 0 ? -1 : (g_Config.iFpsLimit2 * 100) / 60;
-	iAlternateSpeedPercentAnalog_ = (g_Config.iAnalogFpsLimit * 100) / 60;
 }
 
 void GameSettingsScreen::CreateTabs() {
@@ -374,6 +410,8 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	}
 #endif
 
+	DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(GetDeviceOrientation());
+
 	graphicsSettings->Add(new CheckBox(&g_Config.bReplaceTextures, dev->T("Replace textures")));
 
 	graphicsSettings->Add(new ItemHeader(gr->T("Display")));
@@ -394,7 +432,7 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 		// Hide Immersive Mode on pre-kitkat Android
 		if (System_GetPropertyInt(SYSPROP_SYSTEMVERSION) >= 19) {
 			// Let's reuse the Fullscreen translation string from desktop.
-			graphicsSettings->Add(new CheckBox(&g_Config.bImmersiveMode, gr->T("FullScreen", "Full Screen")))->OnClick.Handle(this, &GameSettingsScreen::OnImmersiveModeChange);
+			graphicsSettings->Add(new CheckBox(&config.bImmersiveMode, gr->T("FullScreen", "Full Screen")))->OnClick.Handle(this, &GameSettingsScreen::OnImmersiveModeChange);
 		}
 #endif
 		// Display Layout Editor: To avoid overlapping touch controls on large tablets, meet geeky demands for integer zoom/unstretched image etc.
@@ -450,9 +488,9 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	graphicsSettings->Add(new ItemHeader(gr->T("Speed Hacks", "Speed Hacks (can cause rendering errors!)")));
 
 	CheckBox *skipBufferEffects = graphicsSettings->Add(new CheckBox(&g_Config.bSkipBufferEffects, gr->T("Skip Buffer Effects")));
+	graphicsSettings->Add(new SettingHint(gr->T("RenderingMode NonBuffered Tip", "Faster, but graphics may be missing in some games")));
 	skipBufferEffects->OnClick.Add([=](EventParams &e) {
 		if (g_Config.bSkipBufferEffects) {
-			settingInfo_->Show(gr->T("RenderingMode NonBuffered Tip", "Faster, but graphics may be missing in some games"), e.v);
 			g_Config.bAutoFrameSkip = false;
 		}
 		System_PostUIMessage(UIMessage::GPU_RENDER_RESIZED);
@@ -477,26 +515,18 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 
 	CheckBox *texBackoff = graphicsSettings->Add(new CheckBox(&g_Config.bTextureBackoffCache, gr->T("Lazy texture caching", "Lazy texture caching (speedup)")));
 	texBackoff->SetDisabledPtr(&g_Config.bSoftwareRendering);
-	texBackoff->OnClick.Add([=](EventParams& e) {
-		settingInfo_->Show(gr->T("Lazy texture caching Tip", "Faster, but can cause text problems in a few games"), e.v);
-	});
+	graphicsSettings->Add(new SettingHint(gr->T("Lazy texture caching Tip", "Faster, but can cause text problems in a few games")));
 
 	static const char *quality[] = { "Low", "Medium", "High" };
-	PopupMultiChoice *beziersChoice = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iSplineBezierQuality, gr->T("LowCurves", "Spline/Bezier curves quality"), quality, 0, ARRAY_SIZE(quality), I18NCat::GRAPHICS, screenManager()));
-	beziersChoice->OnChoice.Add([=](EventParams &e) {
-		if (g_Config.iSplineBezierQuality != 0) {
-			settingInfo_->Show(gr->T("LowCurves Tip", "Only used by some games, controls smoothness of curves"), e.v);
-		}
-	});
+	graphicsSettings->Add(new PopupMultiChoice(&g_Config.iSplineBezierQuality, gr->T("LowCurves", "Spline/Bezier curves quality"), quality, 0, ARRAY_SIZE(quality), I18NCat::GRAPHICS, screenManager()));
+	graphicsSettings->Add(new SettingHint(gr->T("LowCurves Tip", "Only used by some games, controls smoothness of curves")));
 
 	graphicsSettings->Add(new ItemHeader(gr->T("Performance")));
 	CheckBox *frameDuplication = graphicsSettings->Add(new CheckBox(&g_Config.bRenderDuplicateFrames, gr->T("Render duplicate frames to 60hz")));
-	frameDuplication->OnClick.Add([=](EventParams &e) {
-		settingInfo_->Show(gr->T("RenderDuplicateFrames Tip", "Can make framerate smoother in games that run at lower framerates"), e.v);
-	});
 	frameDuplication->SetEnabledFunc([] {
 		return !g_Config.bSkipBufferEffects && g_Config.iFrameSkip == 0;
 	});
+	graphicsSettings->Add(new SettingHint(gr->T("RenderDuplicateFrames Tip", "Can make framerate smoother in games that run at lower framerates")));
 
 	if (draw->GetDeviceCaps().setMaxFrameLatencySupported) {
 		static const char *bufferOptions[] = { "No buffer", "Up to 1", "Up to 2" };
@@ -519,20 +549,15 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	}
 
 	CheckBox *swSkin = graphicsSettings->Add(new CheckBox(&g_Config.bSoftwareSkinning, gr->T("Software Skinning")));
-	swSkin->OnClick.Add([=](EventParams &e) {
-		settingInfo_->Show(gr->T("SoftwareSkinning Tip", "Combine skinned model draws on the CPU, faster in most games"), e.v);
-	});
 	swSkin->SetDisabledPtr(&g_Config.bSoftwareRendering);
+	graphicsSettings->Add(new SettingHint(gr->T("SoftwareSkinning Tip", "Combine skinned model draws on the CPU, faster in most games")));
 
 	if (DoesBackendSupportHWTess()) {
 		CheckBox *tessellationHW = graphicsSettings->Add(new CheckBox(&g_Config.bHardwareTessellation, gr->T("Hardware Tessellation")));
-		tessellationHW->OnClick.Add([=](EventParams &e) {
-			settingInfo_->Show(gr->T("HardwareTessellation Tip", "Uses hardware to make curves"), e.v);
-		});
-
 		tessellationHW->SetEnabledFunc([]() {
 			return !g_Config.bSoftwareRendering && g_Config.bHardwareTransform;
 		});
+		graphicsSettings->Add(new SettingHint(gr->T("HardwareTessellation Tip", "Uses hardware to make curves")));
 	}
 
 	graphicsSettings->Add(new ItemHeader(gr->T("Texture upscaling")));
@@ -560,24 +585,17 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 		texScalingChoice->HideChoice(3); // 3x
 		texScalingChoice->HideChoice(5); // 5x
 	}
-	texScalingChoice->OnChoice.Add([=](EventParams &e) {
-		if (g_Config.iTexScalingLevel != 1 && !UsingHardwareTextureScaling()) {
-			settingInfo_->Show(gr->T("UpscaleLevel Tip", "CPU heavy - some scaling may be delayed to avoid stutter"), e.v);
-		}
-	});
+	graphicsSettings->Add(new SettingHint(gr->T("UpscaleLevel Tip", "CPU heavy - some scaling may be delayed to avoid stutter")));
+
 	texScalingChoice->SetEnabledFunc([]() {
 		return !g_Config.bSoftwareRendering && !UsingHardwareTextureScaling();
 	});
 
 	CheckBox *deposterize = graphicsSettings->Add(new CheckBox(&g_Config.bTexDeposterize, gr->T("Deposterize")));
-	deposterize->OnClick.Add([=](EventParams &e) {
-		if (g_Config.bTexDeposterize == true) {
-			settingInfo_->Show(gr->T("Deposterize Tip", "Fixes visual banding glitches in upscaled textures"), e.v);
-		}
-	});
 	deposterize->SetEnabledFunc([]() {
 		return !g_Config.bSoftwareRendering && !UsingHardwareTextureScaling();
 	});
+	graphicsSettings->Add(new SettingHint(gr->T("Deposterize Tip", "Fixes visual banding glitches in upscaled textures")));
 
 	graphicsSettings->Add(new ItemHeader(gr->T("Texture Filtering")));
 	static const char *anisoLevels[] = { "Off", "2x", "4x", "8x", "16x" };
@@ -591,7 +609,6 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	CheckBox *smartFiltering = graphicsSettings->Add(new CheckBox(&g_Config.bSmart2DTexFiltering, gr->T("Smart 2D texture filtering")));
 	smartFiltering->SetDisabledPtr(&g_Config.bSoftwareRendering);
 
-	DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(GetDeviceOrientation());
 #if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
 	bool showCardboardSettings = deviceType != DEVICE_TYPE_VR;
 #else
@@ -660,9 +677,9 @@ void GameSettingsScreen::CreateAudioSettings(UI::ViewGroup *audioSettings) {
 
 	static const char *syncModes[] = { "Smooth (reduces artifacts)", "Classic (lowest latency)" };
 
-	audioSettings->Add(new PopupMultiChoice(&g_Config.iAudioSyncMode, a->T("Synchronization mode"), syncModes, 0, ARRAY_SIZE(syncModes), I18NCat::AUDIO, screenManager()));
+	audioSettings->Add(new PopupMultiChoice(&g_Config.iAudioPlaybackMode, a->T("Playback mode"), syncModes, 0, ARRAY_SIZE(syncModes), I18NCat::AUDIO, screenManager()));
 	audioSettings->Add(new CheckBox(&g_Config.bFillAudioGaps, a->T("Fill audio gaps")))->SetEnabledFunc([]() {
-		return g_Config.iAudioSyncMode == (int)AudioSyncMode::GRANULAR;
+		return g_Config.iAudioPlaybackMode == (int)AudioSyncMode::GRANULAR;
 	});
 
 	audioSettings->Add(new ItemHeader(a->T("Game volume")));
@@ -726,9 +743,7 @@ void GameSettingsScreen::CreateAudioSettings(UI::ViewGroup *audioSettings) {
 	static const int bufferSizes[] = {128, 256, 512, 1024, 2048};
 	PopupSliderChoice *bufferSize = audioSettings->Add(new PopupSliderChoice(&g_Config.iSDLAudioBufferSize, 0, 2048, 256, a->T("Buffer size"), screenManager()));
 	bufferSize->RestrictChoices(bufferSizes, ARRAY_SIZE(bufferSizes));
-	bufferSize->OnChange.Add([=](EventParams& e) {
-		settingInfo_->Show(di->T("This change will not take effect until PPSSPP is restarted."), e.v);
-	});
+	audioSettings->Add(new SettingHint(di->T("This change will not take effect until PPSSPP is restarted.")));
 #endif
 
 #if PPSSPP_PLATFORM(WINDOWS)
@@ -908,9 +923,7 @@ void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings)
 #endif // #if defined(USING_WIN_UI)
 		auto analogLimiter = new PopupSliderChoiceFloat(&g_Config.fAnalogLimiterDeadzone, 0.0f, 1.0f, 0.6f, co->T("Analog Limiter"), 0.10f, screenManager(), "/ 1.0");
 		controlsSettings->Add(analogLimiter);
-		analogLimiter->OnChange.Add([=](EventParams &e) {
-			settingInfo_->Show(co->T("AnalogLimiter Tip", "When the analog limiter button is pressed"), e.v);
-		});
+		controlsSettings->Add(new SettingHint(co->T("AnalogLimiter Tip", "When the analog limiter button is pressed")));
 		controlsSettings->Add(new PopupSliderChoice(&g_Config.iRapidFireInterval, 1, 10, 5, co->T("Rapid fire interval"), screenManager(), "frames"));
 #if defined(USING_WIN_UI) || defined(SDL) || PPSSPP_PLATFORM(ANDROID)
 		bool enableMouseSettings = true;
@@ -929,10 +942,8 @@ void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings)
 			wheelUpDelaySlider->SetFormat(di->T("%d ms"));
 
 			CheckBox *mouseControl = controlsSettings->Add(new CheckBox(&g_Config.bMouseControl, co->T("Use Mouse Control")));
-			mouseControl->OnClick.Add([=](EventParams &e) {
-				if (g_Config.bMouseControl)
-					settingInfo_->Show(co->T("MouseControl Tip", "You can now map mouse in control mapping screen by pressing the 'M' icon."), e.v);
-			});
+			controlsSettings->Add(new SettingHint(co->T("MouseControl Tip", "You can now map mouse in control mapping screen by pressing the 'M' icon.")));
+
 #if !PPSSPP_PLATFORM(ANDROID)
 			controlsSettings->Add(new CheckBox(&g_Config.bMouseConfine, co->T("Confine Mouse", "Trap mouse within window/display area")))->SetEnabledPtr(&g_Config.bMouseControl);
 #endif
@@ -952,7 +963,7 @@ public:
 	MacAddressChooser(RequesterToken token, Path gamePath, std::string *value, std::string_view title, ScreenManager *screenManager, UI::LayoutParams *layoutParams = nullptr);
 };
 
-MacAddressChooser::MacAddressChooser(RequesterToken token, Path gamePath_, std::string *value, std::string_view title, ScreenManager *screenManager, UI::LayoutParams *layoutParams) : UI::LinearLayout(ORIENT_HORIZONTAL, layoutParams) {
+MacAddressChooser::MacAddressChooser(RequesterToken token, Path gamePath, std::string *value, std::string_view title, ScreenManager *screenManager, UI::LayoutParams *layoutParams) : UI::LinearLayout(ORIENT_HORIZONTAL, layoutParams) {
 	using namespace UI;
 	SetSpacing(5.0f);
 	if (!layoutParams) {
@@ -978,7 +989,7 @@ MacAddressChooser::MacAddressChooser(RequesterToken token, Path gamePath_, std::
 		std::string combined = g_Config.sMACAddress + "\n\n" + std::string(confirmMessage) + "\n\n" + std::string(warningMessage);
 
 		auto confirmScreen = new PromptScreen(
-			gamePath_,
+			gamePath,
 			combined, di->T("Yes"), di->T("No"),
 			[&](bool success) {
 				if (success) {
@@ -1015,17 +1026,15 @@ void GameSettingsScreen::CreateNetworkingSettings(UI::ViewGroup *networkingSetti
 
 	networkingSettings->Add(new ItemHeader(n->T("AdHoc server")));
 	networkingSettings->Add(new CheckBox(&g_Config.bEnableAdhocServer, n->T("Enable built-in PRO Adhoc Server", "Enable built-in PRO Adhoc Server")));
-	networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.proAdhocServer, n->T("Change proAdhocServer Address", "Change proAdhocServer Address (localhost = multiple instance)"), I18NCat::NONE))->OnClick.Add([=](UI::EventParams &) {
+	networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.proAdhocServer, n->T("Change proAdhocServer Address"), I18NCat::NONE))->OnClick.Add([=](UI::EventParams &) {
 		screenManager()->push(new HostnameSelectScreen(&g_Config.proAdhocServer, &g_Config.proAdhocServerList, n->T("proAdhocServer Address:")));
 	});
-
+	networkingSettings->Add(new SettingHint(n->T("Change proAdhocServer address hint")));
 	networkingSettings->Add(new ItemHeader(n->T("UPnP (port-forwarding)")));
 	networkingSettings->Add(new CheckBox(&g_Config.bEnableUPnP, n->T("Enable UPnP", "Enable UPnP (need a few seconds to detect)")));
 	auto useOriPort = networkingSettings->Add(new CheckBox(&g_Config.bUPnPUseOriginalPort, n->T("UPnP use original port", "UPnP use original port (Enabled = PSP compatibility)")));
-	useOriPort->OnClick.Add([=](EventParams& e) {
-		if (g_Config.bUPnPUseOriginalPort)
-			settingInfo_->Show(n->T("UseOriginalPort Tip", "May not work for all devices or games, see wiki."), e.v);
-	});
+	networkingSettings->Add(new SettingHint(n->T("UseOriginalPort Tip", "May not work for all devices or games, see wiki.")));
+
 	useOriPort->SetEnabledPtr(&g_Config.bEnableUPnP);
 
 	networkingSettings->Add(new ItemHeader(n->T("Infrastructure")));
@@ -1626,29 +1635,6 @@ void GameSettingsScreen::OnFullscreenMultiChange(UI::EventParams &e) {
 	System_ToggleFullscreenState(g_Config.UseFullScreen() ? "1" : "0");
 }
 
-void GameSettingsScreen::onFinish(DialogResult result) {
-	Reporting::Enable(enableReports_, "report.ppsspp.org");
-	Reporting::UpdateConfig();
-	if (!g_Config.Save("GameSettingsScreen::onFinish")) {
-		System_Toast("Failed to save settings!\nCheck permissions, or try to restart the device.");
-	}
-
-	if (editThenRestore_) {
-		// In case we didn't have the title yet before, try again.
-		std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(nullptr, gamePath_, GameInfoFlags::PARAM_SFO);
-		g_Config.ChangeGameSpecific(gameID_, info->GetTitle());
-		g_Config.UnloadGameConfig();
-	}
-
-	System_Notify(SystemNotification::UI);
-
-	KeyMap::UpdateNativeMenuKeys();
-
-	// Wipe some caches after potentially changing settings.
-	// Let's not send resize messages here, handled elsewhere.
-	System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
-}
-
 void GameSettingsScreen::dialogFinished(const Screen *dialog, DialogResult result) {
 	if (result == DialogResult::DR_OK) {
 		g_Config.iFpsLimit1 = iAlternateSpeedPercent1_ < 0 ? -1 : (iAlternateSpeedPercent1_ * 60) / 100;
@@ -1677,7 +1663,7 @@ void GameSettingsScreen::CallbackMemstickFolder(bool yes) {
 		}
 		if (!File::WriteDataToFile(true, "1", 1, Path(testWriteFile))) {
 			auto sy = GetI18NCategory(I18NCat::SYSTEM);
-			settingInfo_->Show(sy->T("ChangingMemstickPathInvalid", "That path couldn't be used to save Memory Stick files."), nullptr);
+			g_OSD.Show(OSDType::MESSAGE_ERROR, sy->T("ChangingMemstickPathInvalid", "That path couldn't be used to save Memory Stick files."), testWriteFile, 5.0);
 			return;
 		}
 		File::Delete(Path(testWriteFile));
@@ -1713,7 +1699,7 @@ void GameSettingsScreen::TriggerRestartOrDo(std::function<void()> callback) {
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 	screenManager()->push(new UI::MessagePopupScreen(di->T("Restart"), di->T("Changing this setting requires PPSSPP to restart."), di->T("Restart"), di->T("Cancel"), [=](bool yes) {
 		if (yes) {
-			TriggerRestart("GameSettingsScreen::RenderingBackendYes", editThenRestore_, gamePath_);
+			TriggerRestart("GameSettingsScreen::RenderingBackendYes", editGameSpecificThenRestore_, gamePath_);
 		} else {
 			callback();
 		}
@@ -2095,7 +2081,7 @@ void RestoreSettingsScreen::CreatePopupContents(UI::ViewGroup *parent) {
 		"Restore these settings back to their defaults?\nYou can't undo this.\nPlease restart PPSSPP after restoring settings.");
 
 	TextView *textView = parent->Add(new TextView(text, FLAG_WRAP_TEXT, false));
-	textView->SetPadding(10.0f);
+	textView->SetPadding(Margins(10));
 
 	parent->Add(new BitCheckBox(&restoreFlags_, (int)RestoreSettingsBits::SETTINGS, ga->T("Game Settings")));
 	parent->Add(new BitCheckBox(&restoreFlags_, (int)RestoreSettingsBits::CONTROLS, ms->T("Controls")));

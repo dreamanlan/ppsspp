@@ -66,7 +66,6 @@
 #include "UI/InstallZipScreen.h"
 #include "Core/Config.h"
 #include "Core/Loaders.h"
-#include "GPU/GPUCommon.h"
 #include "Common/Data/Text/I18n.h"
 
 #if PPSSPP_PLATFORM(IOS) || PPSSPP_PLATFORM(MAC)
@@ -515,15 +514,16 @@ void DirButton::Draw(UIContext &dc) {
 	}
 }
 
-GameBrowser::GameBrowser(int token, const Path &path, BrowseFlags browseFlags, bool *gridStyle, ScreenManager *screenManager, std::string_view lastText, std::string_view lastLink, UI::LayoutParams *layoutParams)
-	: LinearLayout(ORIENT_VERTICAL, layoutParams), gridStyle_(gridStyle), browseFlags_(browseFlags), lastText_(lastText), lastLink_(lastLink), screenManager_(screenManager), token_(token) {
+GameBrowser::GameBrowser(int token, const Path &path, BrowseFlags browseFlags, bool portrait, bool *gridStyle, ScreenManager *screenManager, std::string_view lastText, std::string_view lastLink, UI::LayoutParams *layoutParams)
+	: LinearLayout(ORIENT_VERTICAL, layoutParams), gridStyle_(gridStyle), browseFlags_(browseFlags), portrait_(portrait), lastText_(lastText), lastLink_(lastLink), screenManager_(screenManager), token_(token) {
 	using namespace UI;
 	path_.SetUserAgent(StringFromFormat("PPSSPP/%s", PPSSPP_GIT_VERSION));
 	Path memstickRoot = GetSysDirectory(DIRECTORY_MEMSTICK_ROOT);
+	aliasMatch_ = memstickRoot;
 	if (memstickRoot == GetSysDirectory(DIRECTORY_PSP)) {
-		path_.SetRootAlias("ms:/PSP/", memstickRoot);
+		aliasDisplay_ = "ms:/PSP/";
 	} else {
-		path_.SetRootAlias("ms:/", memstickRoot);
+		aliasDisplay_ = "ms:/";
 	}
 	if (System_GetPropertyBool(SYSPROP_LIMITED_FILE_BROWSING) &&
 		(path.Type() == PathType::NATIVE || path.Type() == PathType::CONTENT_URI)) {
@@ -776,11 +776,23 @@ void GameBrowser::Refresh() {
 
 	// No topbar on recent screen
 	gameList_ = nullptr;
+
 	if (DisplayTopBar()) {
 		LinearLayout *topBar = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(8, 0, 8, 0)));
+		Add(topBar);
+
+		const bool pathOnSeparateLine = g_display.dp_xres < 1050 || portrait_;
+
+		std::string pathStr = GetFriendlyPath(path_.GetPath(), aliasMatch_, aliasDisplay_);
+
+		if (pathOnSeparateLine) {
+			Add(new TextView(pathStr, ALIGN_VCENTER | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(8, 0, 8, 0))));
+		}
 		if (browseFlags_ & BrowseFlags::NAVIGATE) {
-			topBar->Add(new Spacer(2.0f));
-			topBar->Add(new TextView(path_.GetFriendlyPath(), ALIGN_VCENTER | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, 64.0f, 1.0f)));
+			if (!pathOnSeparateLine) {
+				topBar->Add(new Spacer(2.0f));
+				topBar->Add(new TextView(pathStr, ALIGN_VCENTER | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, 64.0f, 1.0f)));
+			}
 			topBar->Add(new Choice(ImageID("I_HOME"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::OnHomeClick);
 			if (System_GetPropertyBool(SYSPROP_HAS_ADDITIONAL_STORAGE)) {
 				topBar->Add(new Choice(ImageID("I_SDCARD"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::StorageClick);
@@ -796,7 +808,7 @@ void GameBrowser::Refresh() {
 #else
 			if ((browseFlags_ & BrowseFlags::BROWSE) && System_GetPropertyBool(SYSPROP_HAS_FOLDER_BROWSER)) {
 				// Collapse the button title on very small screens (Retroid Pocket) or portrait mode.
-				std::string_view browseTitle = g_display.pixel_xres <= 550 ? "" : mm->T("Browse");
+				std::string_view browseTitle = (g_display.dp_xres <= 550 || portrait_) ? "" : mm->T("Browse");
 				topBar->Add(new Choice(browseTitle, ImageID("I_FOLDER_OPEN"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::BrowseClick);
 			}
 			if (System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_TV) {
@@ -808,7 +820,7 @@ void GameBrowser::Refresh() {
 				});
 			}
 #endif
-		} else {
+		} else if (!pathOnSeparateLine) {
 			topBar->Add(new Spacer(new LinearLayoutParams(FILL_PARENT, 64.0f, 1.0f)));
 		}
 
@@ -832,7 +844,6 @@ void GameBrowser::Refresh() {
 			Refresh();
 		});
 		topBar->Add(new Choice(ImageID("I_GEAR"), new LayoutParams(64.0f, 64.0f)))->OnClick.Handle(this, &GameBrowser::GridSettingsClick);
-		Add(topBar);
 
 		if (*gridStyle_) {
 			gameList_ = new UI::GridLayoutList(UI::GridLayoutSettings(150*g_Config.fGameGridScale, 85*g_Config.fGameGridScale), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(10, 0, 0, 0)));
@@ -1092,8 +1103,10 @@ void MainScreen::CreateRecentTab() {
 	ScrollView *scrollRecentGames = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 	scrollRecentGames->SetTag("MainScreenRecentGames");
 
+	bool portrait = GetDeviceOrientation() == DeviceOrientation::Portrait;
+
 	GameBrowser *tabRecentGames = new GameBrowser(GetRequesterToken(),
-		Path("!RECENT"), BrowseFlags::NONE, &g_Config.bGridView1, screenManager(), "", "",
+		Path("!RECENT"), BrowseFlags::NONE, portrait, &g_Config.bGridView1, screenManager(), "", "",
 		new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 
 	scrollRecentGames->Add(tabRecentGames);
@@ -1109,10 +1122,12 @@ GameBrowser *MainScreen::CreateBrowserTab(const Path &path, std::string_view tit
 	using namespace UI;
 	auto mm = GetI18NCategory(I18NCat::MAINMENU);
 
+	const bool portrait = GetDeviceOrientation() == DeviceOrientation::Portrait;
+
 	ScrollView *scrollView = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 	scrollView->SetTag(title);  // Re-use title as tag, should be fine.
 
-	GameBrowser *gameBrowser = new GameBrowser(GetRequesterToken(), path, browseFlags, bGridView, screenManager(),
+	GameBrowser *gameBrowser = new GameBrowser(GetRequesterToken(), path, browseFlags, portrait, bGridView, screenManager(),
 		mm->T(howToTitle), howToUri,
 		new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 
@@ -1220,7 +1235,7 @@ void MainScreen::CreateViews() {
 
 	auto mm = GetI18NCategory(I18NCat::MAINMENU);
 
-	tabHolder_ = new TabHolder(ORIENT_HORIZONTAL, 64, TabHolderFlags::Default, nullptr, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, 1.0f));
+	tabHolder_ = new TabHolder(ORIENT_HORIZONTAL, 64, TabHolderFlags::Default, nullptr, nullptr, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, 1.0f));
 	ViewGroup *leftColumn = tabHolder_;
 	tabHolder_->SetTag("MainScreenGames");
 	gameBrowsers_.clear();
@@ -1529,12 +1544,12 @@ void MainScreen::OnCredits(UI::EventParams &e) {
 
 void LaunchBuyGold(ScreenManager *screenManager) {
 	if (System_GetPropertyBool(SYSPROP_USE_IAP)) {
-		screenManager->push(new IAPScreen());
+		screenManager->push(new IAPScreen(true));
+	} else if (System_GetPropertyBool(SYSPROP_USE_APP_STORE)) {
+		screenManager->push(new IAPScreen(false));
 	} else {
 #if PPSSPP_PLATFORM(IOS_APP_STORE)
 		System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org/buygold_ios");
-#elif PPSSPP_PLATFORM(ANDROID)
-		System_LaunchUrl(LaunchUrlType::BROWSER_URL, "market://details?id=org.ppsspp.ppssppgold");
 #else
 		System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org/buygold");
 #endif
@@ -1604,7 +1619,9 @@ void UmdReplaceScreen::CreateViews() {
 	auto mm = GetI18NCategory(I18NCat::MAINMENU);
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 
-	TabHolder *leftColumn = new TabHolder(ORIENT_HORIZONTAL, 64, TabHolderFlags::Default, nullptr, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, 1.0));
+	const bool portrait = GetDeviceOrientation() == DeviceOrientation::Portrait;
+
+	TabHolder *leftColumn = new TabHolder(ORIENT_HORIZONTAL, 64, TabHolderFlags::Default, nullptr, nullptr, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, 1.0));
 	leftColumn->SetTag("UmdReplace");
 	leftColumn->SetClip(true);
 
@@ -1617,7 +1634,7 @@ void UmdReplaceScreen::CreateViews() {
 		ScrollView *scrollRecentGames = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 		scrollRecentGames->SetTag("UmdReplaceRecentGames");
 		GameBrowser *tabRecentGames = new GameBrowser(GetRequesterToken(),
-			Path("!RECENT"), BrowseFlags::NONE, &g_Config.bGridView1, screenManager(), "", "",
+			Path("!RECENT"), BrowseFlags::NONE, portrait, &g_Config.bGridView1, screenManager(), "", "",
 			new LinearLayoutParams(FILL_PARENT, FILL_PARENT));
 		scrollRecentGames->Add(tabRecentGames);
 		leftColumn->AddTab(mm->T("Recent"), ImageID::invalid(), scrollRecentGames);
@@ -1627,7 +1644,7 @@ void UmdReplaceScreen::CreateViews() {
 	ScrollView *scrollAllGames = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 	scrollAllGames->SetTag("UmdReplaceAllGames");
 
-	GameBrowser *tabAllGames = new GameBrowser(GetRequesterToken(), Path(g_Config.currentDirectory), BrowseFlags::STANDARD, &g_Config.bGridView2, screenManager(),
+	GameBrowser *tabAllGames = new GameBrowser(GetRequesterToken(), Path(g_Config.currentDirectory), BrowseFlags::STANDARD, portrait, &g_Config.bGridView2, screenManager(),
 		mm->T("How to get games"), "https://www.ppsspp.org/getgames.html",
 		new LinearLayoutParams(FILL_PARENT, FILL_PARENT));
 

@@ -37,6 +37,7 @@
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/System.h"
+#include "GPU/GPUCommon.h"
 #include "GPU/Common/FramebufferManagerCommon.h"
 #include "GPU/Common/PresentationCommon.h"
 
@@ -211,7 +212,7 @@ void DisplayLayoutScreen::CreateViews() {
 	root_->SetExclusiveTouch(true);
 
 	// Add indicator of the current mode we're editing. Not sure why these strings are in Controls.
-	root_->Add(new TextView(portrait ? co->T("Portrait") : co->T("Landscape"), new AnchorLayoutParams(portrait ? 10.0f : NONE, 10.0f, NONE, NONE)));
+	root_->Add(new TextView(portrait ? co->T("Portrait") : co->T("Landscape"), new AnchorLayoutParams(portrait ? 10.0f : NONE, 10.0f, NONE, NONE)))->SetSmall(true);
 
 	DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(GetDeviceOrientation());
 	bool internalPortrait = config.iInternalScreenRotation == ROTATION_LOCKED_VERTICAL || config.iInternalScreenRotation == ROTATION_LOCKED_VERTICAL180;
@@ -302,11 +303,9 @@ void DisplayLayoutScreen::CreateViews() {
 		rightColumn->Add(rotation);
 
 		Choice *center = new Choice(di->T("Reset"));
-		center->OnClick.Add([&config](UI::EventParams &) {
-			config.fDisplayAspectRatio = 1.0f;
-			config.fDisplayScale = 1.0f;
-			config.fDisplayOffsetX = 0.5f;
-			config.fDisplayOffsetY = 0.5f;
+		center->OnClick.Add([&config, portrait](UI::EventParams &) {
+			// Hm, not really ideal to have to use strings here.
+			config.ResetToDefault(portrait ? "DisplayLayout.Portrait" : "DisplayLayout.Landscape");
 		});
 		rightColumn->Add(center);
 

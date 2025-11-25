@@ -57,6 +57,7 @@
 #include "Core/HLE/sceUtility.h"
 #include "Core/Instance.h"
 #include "Core/Util/RecentFiles.h"
+#include "Core/Util/PathUtil.h"
 
 #include "GPU/Common/FramebufferManagerCommon.h"
 
@@ -72,8 +73,6 @@ static const std::string_view logSectionName = "LogDebug";
 #else
 static const std::string_view logSectionName = "Log";
 #endif
-
-bool TryUpdateSavedPath(Path *path);
 
 static const std::vector<std::string_view> defaultProAdhocServerList = {
 	"socom.cc", "psp.gameplayer.club", // TODO: Add some saved recent history too?
@@ -377,6 +376,7 @@ static const ConfigSetting achievementSettings[] = {
 	// from the ini if manually entered (useful when testing various builds on Android).
 	ConfigSetting("AchievementsToken", SETTING(g_Config, sAchievementsToken), "", CfgFlag::DONT_SAVE),
 	ConfigSetting("AchievementsUserName", SETTING(g_Config, sAchievementsUserName), "", CfgFlag::DEFAULT),
+	ConfigSetting("AchievementsHost", SETTING(g_Config, sAchievementsHost), "", CfgFlag::DEFAULT),
 
 	// Customizations
 	ConfigSetting("AchievementsSoundEffects", SETTING(g_Config, bAchievementsSoundEffects), true, CfgFlag::DEFAULT),
@@ -645,6 +645,7 @@ bool DisplayLayoutConfig::ResetToDefault(std::string_view blockName) {
 		// TODO: On mobile, where the aspect is fixed, we should use the screen size to compute this properly,
 		// so the screen almost touches the top edge.
 		fDisplayOffsetY = 0.25f;
+		bImmersiveMode = false;
 	}
 	return true;
 }
@@ -666,6 +667,7 @@ static const ConfigSetting displayLayoutSettings[] = {
 	ConfigSetting("CardboardScreenSize", SETTING(g_Config.displayLayoutLandscape, iCardboardScreenSize), CfgFlag::PER_GAME),
 	ConfigSetting("CardboardXShift", SETTING(g_Config.displayLayoutLandscape, iCardboardXShift), CfgFlag::PER_GAME),
 	ConfigSetting("CardboardYShift", SETTING(g_Config.displayLayoutLandscape, iCardboardYShift), CfgFlag::PER_GAME),
+	ConfigSetting("ImmersiveMode", SETTING(g_Config.displayLayoutLandscape, bImmersiveMode), CfgFlag::PER_GAME),
 };
 
 static const ConfigSetting graphicsSettings[] = {
@@ -725,7 +727,6 @@ static const ConfigSetting graphicsSettings[] = {
 
 	ConfigSetting("DisplayCropTo16x9", SETTING(g_Config, bDisplayCropTo16x9), true, CfgFlag::PER_GAME),
 
-	ConfigSetting("ImmersiveMode", SETTING(g_Config, bImmersiveMode), true, CfgFlag::PER_GAME),
 	ConfigSetting("SustainedPerformanceMode", SETTING(g_Config, bSustainedPerformanceMode), false, CfgFlag::PER_GAME),
 
 	ConfigSetting("ReplaceTextures", SETTING(g_Config, bReplaceTextures), true, CfgFlag::PER_GAME | CfgFlag::REPORT),
@@ -796,7 +797,7 @@ static const ConfigSetting soundSettings[] = {
 	ConfigSetting("AudioBufferSize", SETTING(g_Config, iSDLAudioBufferSize), 256, CfgFlag::DEFAULT),
 
 	ConfigSetting("FillAudioGaps", SETTING(g_Config, bFillAudioGaps), true, CfgFlag::DEFAULT),
-	ConfigSetting("AudioSyncMode", SETTING(g_Config, iAudioSyncMode), (int)AudioSyncMode::CLASSIC_PITCH, CfgFlag::DEFAULT),
+	ConfigSetting("AudioSyncMode", SETTING(g_Config, iAudioPlaybackMode), (int)AudioSyncMode::CLASSIC_PITCH, CfgFlag::DEFAULT),
 
 	// Legacy volume settings, these get auto upgraded through default handlers on the new settings. NOTE: Must be before the new ones in the order here.
 	// The default settings here are still relevant, they will get propagated into the new ones.
@@ -847,32 +848,34 @@ static const ConfigTouchPos defaultTouchPosHide = { -1.0f, -1.0f, defaultControl
 
 void TouchControlConfig::ResetLayout() {
 	// reset puts the settings in a state so they'll then get properly reinitialized in InitPadLayout.
-	auto reset = [](ConfigTouchPos &pos) {
-		pos.x = defaultTouchPosShow.x;
-		pos.y = defaultTouchPosShow.y;
-		pos.scale = defaultTouchPosShow.scale;
+	// Intentionally don't modify 'show' here, this is only done in ResetToDefault.
+	auto reset = [](ConfigTouchPos *pos) {
+		pos->x = defaultTouchPosShow.x;
+		pos->y = defaultTouchPosShow.y;
+		pos->scale = defaultTouchPosShow.scale;
 	};
-	reset(touchActionButtonCenter);
+	reset(&touchActionButtonCenter);
 	fActionButtonSpacing = 1.0f;
-	reset(touchDpad);
+	reset(&touchDpad);
 	fDpadSpacing = 1.0f;
-	reset(touchStartKey);
-	reset(touchSelectKey);
-	reset(touchFastForwardKey);
-	reset(touchLKey);
-	reset(touchRKey);
-	reset(touchAnalogStick);
-	reset(touchRightAnalogStick);
+	reset(&touchStartKey);
+	reset(&touchSelectKey);
+	reset(&touchFastForwardKey);
+	reset(&touchLKey);
+	reset(&touchRKey);
+	reset(&touchAnalogStick);
+	reset(&touchRightAnalogStick);
 	for (int i = 0; i < CUSTOM_BUTTON_COUNT; i++) {
-		reset(touchCustom[i]);
+		reset(&touchCustom[i]);
 	}
 	fLeftStickHeadScale = 1.0f;
 	fRightStickHeadScale = 1.0f;
 }
 
 bool TouchControlConfig::ResetToDefault(std::string_view blockName) {
-	// We do this traditionally for now.
-	return false;
+	static const TouchControlConfig defaults = TouchControlConfig();
+	*this = defaults;
+	return true;
 }
 
 static const ConfigSetting touchControlSettings[] = {
@@ -1162,9 +1165,9 @@ Config::~Config() {
 }
 
 void Config::Reload() {
-	reload_ = true;
+	inReload_ = true;
 	Load();
-	reload_ = false;
+	inReload_ = false;
 }
 
 // Call this if you change the search path (such as when changing memstick directory. can't
@@ -1173,10 +1176,10 @@ void Config::UpdateIniLocation(const char *iniFileName, const char *controllerIn
 	const bool useIniFilename = iniFileName != nullptr && strlen(iniFileName) > 0;
 	const char *ppssppIniFilename = IsVREnabled() ? "ppssppvr.ini" : "ppsspp.ini";
 	bool exists;
-	iniFilename_ = FindConfigFile(useIniFilename ? iniFileName : ppssppIniFilename, &exists);
+	iniFilename_ = FindConfigFile(searchPath_, useIniFilename ? iniFileName : ppssppIniFilename, &exists);
 	const bool useControllerIniFilename = controllerIniFilename != nullptr && strlen(controllerIniFilename) > 0;
 	const char *controlsIniFilename = IsVREnabled() ? "controlsvr.ini" : "controls.ini";
-	controllerIniFilename_ = FindConfigFile(useControllerIniFilename ? controllerIniFilename : controlsIniFilename, &exists);
+	controllerIniFilename_ = FindConfigFile(searchPath_, useControllerIniFilename ? controllerIniFilename : controlsIniFilename, &exists);
 }
 
 bool Config::LoadAppendedConfig() {
@@ -1252,7 +1255,7 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
 
 	IniFile iniFile;
 	if (!iniFile.Load(iniFilename_)) {
-		ERROR_LOG(Log::Loader, "Failed to read '%s'. Setting config to default.", iniFilename_.c_str());
+		WARN_LOG(Log::Loader, "Failed to read '%s'. Setting main config to default.", iniFilename_.c_str());
 		// Continue anyway to initialize the config.
 	}
 
@@ -1347,15 +1350,16 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
 	// So this is all the way down here to overwrite the controller settings
 	// sadly it won't benefit from all the "version conversion" going on up-above
 	// but these configs shouldn't contain older versions anyhow
-	if (gameSpecific_) {
-		LoadGameConfig(gameId_);
-	}
+	_dbg_assert_(!IsGameSpecific());
 
 	PostLoadCleanup();
 
 	INFO_LOG(Log::Loader, "Config loaded: '%s' (%0.1f ms)", iniFilename_.c_str(), (time_now_d() - startTime) * 1000.0);
 }
 
+// If we're in game specific mode, we need to:
+// * Save the game-specific settings to the game-specific ini file.
+// * Then, save the NON-game-specific settings ONLY to the regular ini file!
 bool Config::Save(const char *saveReason) {
 	double startTime = time_now_d();
 	if (!IsFirstInstance()) {
@@ -1367,7 +1371,10 @@ bool Config::Save(const char *saveReason) {
 	}
 
 	if (!iniFilename_.empty() && g_Config.bSaveSettings) {
-		SaveGameConfig(gameId_, "");  // we don't pass a title, it was stored in the ini the first time.
+		if (IsGameSpecific()) {
+			// Save just the game-specific settings to the game-specific ini.
+			SaveGameConfig(gameId_, "");  // we don't pass a title, it was stored in the ini the first time.
+		}
 
 		PreSaveCleanup();
 
@@ -1385,6 +1392,10 @@ bool Config::Save(const char *saveReason) {
 			Section *section = iniFile.GetOrCreateSection(meta.section);
 			ConfigBlock *configBlock = meta.configBlock;
 			for (size_t j = 0; j < meta.settingsCount; j++) {
+				if (IsGameSpecific() && (meta.settings[j].Flags() & CfgFlag::PER_GAME)) {
+					// Skip per-game settings in non-game-specific ini.
+					continue;
+				}
 				meta.settings[j].WriteToIniSection(configBlock, section);
 			}
 		}
@@ -1401,7 +1412,9 @@ bool Config::Save(const char *saveReason) {
 			pinnedPaths->Set(keyName, vPinnedPaths[i]);
 		}
 
-		if (!gameSpecific_) {
+		if (!IsGameSpecific()) {
+			// These settings can be game specific, and so are handled in SaveGameConfig().
+
 			Section *postShaderSetting = iniFile.GetOrCreateSection("PostShaderSetting");
 			postShaderSetting->Clear();
 			for (const auto &[k, v] : mPostShaderSetting) {
@@ -1439,8 +1452,8 @@ bool Config::Save(const char *saveReason) {
 		}
 		INFO_LOG(Log::Loader, "Config saved (%s): '%s' (%0.1f ms)", saveReason, iniFilename_.c_str(), (time_now_d() - startTime) * 1000.0);
 
-		if (!gameSpecific_) //otherwise we already did this in SaveGameConfig()
-		{
+		if (!IsGameSpecific()) {
+			// These settings can be game specific, and so are handled in SaveGameConfig().
 			IniFile controllerIniFile;
 			if (!controllerIniFile.Load(controllerIniFilename_)) {
 				ERROR_LOG(Log::Loader, "Error saving controller config - can't read ini first '%s'", controllerIniFilename_.c_str());
@@ -1524,73 +1537,13 @@ void Config::NotifyUpdatedCpuCore() {
 	}
 }
 
-// On iOS, the path to the app documents directory changes on each launch.
-// Example path:
-// /var/mobile/Containers/Data/Application/0E0E89DE-8D8E-485A-860C-700D8BC87B86/Documents/PSP/GAME/SuicideBarbie
-// The GUID part changes on each launch.
-bool TryUpdateSavedPath(Path *path) {
-#if PPSSPP_PLATFORM(IOS)
-	// DEBUG_LOG(Log::Loader, "Original path: %s", path->c_str());
-	std::string pathStr = path->ToString();
-
-	const std::string_view applicationRoot = "/var/mobile/Containers/Data/Application/";
-	if (startsWith(pathStr, applicationRoot)) {
-		size_t documentsPos = pathStr.find("/Documents/");
-		if (documentsPos == std::string::npos) {
-			return false;
-		}
-		std::string memstick = g_Config.memStickDirectory.ToString();
-		size_t memstickDocumentsPos = memstick.find("/Documents");  // Note: No trailing slash, or we won't find it.
-		*path = Path(memstick.substr(0, memstickDocumentsPos) + pathStr.substr(documentsPos));
-		return true;
-	} else {
-		// Path can't be auto-updated.
-		return false;
-	}
-#else
-	return false;
-#endif
-}
-
 void Config::SetSearchPath(const Path &searchPath) {
 	searchPath_ = searchPath;
 }
 
-Path Config::FindConfigFile(std::string_view baseFilename, bool *exists) const {
-	// Don't search for an absolute path.
-	if (baseFilename.size() > 1 && baseFilename[0] == '/') {
-		Path path(baseFilename);
-		*exists = File::Exists(path);
-		return path;
-	}
-#ifdef _WIN32
-	// Handle paths starting with a drive letter.
-	if (baseFilename.size() > 3 && baseFilename[1] == ':' && (baseFilename[2] == '/' || baseFilename[2] == '\\')) {
-		Path path(baseFilename);
-		*exists = File::Exists(path);
-		return path;
-	}
-#endif
-
-	Path filename = searchPath_ / baseFilename;
-	if (File::Exists(filename)) {
-		*exists = true;
-		return filename;
-	}
-	*exists = false;
-	// Make sure at least the directory it's supposed to be in exists.
-	Path parent = filename.NavigateUp();
-
-	// We try to create the path and ignore if it fails (already exists).
-	if (parent != GetSysDirectory(DIRECTORY_SYSTEM)) {
-		File::CreateFullPath(parent);
-	}
-	return filename;
-}
-
 void Config::RestoreDefaults(RestoreSettingsBits whatToRestore, bool log) {
-	if (gameSpecific_) {
-		// TODO: This should be possible to do in a cleaner way.
+	if (IsGameSpecific()) {
+		// TODO: This could be done in a cleaner way.
 		DeleteGameConfig(gameId_);
 		CreateGameConfig(gameId_);
 		Load();
@@ -1622,22 +1575,13 @@ void Config::RestoreDefaults(RestoreSettingsBits whatToRestore, bool log) {
 
 bool Config::HasGameConfig(std::string_view gameId) {
 	bool exists = false;
-	Path fullIniFilePath = GetGameConfigFilePath(gameId, &exists);
+	Path fullIniFilePath = GetGameConfigFilePath(searchPath_, gameId, &exists);
 	return exists;
-}
-
-void Config::ChangeGameSpecific(const std::string &pGameId, std::string_view title) {
-	if (!reload_) {
-		Save("changeGameSpecific");
-	}
-
-	gameId_ = pGameId;
-	gameSpecific_ = !pGameId.empty();
 }
 
 bool Config::CreateGameConfig(std::string_view gameId) {
 	bool exists;
-	Path fullIniFilePath = GetGameConfigFilePath(gameId, &exists);
+	Path fullIniFilePath = GetGameConfigFilePath(searchPath_, gameId, &exists);
 
 	if (exists) {
 		INFO_LOG(Log::System, "Game config already exists");
@@ -1650,7 +1594,7 @@ bool Config::CreateGameConfig(std::string_view gameId) {
 
 bool Config::DeleteGameConfig(std::string_view gameId) {
 	bool exists = false;
-	Path fullIniFilePath = Path(GetGameConfigFilePath(gameId, &exists));
+	Path fullIniFilePath = GetGameConfigFilePath(searchPath_, gameId, &exists);
 
 	if (exists) {
 		if (System_GetPropertyBool(SYSPROP_HAS_TRASH_BIN)) {
@@ -1662,20 +1606,18 @@ bool Config::DeleteGameConfig(std::string_view gameId) {
 	return true;
 }
 
-Path Config::GetGameConfigFilePath(std::string_view gameId, bool *exists) {
-	std::string_view ppssppIniFilename = IsVREnabled() ? "_ppssppvr.ini" : "_ppsspp.ini";
-	std::string iniFileName = join(gameId, ppssppIniFilename);
-	Path iniFileNameFull = FindConfigFile(iniFileName, exists);
-	return iniFileNameFull;
-}
-
 bool Config::SaveGameConfig(const std::string &gameId, std::string_view titleForComment) {
 	if (gameId.empty()) {
 		return false;
 	}
 
+	if (gameId_.empty()) {
+		INFO_LOG(Log::G3D, "Switching to game-specific mode for saving config: %s", gameId.c_str());
+		gameId_ = gameId;
+	}
+
 	bool exists;
-	Path fullIniFilePath = GetGameConfigFilePath(gameId, &exists);
+	Path fullIniFilePath = GetGameConfigFilePath(searchPath_, gameId, &exists);
 
 	IniFile iniFile;
 
@@ -1689,6 +1631,7 @@ bool Config::SaveGameConfig(const std::string &gameId, std::string_view titleFor
 
 	PreSaveCleanup();
 
+	// Do all the actual saving.
 	for (const ConfigSectionMeta &meta : g_sectionMeta) {
 		Section *section = iniFile.GetOrCreateSection(meta.section);
 		ConfigBlock *configBlock = meta.configBlock;
@@ -1724,15 +1667,18 @@ bool Config::SaveGameConfig(const std::string &gameId, std::string_view titleFor
 
 bool Config::LoadGameConfig(const std::string &gameId) {
 	bool exists;
-	Path iniFileNameFull = GetGameConfigFilePath(gameId, &exists);
+	Path iniFileNameFull = GetGameConfigFilePath(searchPath_, gameId, &exists);
 	if (!exists) {
+		// Bail if there's no game-specific config.
 		DEBUG_LOG(Log::Loader, "No game-specific settings found in %s. Using global defaults.", iniFileNameFull.c_str());
 		return false;
 	}
 
-	_dbg_assert_(!gameId.empty());
-
-	ChangeGameSpecific(gameId);
+	// Switch to game specific mode, if we're not in it.
+	if (gameId_.empty()) {
+		INFO_LOG(Log::Loader, "Switching to game specific mode before load: %s", gameId.c_str());
+		gameId_ = gameId;
+	}
 
 	IniFile iniFile;
 	iniFile.Load(iniFileNameFull);
@@ -1780,16 +1726,16 @@ bool Config::LoadGameConfig(const std::string &gameId) {
 	}
 
 	PostLoadCleanup();
+
+	DEBUG_LOG(Log::Loader, "Game-specific config loaded: %s", gameId_.c_str());
 	return true;
 }
 
 void Config::UnloadGameConfig() {
-	if (!gameSpecific_) {
-		return;
-	}
+	_dbg_assert_(IsGameSpecific());
 
+	// Leave game-specific mode.
 	gameId_.clear();
-	gameSpecific_ = false;
 
 	// Reload all settings from the main ini file.
 	IniFile iniFile;
@@ -1817,7 +1763,7 @@ void Config::UnloadGameConfig() {
 void Config::LoadStandardControllerIni() {
 	IniFile controllerIniFile;
 	if (!controllerIniFile.Load(controllerIniFilename_)) {
-		ERROR_LOG(Log::Loader, "Failed to read %s. Setting controller config to default.", controllerIniFilename_.c_str());
+		WARN_LOG(Log::Loader, "Failed to read '%s'. Setting controller config to default.", controllerIniFilename_.c_str());
 		KeyMap::RestoreDefault();
 	} else {
 		// Continue anyway to initialize the config. It will just restore the defaults.

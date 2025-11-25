@@ -10,12 +10,16 @@
 #include "Common/UI/ScrollView.h"
 #include "Common/UI/PopupScreens.h"
 #include "UI/MiscViews.h"
+#include "Common/UI/Context.h"
 #include "UI/TabbedDialogScreen.h"
 
 void UITabbedBaseDialogScreen::AddTab(const char *tag, std::string_view title, ImageID imageId, std::function<void(UI::LinearLayout *)> createCallback, TabFlags flags) {
 	using namespace UI;
 
-	tabHolder_->AddTabDeferred(title, imageId, [createCallback = std::move(createCallback), tag, flags]() -> UI::ViewGroup * {
+	TabDialogFlags dialogFlags = flags_;
+	Path gamePath = gamePath_;
+	std::string cachedTitle(title);
+	tabHolder_->AddTabDeferred(title, imageId, [createCallback = std::move(createCallback), tag, flags, dialogFlags, gamePath, cachedTitle]() -> UI::ViewGroup * {
 		using namespace UI;
 		ViewGroup *scroll = nullptr;
 		if (!(flags & TabFlags::NonScrollable)) {
@@ -24,6 +28,12 @@ void UITabbedBaseDialogScreen::AddTab(const char *tag, std::string_view title, I
 		}
 		LinearLayout *contents = new LinearLayoutList(ORIENT_VERTICAL);
 		contents->SetSpacing(0);
+
+		if (dialogFlags & TabDialogFlags::AddAutoTitles) {
+			auto di = GetI18NCategory(I18NCat::DIALOG);
+			contents->Add(new PaneTitleBar(gamePath, cachedTitle, "", new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
+		}
+
 		createCallback(contents);
 		if (scroll) {
 			scroll->Add(contents);
@@ -58,16 +68,26 @@ void UITabbedBaseDialogScreen::CreateViews() {
 		if (flags_ & TabDialogFlags::HorizontalOnlyIcons) {
 			tabHolderFlags |= TabHolderFlags::HorizontalOnlyIcons;
 		}
-		tabHolder_ = new TabHolder(ORIENT_HORIZONTAL, 200, tabHolderFlags, filterNotice_, new LinearLayoutParams(1.0f));
+		std::function<void()> contextMenu;
+		if (flags_ & TabDialogFlags::ContextMenuInPortrait) {
+			contextMenu = [this]() {
+				this->screenManager()->push(new PopupCallbackScreen([this](UI::ViewGroup *parent) {
+					CreateExtraButtons(parent, 0);
+				}, nullptr));
+			};
+		}
+		tabHolder_ = new TabHolder(ORIENT_HORIZONTAL, 200, tabHolderFlags, filterNotice_, contextMenu, new LinearLayoutParams(1.0f));
 		verticalLayout->Add(tabHolder_);
-		CreateExtraButtons(verticalLayout, 0);
+		if (!(flags_ & TabDialogFlags::ContextMenuInPortrait)) {
+			CreateExtraButtons(verticalLayout, 0);
+		}
 		root_->Add(verticalLayout);
 	} else {
 		TabHolderFlags tabHolderFlags = TabHolderFlags::Default;
 		if (flags_ & TabDialogFlags::VerticalShowIcons) {
 			tabHolderFlags |= TabHolderFlags::VerticalShowIcons;
 		}
-		tabHolder_ = new TabHolder(ORIENT_VERTICAL, 300, tabHolderFlags, filterNotice_, new AnchorLayoutParams(10, 0, 10, 0));
+		tabHolder_ = new TabHolder(ORIENT_VERTICAL, 300, tabHolderFlags, filterNotice_, nullptr, new AnchorLayoutParams(10, 0, 10, 0));
 		CreateExtraButtons(tabHolder_->Container(), 10);
 		tabHolder_->AddBack(this);
 		root_->Add(tabHolder_);
@@ -79,15 +99,6 @@ void UITabbedBaseDialogScreen::CreateViews() {
 	float leftSide = 40.0f;
 	if (!portrait) {
 		leftSide += 200.0f;
-	}
-	settingInfo_ = new SettingInfoMessage(ALIGN_CENTER | FLAG_WRAP_TEXT, g_display.dp_yres - 200.0f, new AnchorLayoutParams(
-		g_display.dp_xres - leftSide - 40.0f, WRAP_CONTENT,
-		leftSide, g_display.dp_yres - 80.0f - 40.0f, NONE, NONE));
-	root_->Add(settingInfo_);
-
-	// Show it again if we recreated the view
-	if (!oldSettingInfo_.empty()) {
-		settingInfo_->Show(oldSettingInfo_, nullptr);
 	}
 
 	// Let the subclass create its tabs.
@@ -128,11 +139,6 @@ void UITabbedBaseDialogScreen::sendMessage(UIMessage message, const char *value)
 
 		ApplySearchFilter();
 	}
-}
-
-void UITabbedBaseDialogScreen::RecreateViews() {
-	oldSettingInfo_ = settingInfo_ ? settingInfo_->GetText() : "N/A";
-	UIScreen::RecreateViews();
 }
 
 void UITabbedBaseDialogScreen::EnsureTabs() {

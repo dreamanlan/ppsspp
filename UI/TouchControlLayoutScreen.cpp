@@ -506,9 +506,7 @@ void ControlLayoutView::CreateViews() {
 	addDragDropButton(touch.touchSelectKey, "Select button", rectImage, ImageID("I_SELECT"));
 	addDragDropButton(touch.touchStartKey, "Start button", rectImage, ImageID("I_START"));
 
-	if (auto *fastForward = addDragDropButton(touch.touchFastForwardKey, "Fast-forward button", rectImage, ImageID("I_ARROW"))) {
-		fastForward->SetAngle(180.0f);
-	}
+	addDragDropButton(touch.touchFastForwardKey, "Fast-forward button", rectImage, ImageID("I_FAST_FORWARD_LINE"));
 	addDragDropButton(touch.touchLKey, "Left shoulder button", shoulderImage, ImageID("I_L"));
 	if (auto *rbutton = addDragDropButton(touch.touchRKey, "Right shoulder button", shoulderImage, ImageID("I_R"))) {
 		rbutton->FlipImageH(true);
@@ -524,8 +522,6 @@ void ControlLayoutView::CreateViews() {
 	auto addDragCustomKey = [&](ConfigTouchPos &pos, const char *key, const ConfigCustomButton& cfg) {
 		DragDropButton *b = nullptr;
 		if (pos.show) {
-
-
 			b = new DragDropButton(pos, key, g_Config.iTouchButtonStyle == 0 ? customKeyShapes[cfg.shape].i : customKeyShapes[cfg.shape].l, customKeyImages[cfg.image].i, bounds);
 			b->FlipImageH(customKeyShapes[cfg.shape].f);
 			b->SetAngle(customKeyImages[cfg.image].r, customKeyShapes[cfg.shape].r);
@@ -585,10 +581,6 @@ void TouchControlLayoutScreen::resized() {
 
 void TouchControlLayoutScreen::onFinish(DialogResult reason) {
 	g_Config.Save("TouchControlLayoutScreen::onFinish");
-}
-
-void TouchControlLayoutScreen::OnVisibility(UI::EventParams &e) {
-	screenManager()->push(new TouchControlVisibilityScreen(gamePath_));
 }
 
 void TouchControlLayoutScreen::OnReset(UI::EventParams &e) {
@@ -670,7 +662,9 @@ void TouchControlLayoutScreen::CreateViews() {
 	gridSize->SetEnabledPtr(&g_Config.bTouchSnapToGrid);
 
 	leftColumn->Add(mode_);
-	leftColumn->Add(new Choice(co->T("Customize")))->OnClick.Handle(this, &TouchControlLayoutScreen::OnVisibility);
+	leftColumn->Add(new Choice(co->T("Customize")))->OnClick.Add([this](UI::EventParams &e) {
+		screenManager()->push(new TouchControlVisibilityScreen(gamePath_));
+	});
 	leftColumn->Add(snap);
 	leftColumn->Add(gridSize);
 	leftColumn->Add(new Choice(di->T("Reset")))->OnClick.Handle(this, &TouchControlLayoutScreen::OnReset);

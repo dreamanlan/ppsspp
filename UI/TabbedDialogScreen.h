@@ -9,8 +9,6 @@
 #include "Core/ConfigValues.h"
 #include "UI/BaseScreens.h"
 
-class SettingInfoMessage;
-
 namespace UI {
 class TabHolder;
 }
@@ -19,7 +17,8 @@ enum class TabDialogFlags {
 	Default = 0,
 	HorizontalOnlyIcons = 1,
 	VerticalShowIcons = 2,
-	AddTitles = 4,
+	AddAutoTitles = 4,
+	ContextMenuInPortrait = 8,
 };
 ENUM_CLASS_BITOPS(TabDialogFlags);
 
@@ -45,18 +44,16 @@ protected:
 	// Load data and define your tabs here.
 	virtual void PreCreateViews() {}
 	virtual void CreateTabs() = 0;
-	virtual void CreateExtraButtons(UI::LinearLayout *verticalLayout, int margins) {}
+	virtual void CreateExtraButtons(UI::ViewGroup *verticalLayout, int margins) {}
 	virtual bool ShowSearchControls() const { return true; }
 	virtual void EnsureTabs();
+	virtual bool UsePopupMenuInPortrait() const { return false; }
 	virtual bool ForceHorizontalTabs() const { return false; }
 
 	int GetCurrentTab() const;
 	void SetCurrentTab(int tab);
 
-	void RecreateViews() override;
 	void sendMessage(UIMessage message, const char *value) override;
-
-	SettingInfoMessage *settingInfo_ = nullptr;
 
 private:
 	void ApplySearchFilter();

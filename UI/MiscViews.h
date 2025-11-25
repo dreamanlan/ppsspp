@@ -1,7 +1,9 @@
 #pragma once
 
+#include "Common/Common.h"
 #include "Common/UI/View.h"
 #include "UI/ViewGroup.h"
+#include "UI/GameInfoCache.h"
 
 // Compound view, showing a text with an icon.
 class TextWithImage : public UI::LinearLayout {
@@ -15,30 +17,26 @@ public:
 	CopyableText(ImageID imageID, std::string_view text, UI::LinearLayoutParams *layoutParams = nullptr);
 };
 
+enum class TopBarFlags {
+	Default = 0,
+	Portrait = 1,
+	ContextMenuButton = 2,
+};
+ENUM_CLASS_BITOPS(TopBarFlags);
+
 class TopBar : public UI::LinearLayout {
 public:
 	// The context is needed to get the theme for the background.
-	TopBar(const UIContext &ctx, bool usePortraitLayout, std::string_view title, UI::LayoutParams *layoutParams = nullptr);
+	TopBar(const UIContext &ctx, TopBarFlags flags, std::string_view title, UI::LayoutParams *layoutParams = nullptr);
 	UI::View *GetBackButton() const { return backButton_; }
+	UI::View *GetContextMenuButton() const { return contextMenuButton_; }
+
+	UI::Event OnContextMenuClick;
 
 private:
 	UI::Choice *backButton_ = nullptr;
-};
-
-class SettingInfoMessage : public UI::LinearLayout {
-public:
-	SettingInfoMessage(int align, float cutOffY, UI::AnchorLayoutParams *lp);
-
-	void Show(std::string_view text, const UI::View *refView = nullptr);
-
-	void Draw(UIContext &dc) override;
-	std::string GetText() const;
-
-private:
-	UI::TextView *text_ = nullptr;
-	double timeShown_ = 0.0;
-	float cutOffY_;
-	bool showing_ = false;
+	UI::Choice *contextMenuButton_ = nullptr;
+	TopBarFlags flags_ = TopBarFlags::Default;
 };
 
 class ShinyIcon : public UI::ImageView {
@@ -58,6 +56,23 @@ public:
 	PaneTitleBar(const Path &gamePath, std::string_view title, const std::string_view settingsCategory, UI::LayoutParams *layoutParams = nullptr);
 
 private:
-	UI::Choice *backButton_ = nullptr;
 	Path gamePath_;
+};
+
+class GameImageView : public UI::InertView {
+public:
+	GameImageView(const Path &gamePath, GameInfoFlags image, float scale, UI::LayoutParams *layoutParams = 0)
+		: InertView(layoutParams), image_(image), gamePath_(gamePath), scale_(scale) {
+	}
+
+	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override;
+	void Draw(UIContext &dc) override;
+	std::string DescribeText() const override { return ""; }
+
+private:
+	Path gamePath_;
+	GameInfoFlags image_;
+	float scale_ = 1.0f;
+	int textureWidth_ = 0;
+	int textureHeight_ = 0;
 };

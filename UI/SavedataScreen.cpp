@@ -45,6 +45,7 @@
 #include "Core/SaveState.h"
 #include "Core/System.h"
 #include "Core/HLE/sceUtility.h"
+#include "UI/MiscViews.h"
 
 class SavedataButton;
 
@@ -64,7 +65,7 @@ SavedataView::SavedataView(UIContext &dc, const Path &savePath, IdentifiedFileTy
 	detail_ = nullptr;
 	if (type == IdentifiedFileType::PSP_SAVEDATA_DIRECTORY) {
 		if (showIcon) {
-			toprow->Add(new GameIconView(savePath, 2.0f, new LinearLayoutParams(Margins(5, 5))));
+			toprow->Add(new GameImageView(savePath, GameInfoFlags::ICON, 2.0f, new LinearLayoutParams(Margins(5, 5))));
 		}
 		// Contents to the right of the image:
 		LinearLayout *topright = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT, 1.0f));
@@ -431,26 +432,26 @@ void SavedataBrowser::Update() {
 		int n = gameList_->GetNumSubviews();
 		bool matches = searchFilter_.empty();
 		for (int i = 0; i < n; ++i) {
-			SavedataButton *v = static_cast<SavedataButton *>(gameList_->GetViewByIndex(i));
-
+			View *view = gameList_->GetViewByIndex(i);
 			// Note: might be resetting to empty string.  Can do that right away.
 			if (searchFilter_.empty()) {
-				v->SetVisibility(UI::V_VISIBLE);
+				view->SetVisibility(UI::V_VISIBLE);
 				continue;
 			}
 
-			if (!v->UpdateText()) {
+			SavedataButton *savedataButton = static_cast<SavedataButton *>(view);
+			if (!savedataButton->UpdateText()) {
 				// We'll need to wait until the text is loaded.
 				searchPending_ = true;
-				v->SetVisibility(UI::V_GONE);
+				view->SetVisibility(UI::V_GONE);
 				continue;
 			}
 
-			std::string label = v->DescribeText();
+			std::string label = view->DescribeText();
 			std::transform(label.begin(), label.end(), label.begin(), tolower);
 			bool match = label.find(searchFilter_) != label.npos;
 			matches = matches || match;
-			v->SetVisibility(match ? UI::V_VISIBLE : UI::V_GONE);
+			view->SetVisibility(match ? UI::V_VISIBLE : UI::V_GONE);
 		}
 
 		if (searchingView_) {
@@ -671,7 +672,7 @@ void SavedataScreen::CreateTabs() {
 	});
 }
 
-void SavedataScreen::CreateExtraButtons(UI::LinearLayout *verticalLayout, int margins) {
+void SavedataScreen::CreateExtraButtons(UI::ViewGroup *verticalLayout, int margins) {
 	using namespace UI;
 	if (System_GetPropertyBool(SYSPROP_HAS_TEXT_INPUT_DIALOG)) {
 		auto di = GetI18NCategory(I18NCat::DIALOG);
@@ -721,41 +722,4 @@ void SavedataScreen::sendMessage(UIMessage message, const char *value) {
 		dataBrowser_->SetSearchFilter(searchFilter_);
 		stateBrowser_->SetSearchFilter(searchFilter_);
 	}
-}
-
-void GameIconView::GetContentDimensions(const UIContext &dc, float &w, float &h) const {
-	w = textureWidth_;
-	h = textureHeight_;
-}
-
-void GameIconView::Draw(UIContext &dc) {
-	using namespace UI;
-	std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(dc.GetDrawContext(), gamePath_, GameInfoFlags::ICON);
-	if (!info->Ready(GameInfoFlags::ICON) || !info->icon.texture) {
-		return;
-	}
-
-	Draw::Texture *texture = info->icon.texture;
-
-	textureWidth_ = texture->Width() * scale_;
-	textureHeight_ = texture->Height() * scale_;
-
-	// Fade icon with the backgrounds.
-	double loadTime = info->icon.timeLoaded;
-	auto pic = info->GetPIC1();
-	if (pic) {
-		loadTime = std::max(loadTime, pic->timeLoaded);
-	}
-	uint32_t color = whiteAlpha(ease((time_now_d() - loadTime) * 3));
-
-	// Adjust size so we don't stretch the image vertically or horizontally.
-	// Make sure it's not wider than 144 (like Doom Legacy homebrew), ugly in the grid mode.
-	float nw = std::min(bounds_.h * textureWidth_ / textureHeight_, (float)bounds_.w);
-	int x = bounds_.x + (bounds_.w - nw) / 2.0f;
-
-	dc.Flush();
-	dc.GetDrawContext()->BindTexture(0, texture);
-	dc.Draw()->Rect(x, bounds_.y, nw, bounds_.h, color);
-	dc.Flush();
-	dc.RebindTexture();
 }

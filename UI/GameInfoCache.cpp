@@ -40,6 +40,7 @@
 #include "Core/ELF/PBPReader.h"
 #include "Core/SaveState.h"
 #include "Core/System.h"
+#include "Core/Util/GameDB.h"
 #include "Core/Loaders.h"
 #include "Core/Util/GameManager.h"
 #include "Core/Util/RecentFiles.h"
@@ -380,19 +381,37 @@ std::string GameInfo::GetTitle() {
 	}
 }
 
+std::string GameInfo::GetDBTitle() {
+	std::lock_guard<std::mutex> guard(lock);
+	if (!(hasFlags & GameInfoFlags::PARAM_SFO) && !title.empty()) {
+		return filePath_.GetFilename();
+	}
+
+	std::vector<GameDBInfo> dbInfos;
+	const bool inGameDB = g_gameDB.GetGameInfos(id_version, &dbInfos);
+	if (inGameDB) {
+		return std::string(dbInfos[0].title);
+	} else {
+		return title;
+	}
+}
+
 void GameInfo::SetTitle(const std::string &newTitle) {
 	std::lock_guard<std::mutex> guard(lock);
 	title = newTitle;
 }
 
 void GameInfo::FinishPendingTextureLoads(Draw::DrawContext *draw) {
-	if (draw && icon.dataLoaded && !icon.texture) {
+	if (!draw) {
+		return;
+	}
+	if (icon.dataLoaded && !icon.texture) {
 		SetupTexture(draw, icon);
 	}
-	if (draw && pic0.dataLoaded && !pic0.texture) {
+	if (pic0.dataLoaded && !pic0.texture) {
 		SetupTexture(draw, pic0);
 	}
-	if (draw && pic1.dataLoaded && !pic1.texture) {
+	if (pic1.dataLoaded && !pic1.texture) {
 		SetupTexture(draw, pic1);
 	}
 }
