@@ -420,6 +420,10 @@ void GamePauseScreen::CreateViews() {
 	root_ = new LinearLayout(portrait ? ORIENT_VERTICAL : ORIENT_HORIZONTAL);
 
 	if (portrait) {
+		((LinearLayout *)root_)->SetSpacing(0);
+	}
+
+	if (portrait) {
 		// We have room for a title bar. Use the game DB title if available.
 		std::string title;
 		std::vector<GameDBInfo> dbInfos;
@@ -533,9 +537,12 @@ void GamePauseScreen::CreateViews() {
 	ViewGroup *buttonColumn = nullptr;
 	if (portrait) {
 		buttonColumn = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
+
+		middleColumn = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, ITEM_HEIGHT, Margins(10, 10, 10, 10)));
+		root_->Add(middleColumn);
 		root_->Add(buttonColumn);
 	} else {
-		middleColumn = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(64, FILL_PARENT, Margins(0, 10, 0, 15)));
+		middleColumn = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(ITEM_HEIGHT, FILL_PARENT, Margins(0, 10, 0, 15)));
 		root_->Add(middleColumn);
 		middleColumn->SetSpacing(0.0f);
 
@@ -559,20 +566,22 @@ void GamePauseScreen::CreateViews() {
 		Choice *continueChoice = rightColumnItems->Add(new Choice(pa->T("Continue"), ImageID("I_PLAY")));
 		root_->SetDefaultFocusView(continueChoice);
 		continueChoice->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
+		rightColumnItems->Add(new Spacer(20.0));
 	}
-
-	rightColumnItems->Add(new Spacer(20.0));
 
 	if (g_paramSFO.IsValid() && g_Config.HasGameConfig(g_paramSFO.GetDiscID())) {
 		rightColumnItems->Add(new Choice(pa->T("Game Settings"), ImageID("I_GEAR")))->OnClick.Handle(this, &GamePauseScreen::OnGameSettings);
-		Choice *delGameConfig = rightColumnItems->Add(new Choice(pa->T("Delete Game Config")));
-		delGameConfig->OnClick.Handle(this, &GamePauseScreen::OnDeleteConfig);
-		delGameConfig->SetEnabled(!bootPending_);
 	} else if (PSP_CoreParameter().fileType != IdentifiedFileType::PPSSPP_GE_DUMP) {
 		rightColumnItems->Add(new Choice(pa->T("Settings"), ImageID("I_GEAR")))->OnClick.Handle(this, &GamePauseScreen::OnGameSettings);
 		Choice *createGameConfig = rightColumnItems->Add(new Choice(pa->T("Create Game Config"), ImageID("I_GEAR_STAR")));
 		createGameConfig->OnClick.Handle(this, &GamePauseScreen::OnCreateConfig);
 		createGameConfig->SetEnabled(!bootPending_);
+	}
+
+	if (g_Config.bAchievementsEnable && Achievements::HasAchievementsOrLeaderboards()) {
+		rightColumnItems->Add(new Choice(ac->T("Achievements"), ImageID("I_ACHIEVEMENT")))->OnClick.Add([&](UI::EventParams &e) {
+			screenManager()->push(new RetroAchievementsListScreen(gamePath_));
+		});
 	}
 
 	rightColumnItems->Add(new Choice(gr->T("Display layout & effects"), ImageID("I_DISPLAY")))->OnClick.Add([&](UI::EventParams &) -> void {
@@ -587,11 +596,6 @@ void GamePauseScreen::CreateViews() {
 	if (g_Config.bEnableCheats && PSP_CoreParameter().fileType != IdentifiedFileType::PPSSPP_GE_DUMP) {
 		rightColumnItems->Add(new Choice(pa->T("Cheats"), ImageID("I_CHEAT")))->OnClick.Add([&](UI::EventParams &e) {
 			screenManager()->push(new CwCheatScreen(gamePath_));
-		});
-	}
-	if (g_Config.bAchievementsEnable && Achievements::HasAchievementsOrLeaderboards()) {
-		rightColumnItems->Add(new Choice(ac->T("Achievements"), ImageID("I_ACHIEVEMENT")))->OnClick.Add([&](UI::EventParams &e) {
-			screenManager()->push(new RetroAchievementsListScreen(gamePath_));
 		});
 	}
 
@@ -628,26 +632,31 @@ void GamePauseScreen::CreateViews() {
 	exit->SetEnabled(!bootPending_);
 
 	if (middleColumn) {
-		middleColumn->SetSpacing(20.0f);
-		playButton_ = middleColumn->Add(new Button("", g_Config.bRunBehindPauseMenu ? ImageID("I_PAUSE") : ImageID("I_PLAY"), new LinearLayoutParams(64, 64)));
+		middleColumn->SetSpacing(portrait ? 8.0f : 20.0f);
+		playButton_ = middleColumn->Add(new Choice(g_Config.bRunBehindPauseMenu ? ImageID("I_PAUSE") : ImageID("I_PLAY"), new LinearLayoutParams(64, 64)));
 		playButton_->OnClick.Add([=](UI::EventParams &e) {
 			g_Config.bRunBehindPauseMenu = !g_Config.bRunBehindPauseMenu;
-			playButton_->SetImageID(g_Config.bRunBehindPauseMenu ? ImageID("I_PAUSE") : ImageID("I_PLAY"));
+			playButton_->SetIconLeft(g_Config.bRunBehindPauseMenu ? ImageID("I_PAUSE") : ImageID("I_PLAY"));
 		});
 
 		bool mustRunBehind = MustRunBehind();
 		playButton_->SetVisibility(mustRunBehind ? UI::V_GONE : UI::V_VISIBLE);
 
-		Button *infoButton = middleColumn->Add(new Button("", ImageID("I_INFO"), new LinearLayoutParams(64, 64)));
+		Choice *infoButton = middleColumn->Add(new Choice(ImageID("I_INFO"), new LinearLayoutParams(64, 64)));
 		infoButton->OnClick.Add([=](UI::EventParams &e) {
 			screenManager()->push(new GameScreen(gamePath_, true));
 		});
 
-		Button *menuButton = middleColumn->Add(new Button("", ImageID("I_THREE_DOTS"), new LinearLayoutParams(64, 64)));
+		if (System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_MOBILE) {
+			AddRotationPicker(screenManager(), middleColumn, false);
+		}
 
-		menuButton->OnClick.Add([this, menuButton, portrait](UI::EventParams &e) {
-			ShowContextMenu(menuButton, portrait);
-		});
+		if (!portrait) {
+			Choice *menuButton = middleColumn->Add(new Choice("", ImageID("I_THREE_DOTS"), new LinearLayoutParams(64, 64)));
+			menuButton->OnClick.Add([this, menuButton, portrait](UI::EventParams &e) {
+				ShowContextMenu(menuButton, portrait);
+			});
+		}
 	} else {
 		playButton_ = nullptr;
 	}
@@ -670,6 +679,12 @@ void GamePauseScreen::ShowContextMenu(UI::View *menuButton, bool portrait) {
 				System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
 			}
 		});
+
+		auto pa = GetI18NCategory(I18NCat::PAUSE);
+
+		Choice *delGameConfig = parent->Add(new Choice(pa->T("Delete Game Config")));
+		delGameConfig->OnClick.Handle(this, &GamePauseScreen::OnDeleteConfig);
+		delGameConfig->SetEnabled(!bootPending_);
 
 		if (portrait) {
 			// Add some other options that are removed from the main screen in portrait mode.

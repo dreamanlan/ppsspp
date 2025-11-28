@@ -376,7 +376,7 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 			return !g_Config.bSoftwareRendering && !g_Config.bSkipBufferEffects;
 		});
 		if (g_Config.iMultiSampleLevel > 1 && draw->GetDeviceCaps().isTilingGPU) {
-			msaaChoice->SetIcon(ImageID("I_WARNING"), 0.7f);
+			msaaChoice->SetIconRight(ImageID("I_WARNING"), 0.7f);
 		}
 		msaaChoice->SetEnabledFunc([] {
 			return !g_Config.bSoftwareRendering && !g_Config.bSkipBufferEffects;
@@ -899,18 +899,7 @@ void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings)
 			controlsSettings->Add(new CheckBox(&g_Config.bHapticFeedback, co->T("HapticFeedback", "Haptic Feedback (vibration)")));
 		}
 
-		// On non iOS systems, offer to let the user see this button.
-		// Some Windows touch devices don't have a back button or other button to call up the menu.
-		if (System_GetPropertyBool(SYSPROP_HAS_BACK_BUTTON)) {
-			CheckBox *enablePauseBtn = controlsSettings->Add(new CheckBox(&g_Config.bShowTouchPause, co->T("Show Touch Pause Menu Button")));
-
-			// Don't allow the user to disable it once in-game, so they can't lock themselves out of the menu.
-			if (!PSP_IsInited()) {
-				enablePauseBtn->SetEnabledPtr(&g_Config.bShowTouchControls);
-			} else {
-				enablePauseBtn->SetEnabled(false);
-			}
-		}
+		// The pause button is now a regular on-screen button.
 
 		CheckBox *disableDiags = controlsSettings->Add(new CheckBox(&g_Config.bDisableDpadDiagonals, co->T("Disable D-Pad diagonals (4-way touch)")));
 		disableDiags->SetEnabledPtr(&g_Config.bShowTouchControls);
@@ -1126,7 +1115,7 @@ void GameSettingsScreen::CreateToolsSettings(UI::ViewGroup *tools) {
 		retro->OnClick.Add([=](UI::EventParams &) -> void {
 			screenManager()->push(new RetroAchievementsSettingsScreen(gamePath_));
 		});
-		retro->SetIcon(ImageID("I_RETROACHIEVEMENTS_LOGO"));
+		retro->SetIconRight(ImageID("I_RETROACHIEVEMENTS_LOGO"));
 	}
 
 	// These were moved here so use the wrong translation objects, to avoid having to change all inis... This isn't a sustainable situation :P
@@ -1369,15 +1358,7 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	if (System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_MOBILE) {
 		auto co = GetI18NCategory(I18NCat::CONTROLS);
 
-		static const char *screenRotation[] = { "Auto", "Landscape", "Portrait", "Landscape Reversed", "Portrait Reversed", "Landscape Auto" };
-		PopupMultiChoice *rot = systemSettings->Add(new PopupMultiChoice(&g_Config.iScreenRotation, co->T("Screen Rotation"), screenRotation, 0, ARRAY_SIZE(screenRotation), I18NCat::CONTROLS, screenManager()));
-		#if PPSSPP_PLATFORM(IOS)
-		// Portrait Reversed is not recommended on iPhone (and we also ban it in the plist).
-		// However it's recommended to support it on iPad, so maybe we will in the future.
-		rot->HideChoice(4);
-		#endif
-
-		rot->OnChoice.Handle(this, &GameSettingsScreen::OnScreenRotation);
+		AddRotationPicker(screenManager(), systemSettings, true);
 
 		if (System_GetPropertyBool(SYSPROP_SUPPORTS_SUSTAINED_PERF_MODE)) {
 			systemSettings->Add(new CheckBox(&g_Config.bSustainedPerformanceMode, sy->T("Sustained performance mode")))->OnClick.Handle(this, &GameSettingsScreen::OnSustainedPerformanceModeChange);
@@ -1476,13 +1457,6 @@ void GameSettingsScreen::CreateVRSettings(UI::ViewGroup *vrSettings) {
 
 void GameSettingsScreen::OnAutoFrameskip(UI::EventParams &e) {
 	g_Config.UpdateAfterSettingAutoFrameSkip();
-}
-
-void GameSettingsScreen::OnScreenRotation(UI::EventParams &e) {
-	INFO_LOG(Log::System, "New display rotation: %d", g_Config.iScreenRotation);
-	INFO_LOG(Log::System, "Sending rotate");
-	System_Notify(SystemNotification::ROTATE_UPDATED);
-	INFO_LOG(Log::System, "Got back from rotate");
 }
 
 void GameSettingsScreen::OnAdhocGuides(UI::EventParams &e) {

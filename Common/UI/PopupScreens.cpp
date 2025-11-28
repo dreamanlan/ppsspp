@@ -309,6 +309,20 @@ std::string ChopTitle(const std::string &title) {
 	return title;
 }
 
+PopupMultiChoice::PopupMultiChoice(int *value, std::string_view text, const char **choices, int minVal, int numChoices,
+	I18NCat category, ScreenManager *screenManager, UI::LayoutParams *layoutParams)
+	: AbstractChoiceWithValueDisplay(text, layoutParams), value_(value), choices_(choices), minVal_(minVal), numChoices_(numChoices), category_(category), screenManager_(screenManager) {
+	if (choices) {
+		// If choices is nullptr, we're being called from PopupMultiChoiceDynamic where value doesn't yet point to anything valid.
+		if (*value >= numChoices + minVal)
+			*value = numChoices + minVal - 1;
+		if (*value < minVal)
+			*value = minVal;
+		UpdateText();
+	}
+	OnClick.Handle(this, &PopupMultiChoice::HandleClick);
+}
+
 void PopupMultiChoice::HandleClick(UI::EventParams &e) {
 	if (!callbackExecuted_ && preOpenCallback_) {
 		preOpenCallback_(this);
@@ -324,8 +338,7 @@ void PopupMultiChoice::HandleClick(UI::EventParams &e) {
 		choices.push_back(category ? std::string(category->T(choices_[i])) : std::string(choices_[i]));
 	}
 
-	ListPopupScreen *popupScreen = new ListPopupScreen(ChopTitle(text_), choices, *value_ - minVal_,
-		std::bind(&PopupMultiChoice::ChoiceCallback, this, std::placeholders::_1));
+	ListPopupScreen *popupScreen = new ListPopupScreen(ChopTitle(text_), choices, *value_ - minVal_, [this](int num) {ChoiceCallback(num);});
 	popupScreen->SetHiddenChoices(hidden_);
 	popupScreen->SetChoiceIcons(icons_);
 	if (e.v)
@@ -808,10 +821,9 @@ void AbstractChoiceWithValueDisplay::GetContentDimensionsBySpec(const UIContext 
 		availWidth = 65535.0f;
 	}
 	float scale = CalculateValueScale(dc, valueText, availWidth);
-	Bounds availBounds(0, 0, availWidth, vert.size);
 
 	float valueW, valueH;
-	dc.MeasureTextRect(dc.GetTheme().uiFont, scale, scale, valueText, availBounds, &valueW, &valueH, ALIGN_RIGHT | ALIGN_VCENTER | FLAG_WRAP_TEXT);
+	dc.MeasureTextRect(dc.GetTheme().uiFont, scale, scale, valueText, availWidth, &valueW, &valueH, ALIGN_RIGHT | ALIGN_VCENTER | FLAG_WRAP_TEXT);
 	valueW += paddingX;
 
 	// Give the choice itself less space to grow in, so it shrinks if needed.
@@ -855,8 +867,7 @@ void AbstractChoiceWithValueDisplay::Draw(UIContext &dc) {
 		float scale = CalculateValueScale(dc, valueText, availWidth);
 
 		float w, h;
-		Bounds availBounds(0, 0, availWidth, bounds_.h);
-		dc.MeasureTextRect(dc.GetTheme().uiFont, scale, scale, valueText, availBounds, &w, &h, ALIGN_RIGHT | ALIGN_VCENTER | FLAG_WRAP_TEXT);
+		dc.MeasureTextRect(dc.GetTheme().uiFont, scale, scale, valueText, availWidth, &w, &h, ALIGN_RIGHT | ALIGN_VCENTER | FLAG_WRAP_TEXT);
 		textPadding_.right = w + paddingX;
 
 		Choice::Draw(dc);
@@ -870,6 +881,13 @@ void AbstractChoiceWithValueDisplay::Draw(UIContext &dc) {
 		dc.SetFontScale(1.0f, 1.0f);
 	} else {
 		Choice::Draw(dc);
+
+		if (text_.empty() && !image_.isValid()) {
+			// In this case we only display the image of the choice. Useful for small buttons spawning a popup.
+			dc.Draw()->DrawImageRotated(ValueImage(), bounds_.centerX(), bounds_.centerY(), imgScale_, imgRot_, style.fgColor, imgFlipH_);
+			return;
+		}
+
 		float scale = CalculateValueScale(dc, valueText, bounds_.w);
 		dc.SetFontScale(scale, scale);
 		dc.DrawTextRect(valueText, bounds_.Expand(-paddingX, 0.0f), style.fgColor, ALIGN_LEFT | ALIGN_VCENTER | FLAG_WRAP_TEXT);
@@ -879,8 +897,7 @@ void AbstractChoiceWithValueDisplay::Draw(UIContext &dc) {
 
 float AbstractChoiceWithValueDisplay::CalculateValueScale(const UIContext &dc, std::string_view valueText, float availWidth) const {
 	float actualWidth, actualHeight;
-	Bounds availBounds(0, 0, availWidth, bounds_.h);
-	dc.MeasureTextRect(dc.GetTheme().uiFont, 1.0f, 1.0f, valueText, availBounds, &actualWidth, &actualHeight);
+	dc.MeasureTextRect(dc.GetTheme().uiFont, 1.0f, 1.0f, valueText, availWidth, &actualWidth, &actualHeight);
 	if (actualWidth > availWidth) {
 		return std::max(0.8f, availWidth / actualWidth);
 	}

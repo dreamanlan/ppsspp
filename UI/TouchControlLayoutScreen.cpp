@@ -486,6 +486,7 @@ void ControlLayoutView::CreateViews() {
 	}
 
 	ImageID rectImage = g_Config.iTouchButtonStyle ? ImageID("I_RECT_LINE") : ImageID("I_RECT");
+	ImageID roundImage = g_Config.iTouchButtonStyle ? ImageID("I_ROUND_LINE") : ImageID("I_ROUND");
 	ImageID shoulderImage = g_Config.iTouchButtonStyle ? ImageID("I_SHOULDER_LINE") : ImageID("I_SHOULDER");
 	ImageID stickImage = g_Config.iTouchButtonStyle ? ImageID("I_STICK_LINE") : ImageID("I_STICK");
 	ImageID stickBg = g_Config.iTouchButtonStyle ? ImageID("I_STICK_BG_LINE") : ImageID("I_STICK_BG");
@@ -502,6 +503,8 @@ void ControlLayoutView::CreateViews() {
 	if (touch.touchDpad.show) {
 		controls_.push_back(new PSPDPadButtons(touch.touchDpad, "D-pad", touch.fDpadSpacing, bounds));
 	}
+
+	addDragDropButton(touch.touchPauseKey, "Pause button", roundImage, ImageID("I_HAMBURGER"));
 
 	addDragDropButton(touch.touchSelectKey, "Select button", rectImage, ImageID("I_SELECT"));
 	addDragDropButton(touch.touchStartKey, "Start button", rectImage, ImageID("I_START"));
@@ -652,8 +655,8 @@ void TouchControlLayoutScreen::CreateViews() {
 	LinearLayout *leftColumn = leftColumnScroll->Add(new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(Margins(12.0f, 0.0f))));
 
 	mode_ = new ChoiceStrip(ORIENT_VERTICAL);
-	mode_->AddChoice(di->T("Move"));
-	mode_->AddChoice(di->T("Resize"));
+	mode_->AddChoice(di->T("Move"), ImageID("I_MOVE"));
+	mode_->AddChoice(di->T("Resize"), ImageID("I_RESIZE"));
 	mode_->SetSelection(0, false);
 	mode_->OnChoice.Handle(this, &TouchControlLayoutScreen::OnMode);
 
@@ -673,7 +676,7 @@ void TouchControlLayoutScreen::CreateViews() {
 	leftColumn->Add(new Spacer(0.0f));
 
 	LinearLayout* rightColumn = root_->Add(new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(1.0f, Margins(0.0f, 12.0f, 12.0f, 12.0f))));
-	rightColumn->Add(new TextView(co->T(DeviceOrientationToString(orientation))));
+	rightColumn->Add(new TextView(co->T(DeviceOrientationToString(orientation))))->SetTextSize(TextSize::Small);
 	rightColumn->Add(new Spacer(new LinearLayoutParams(1.0)));
 	float previewHeight = bounds.h * layoutAreaScale;
 	layoutView_ = rightColumn->Add(new ControlLayoutView(GetDeviceOrientation(), new LinearLayoutParams(FILL_PARENT, previewHeight)));

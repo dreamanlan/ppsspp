@@ -9,6 +9,7 @@
 #include "Common/StringUtils.h"
 #include "UI/MiscViews.h"
 #include "UI/GameInfoCache.h"
+#include "Common/UI/PopupScreens.h"
 #include "Core/Config.h"
 
 TextWithImage::TextWithImage(ImageID imageID, std::string_view text, UI::LinearLayoutParams *layoutParams) : UI::LinearLayout(ORIENT_HORIZONTAL, layoutParams) {
@@ -160,36 +161,50 @@ PaneTitleBar::PaneTitleBar(const Path &gamePath, std::string_view title, const s
 }
 
 void GameImageView::GetContentDimensions(const UIContext &dc, float &w, float &h) const {
-	w = textureWidth_;
-	h = textureHeight_;
+	std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(dc.GetDrawContext(), gamePath_, image_);
+	GameInfoTex *tex = GetTex(info);
+	w = 0;
+	h = 0;
+	if (!tex || !tex->texture) {
+		return;
+	}
+	Draw::Texture *texture = tex->texture;
+	w = tex->texture->Width();
+	h = tex->texture->Height();
+}
+
+GameInfoTex *GameImageView::GetTex(std::shared_ptr<GameInfo> info) const {
+	GameInfoTex *tex = nullptr;
+	switch (image_) {
+	case GameInfoFlags::ICON:
+		tex = &info->icon;
+		break;
+	case GameInfoFlags::PIC0:
+		tex = &info->pic0;
+		break;
+	case GameInfoFlags::PIC1:
+		tex = &info->pic1;
+		break;
+	}
+	return tex;
 }
 
 void GameImageView::Draw(UIContext &dc) {
 	using namespace UI;
 	std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(dc.GetDrawContext(), gamePath_, image_);
-	if (!info->Ready(image_) || !info->icon.texture) {
+	if (!info->Ready(image_)) {
 		return;
 	}
 
-	Draw::Texture *texture = nullptr;
-	switch (image_) {
-	case GameInfoFlags::ICON:
-		texture = info->icon.texture;
-		break;
-	case GameInfoFlags::PIC0:
-		texture = info->pic0.texture;
-		break;
-	case GameInfoFlags::PIC1:
-		texture = info->pic1.texture;
-		break;
-	}
-
-	if (!texture) {
+	GameInfoTex *tex = GetTex(info);
+	if (!tex || !tex->texture) {
 		return;
 	}
 
-	textureWidth_ = texture->Width() * scale_;
-	textureHeight_ = texture->Height() * scale_;
+	Draw::Texture *texture = tex->texture;
+
+	float textureWidth_ = texture->Width() * scale_;
+	float textureHeight_ = texture->Height() * scale_;
 
 	// Fade icon with the backgrounds.
 	double loadTime = info->icon.timeLoaded;
@@ -209,4 +224,27 @@ void GameImageView::Draw(UIContext &dc) {
 	dc.Draw()->Rect(x, bounds_.y, nw, bounds_.h, color);
 	dc.Flush();
 	dc.RebindTexture();
+}
+
+void AddRotationPicker(ScreenManager *screenManager, UI::ViewGroup *parent, bool text) {
+	using namespace UI;
+	static const char *screenRotation[] = { "Auto", "Landscape", "Portrait", "Landscape Reversed" };
+	static const std::map<int, ImageID> screenRotationIcons{
+		{ROTATION_AUTO, ImageID("I_DEVICE_ROTATION_AUTO")},
+		{ROTATION_LOCKED_HORIZONTAL, ImageID("I_DEVICE_ROTATION_LANDSCAPE")},
+		{ROTATION_LOCKED_VERTICAL, ImageID("I_DEVICE_ROTATION_PORTRAIT")},
+		{ROTATION_LOCKED_HORIZONTAL180, ImageID("I_DEVICE_ROTATION_LANDSCAPE_REV")},
+	};
+
+	auto co = GetI18NCategory(I18NCat::CONTROLS);
+
+	PopupMultiChoice *rot = parent->Add(new PopupMultiChoice(&g_Config.iScreenRotation, text ? co->T("Screen Rotation") : "", screenRotation, 0, ARRAY_SIZE(screenRotation), I18NCat::CONTROLS, screenManager, text ? nullptr : new LinearLayoutParams(ITEM_HEIGHT, ITEM_HEIGHT)));
+	rot->SetChoiceIcons(screenRotationIcons);
+	// Portrait Reversed is not recommended on iPhone (and we also ban it in the plist).
+	// However it's recommended to support it on iPad, so maybe we will in the future.
+	rot->HideChoice(4);
+	rot->OnChoice.Add([](UI::EventParams &) {
+		INFO_LOG(Log::System, "New display rotation: %d", g_Config.iScreenRotation);
+		System_Notify(SystemNotification::ROTATE_UPDATED);
+	});
 }
