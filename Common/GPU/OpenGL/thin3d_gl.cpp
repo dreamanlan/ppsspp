@@ -567,7 +567,7 @@ OpenGLContext::OpenGLContext(bool canChangeSwapInterval) : renderManager_(frameT
 				caps_.fragmentShaderInt32Supported = true;
 			}
 		}
-		caps_.texture3DSupported = gl_extensions.OES_texture_3D;
+		caps_.texture3DSupported = gl_extensions.GLES3 || gl_extensions.OES_texture_3D;
 		caps_.textureDepthSupported = gl_extensions.GLES3 || gl_extensions.OES_depth_texture;
 	} else {
 		if (gl_extensions.VersionGEThan(3, 3, 0)) {
@@ -1310,6 +1310,12 @@ bool OpenGLPipeline::LinkShaders(const PipelineDesc &desc) {
 		}
 	}
 
+	if (linkShaders.empty()) {
+		// Can't proceed.
+		ERROR_LOG(Log::G3D, "LinkShaders: No valid shaders to link");
+		return false;
+	}
+
 	std::vector<GLRProgram::Semantic> semantics;
 	semantics.reserve(8);
 	// Bind all the common vertex data points. Mismatching ones will be ignored.
@@ -1628,8 +1634,8 @@ bool OpenGLContext::BlitFramebuffer(Framebuffer *fbsrc, int srcX1, int srcY1, in
 void OpenGLContext::BindFramebufferAsTexture(Framebuffer *fbo, int binding, Aspect aspects, int layer) {
 	OpenGLFramebuffer *fb = (OpenGLFramebuffer *)fbo;
 	_assert_(binding < MAX_TEXTURE_SLOTS);
-	_dbg_assert_(fb);
-	_dbg_assert_(fb->framebuffer_);
+	_assert_(fb);
+	_assert_(fb->framebuffer_);
 
 	GLuint glAspect = 0;
 	if (aspects & Aspect::COLOR_BIT) {
