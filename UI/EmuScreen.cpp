@@ -362,15 +362,13 @@ void EmuScreen::bootComplete() {
 
 	if (g_paramSFO.IsValid()) {
 		g_Discord.SetPresenceGame(SanitizeString(g_paramSFO.GetValueString("TITLE"), StringRestriction::NoLineBreaksOrSpecials));
-	} else {
-		g_Discord.SetPresenceGame(sc->T("Untitled PSP game"));
-	}
-
-	if (g_paramSFO.IsValid()) {
 		std::string gameTitle = SanitizeString(g_paramSFO.GetValueString("TITLE"), StringRestriction::NoLineBreaksOrSpecials, 0, 32);
 		std::string id = g_paramSFO.GetValueString("DISC_ID");
 		extraAssertInfoStr_ = id + " " + gameTitle;
 		SetExtraAssertInfo(extraAssertInfoStr_.c_str());
+		SaveState::Rescan(SaveState::GetGamePrefix(g_paramSFO));
+	} else {
+		g_Discord.SetPresenceGame(sc->T("Untitled PSP game"));
 	}
 
 	UpdateUIState(UISTATE_INGAME);
@@ -821,12 +819,12 @@ void EmuScreen::onVKey(VirtKey virtualKeyCode, bool down) {
 
 	case VIRTKEY_SAVE_STATE:
 		if (down && !Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate() && !bootPending_) {
-			SaveState::SaveSlot(gamePath_, g_Config.iCurrentStateSlot, &AfterSaveStateAction);
+			SaveState::SaveSlot(SaveState::GetGamePrefix(g_paramSFO), g_Config.iCurrentStateSlot, &AfterSaveStateAction);
 		}
 		break;
 	case VIRTKEY_LOAD_STATE:
 		if (down && !Achievements::WarnUserIfHardcoreModeActive(false) && !NetworkWarnUserIfOnlineAndCantSavestate() && !bootPending_) {
-			SaveState::LoadSlot(gamePath_, g_Config.iCurrentStateSlot, &AfterSaveStateAction);
+			SaveState::LoadSlot(SaveState::GetGamePrefix(g_paramSFO), g_Config.iCurrentStateSlot, &AfterSaveStateAction);
 		}
 		break;
 	case VIRTKEY_PREVIOUS_SLOT:
@@ -1481,9 +1479,11 @@ void EmuScreen::update() {
 		if (saveStateSlot_ != currentSlot) {
 			saveStateSlot_ = currentSlot;
 
+			const std::string gamePrefix = SaveState::GetGamePrefix(g_paramSFO);
+
 			Path fn;
-			if (SaveState::HasSaveInSlot(gamePath_, currentSlot)) {
-				fn = SaveState::GenerateSaveSlotFilename(gamePath_, currentSlot, SaveState::SCREENSHOT_EXTENSION);
+			if (SaveState::HasSaveInSlot(gamePrefix, currentSlot)) {
+				fn = SaveState::GenerateSaveSlotPath(gamePrefix, currentSlot, SaveState::SCREENSHOT_EXTENSION);
 			}
 
 			saveStatePreview_->SetFilename(fn);
@@ -2035,23 +2035,25 @@ void EmuScreen::AutoLoadSaveState() {
 
 	int autoSlot = -1;
 
+	std::string gamePrefix = SaveState::GetGamePrefix(g_paramSFO);
+
 	//check if save state has save, if so, load
 	switch (g_Config.iAutoLoadSaveState) {
 	case (int)AutoLoadSaveState::OFF: // "AutoLoad Off"
 		return;
 	case (int)AutoLoadSaveState::OLDEST: // "Oldest Save"
-		autoSlot = SaveState::GetOldestSlot(gamePath_);
+		autoSlot = SaveState::GetOldestSlot(gamePrefix);
 		break;
 	case (int)AutoLoadSaveState::NEWEST: // "Newest Save"
-		autoSlot = SaveState::GetNewestSlot(gamePath_);
+		autoSlot = SaveState::GetNewestSlot(gamePrefix);
 		break;
 	default: // try the specific save state slot specified
-		autoSlot = (SaveState::HasSaveInSlot(gamePath_, g_Config.iAutoLoadSaveState - 3)) ? (g_Config.iAutoLoadSaveState - 3) : -1;
+		autoSlot = (SaveState::HasSaveInSlot(gamePrefix, g_Config.iAutoLoadSaveState - 3)) ? (g_Config.iAutoLoadSaveState - 3) : -1;
 		break;
 	}
 
 	if (g_Config.iAutoLoadSaveState && autoSlot != -1) {
-		SaveState::LoadSlot(gamePath_, autoSlot, [this, autoSlot](SaveState::Status status, std::string_view message) {
+		SaveState::LoadSlot(gamePrefix, autoSlot, [this, autoSlot](SaveState::Status status, std::string_view message) {
 			AfterSaveStateAction(status, message);
 			auto sy = GetI18NCategory(I18NCat::SYSTEM);
 			std::string msg = std::string(sy->T("Auto Load Savestate")) + ": " + StringFromFormat("%d", autoSlot);

@@ -168,13 +168,13 @@ static void SaveStateActionFinished(SaveState::Status status, std::string_view m
 void MainWindow::qlstateAct()
 {
 	Path gamePath = PSP_CoreParameter().fileToStart;
-	SaveState::LoadSlot(gamePath, 0, SaveStateActionFinished);
+	SaveState::LoadSlot(SaveState::GetGamePrefix(g_paramSFO), 0, SaveStateActionFinished);
 }
 
 void MainWindow::qsstateAct()
 {
 	Path gamePath = PSP_CoreParameter().fileToStart;
-	SaveState::SaveSlot(gamePath, 0, SaveStateActionFinished);
+	SaveState::SaveSlot(SaveState::GetGamePrefix(g_paramSFO), 0, SaveStateActionFinished);
 }
 
 void MainWindow::lstateAct()
@@ -531,9 +531,17 @@ void MainWindow::createMenus()
 		->addEnableState(UISTATE_MENU);
 	fileMenu->addSeparator();
 	MenuTree* savestateMenu = new MenuTree(this, fileMenu, QT_TR_NOOP("Saves&tate slot"));
+
+	QStringList slotNames;
+	QList<int> slotIndices;
+	for (int i = 0; i < g_Config.iSaveStateSlotCount; ++i) {
+		slotNames << QString::number(i + 1);
+		slotIndices << i;
+	}
 	saveStateGroup = new MenuActionGroup(this, savestateMenu, SLOT(saveStateGroup_triggered(QAction *)),
-		QStringList() << "1" << "2" << "3" << "4" << "5",
-		QList<int>() << 0 << 1 << 2 << 3 << 4);
+		slotNames,
+		slotIndices);
+
 	fileMenu->add(new MenuAction(this, SLOT(qlstateAct()),    QT_TR_NOOP("L&oad state"), Qt::Key_F4))
 		->addDisableState(UISTATE_MENU);
 	fileMenu->add(new MenuAction(this, SLOT(qsstateAct()),    QT_TR_NOOP("S&ave state"), Qt::Key_F2))
