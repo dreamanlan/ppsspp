@@ -6,6 +6,7 @@
 #include "Common/UI/ViewGroup.h"
 #include "Common/UI/Context.h"
 #include "Common/UI/Root.h"
+#include "Common/UI/Notice.h"
 #include "Common/StringUtils.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/System/System.h"
@@ -163,6 +164,10 @@ void PopupScreen::CreateViews() {
 		box_->Add(title);
 	}
 
+	if (!notificationString_.empty()) {
+		box_->Add(new NoticeView(notificationLevel_, notificationString_, "", new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(8, 4))))->SetWrapText(true);
+	}
+
 	CreatePopupContents(box_);
 	root_->Recurse([](View *view) {
 		view->SetPopupStyle(true);
@@ -215,6 +220,8 @@ void MessagePopupScreen::OnCompleted(DialogResult result) {
 			callback_(false);
 	}
 }
+
+ListPopupScreen::~ListPopupScreen() {}
 
 void ListPopupScreen::CreatePopupContents(UI::ViewGroup *parent) {
 	using namespace UI;
@@ -755,9 +762,10 @@ void PopupTextInputChoice::HandleClick(EventParams &e) {
 
 	// Choose method depending on platform capabilities.
 	if (System_GetPropertyBool(SYSPROP_HAS_TEXT_INPUT_DIALOG)) {
-		System_InputBoxGetString(token_, text_, *value_, passwordMasking_, [=](const std::string &enteredValue, int) {
+		System_InputBoxGetString(token_, text_, *value_, passwordMasking_, [this](const std::string &enteredValue, int) {
 			*value_ = SanitizeString(StripSpaces(enteredValue), restriction_, minLen_, maxLen_);
 			EventParams params{};
+			params.v = this;
 			OnChange.Trigger(params);
 		});
 		return;
@@ -768,7 +776,15 @@ void PopupTextInputChoice::HandleClick(EventParams &e) {
 	if (System_GetPropertyBool(SYSPROP_KEYBOARD_IS_SOFT)) {
 		popupScreen->SetAlignTop(true);
 	}
-	popupScreen->OnChange.Handle(this, &PopupTextInputChoice::HandleChange);
+	popupScreen->OnChange.Add([this](EventParams &e) {
+		*value_ = StripSpaces(SanitizeString(*value_, restriction_, minLen_, maxLen_));
+		EventParams params{};
+		params.v = this;
+		OnChange.Trigger(params);
+		if (restoreFocus_) {
+			SetFocusedView(this);
+		}
+	});
 	if (e.v)
 		popupScreen->SetPopupOrigin(e.v);
 	screenManager_->push(popupScreen);
@@ -776,16 +792,6 @@ void PopupTextInputChoice::HandleClick(EventParams &e) {
 
 std::string PopupTextInputChoice::ValueText() const {
 	return *value_;
-}
-
-void PopupTextInputChoice::HandleChange(EventParams &e) {
-	*value_ = StripSpaces(SanitizeString(*value_, restriction_, minLen_, maxLen_));
-	e.v = this;
-	OnChange.Trigger(e);
-
-	if (restoreFocus_) {
-		SetFocusedView(this);
-	}
 }
 
 void TextEditPopupScreen::CreatePopupContents(UI::ViewGroup *parent) {
@@ -882,7 +888,7 @@ void AbstractChoiceWithValueDisplay::Draw(UIContext &dc) {
 	} else {
 		Choice::Draw(dc);
 
-		if (text_.empty() && !image_.isValid()) {
+		if (iconOnly_) {
 			// In this case we only display the image of the choice. Useful for small buttons spawning a popup.
 			dc.Draw()->DrawImageRotated(ValueImage(), bounds_.centerX(), bounds_.centerY(), imgScale_, imgRot_, style.fgColor, imgFlipH_);
 			return;

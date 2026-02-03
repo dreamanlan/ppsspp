@@ -29,6 +29,7 @@
 #include "Common/UI/View.h"
 #include "Common/UI/ViewGroup.h"
 #include "Common/UI/Context.h"
+#include "Common/UI/Notice.h"
 #include "Common/Render/ManagedTexture.h"
 #include "Common/VR/PPSSPPVR.h"
 #include "Common/BitSet.h"
@@ -37,7 +38,6 @@
 #include "Common/System/OSD.h"
 #include "Common/System/NativeApp.h"
 #include "Common/Data/Color/RGBAUtil.h"
-#include "Common/Math/curves.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/Data/Encoding/Utf8.h"
 #include "Common/UI/PopupScreens.h"
@@ -66,8 +66,6 @@
 
 #include "Common/File/FileUtil.h"
 #include "Common/File/AndroidContentURI.h"
-#include "Common/OSVersion.h"
-#include "Common/TimeUtil.h"
 #include "Common/StringUtils.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
@@ -79,11 +77,7 @@
 #include "Core/HLE/sceUsbCam.h"
 #include "Core/HLE/sceUsbMic.h"
 #include "Core/HLE/sceUtility.h"
-#include "GPU/Common/TextureReplacer.h"
 #include "GPU/Common/PostShader.h"
-#include "GPU/Common/FramebufferManagerCommon.h"
-
-#include "Core/Core.h" // for Core_IsStepping
 
 #if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
 #include "UI/DarwinFileSystemServices.h"
@@ -122,6 +116,7 @@ public:
 		: UI::TextView(text, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::WRAP_CONTENT)) {
 		SetTextSize(UI::TextSize::Tiny);
 		SetPadding(UI::Margins(14, 0, 0, 8));
+		SetAlign(FLAG_WRAP_TEXT);
 	}
 
 	void Draw(UIContext &dc) override {
@@ -347,15 +342,15 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 	}
 
 	static const char *internalResolutions[] = { "Auto (1:1)", "1x PSP", "2x PSP", "3x PSP", "4x PSP", "5x PSP", "6x PSP", "7x PSP", "8x PSP", "9x PSP", "10x PSP" };
-	resolutionChoice_ = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iInternalResolution, gr->T("Rendering Resolution"), internalResolutions, 0, ARRAY_SIZE(internalResolutions), I18NCat::GRAPHICS, screenManager()));
-	resolutionChoice_->OnChoice.Add([](UI::EventParams &e) {
+	PopupMultiChoice *resolutionChoice = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iInternalResolution, gr->T("Rendering Resolution"), internalResolutions, 0, ARRAY_SIZE(internalResolutions), I18NCat::GRAPHICS, screenManager()));
+	resolutionChoice->OnChoice.Add([](UI::EventParams &e) {
 		if (g_Config.iAndroidHwScale == 1) {
 			System_RecreateActivity();
 		}
 		Reporting::UpdateConfig();
 		System_PostUIMessage(UIMessage::GPU_RENDER_RESIZED);
 	});
-	resolutionChoice_->SetEnabledFunc([] {
+	resolutionChoice->SetEnabledFunc([] {
 		return !g_Config.bSoftwareRendering && !g_Config.bSkipBufferEffects;
 	});
 
@@ -418,13 +413,18 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 
 	if (deviceType != DEVICE_TYPE_VR) {
 #if !defined(MOBILE_DEVICE)
-		graphicsSettings->Add(new CheckBox(&g_Config.bFullScreen, gr->T("FullScreen", "Full Screen")))->OnClick.Handle(this, &GameSettingsScreen::OnFullscreenChange);
+		CheckBox *fullscreenCheckbox = graphicsSettings->Add(new CheckBox(&g_Config.bFullScreen, gr->T("FullScreen", "Full Screen")));
+		fullscreenCheckbox->OnClick.Add([](UI::EventParams &e) {
+			System_ApplyFullscreenState();
+		});
 		if (System_GetPropertyInt(SYSPROP_DISPLAY_COUNT) > 1) {
-			CheckBox *fullscreenMulti = new CheckBox(&g_Config.bFullScreenMulti, gr->T("Use all displays"));
+			CheckBox *fullscreenMulti = graphicsSettings->Add(new CheckBox(&g_Config.bFullScreenMulti, gr->T("Use all displays")));
 			fullscreenMulti->SetEnabledFunc([] {
-				return g_Config.UseFullScreen();
+				return g_Config.bFullScreen;
 			});
-			graphicsSettings->Add(fullscreenMulti)->OnClick.Handle(this, &GameSettingsScreen::OnFullscreenMultiChange);
+			fullscreenMulti->OnClick.Add([](UI::EventParams &e) {
+				System_ApplyFullscreenState();
+			});
 		}
 #endif
 
@@ -436,8 +436,8 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 		}
 #endif
 		// Display Layout Editor: To avoid overlapping touch controls on large tablets, meet geeky demands for integer zoom/unstretched image etc.
-		displayEditor_ = graphicsSettings->Add(new Choice(gr->T("Display layout & effects")));
-		displayEditor_->OnClick.Add([&](UI::EventParams &) -> void {
+		Choice *displayEditor = graphicsSettings->Add(new Choice(gr->T("Display layout & effects")));
+		displayEditor->OnClick.Add([&](UI::EventParams &) -> void {
 			screenManager()->push(new DisplayLayoutScreen(gamePath_));
 		});
 	}
@@ -466,9 +466,15 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 
 	graphicsSettings->Add(new ItemHeader(gr->T("Frame Rate Control")));
 	static const char *frameSkip[] = {"Off", "1", "2", "3", "4", "5", "6", "7", "8"};
-	graphicsSettings->Add(new PopupMultiChoice(&g_Config.iFrameSkip, gr->T("Frame Skipping"), frameSkip, 0, ARRAY_SIZE(frameSkip), I18NCat::GRAPHICS, screenManager()));
-	frameSkipAuto_ = graphicsSettings->Add(new CheckBox(&g_Config.bAutoFrameSkip, gr->T("Auto FrameSkip")));
-	frameSkipAuto_->OnClick.Handle(this, &GameSettingsScreen::OnAutoFrameskip);
+	PopupMultiChoice *frameSkipping = graphicsSettings->Add(new PopupMultiChoice(&g_Config.iFrameSkip, gr->T("Frame Skipping"), frameSkip, 0, ARRAY_SIZE(frameSkip), I18NCat::GRAPHICS, screenManager()));
+	frameSkipping->SetEnabledFunc([] {
+		return !g_Config.bAutoFrameSkip;
+	});
+
+	CheckBox *frameSkipAuto = graphicsSettings->Add(new CheckBox(&g_Config.bAutoFrameSkip, gr->T("Auto FrameSkip")));
+	frameSkipAuto->OnClick.Add([](UI::EventParams &e) {
+		g_Config.UpdateAfterSettingAutoFrameSkip();
+	});
 
 	PopupSliderChoice *altSpeed1 = graphicsSettings->Add(new PopupSliderChoice(&iAlternateSpeedPercent1_, 0, 1000, UI::NO_DEFAULT_INT, gr->T("Alternative Speed", "Alternative speed"), 5, screenManager(), gr->T("%, 0:unlimited")));
 	altSpeed1->SetFormat("%i%%");
@@ -564,7 +570,18 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 
 	if (GetGPUBackend() == GPUBackend::VULKAN) {
 		ChoiceWithValueDisplay *textureShaderChoice = graphicsSettings->Add(new ChoiceWithValueDisplay(&g_Config.sTextureShaderName, gr->T("GPU texture upscaler (fast)"), &TextureTranslateName));
-		textureShaderChoice->OnClick.Handle(this, &GameSettingsScreen::OnTextureShader);
+		textureShaderChoice->OnClick.Add([this](UI::EventParams &e) {
+			auto gr = GetI18NCategory(I18NCat::GRAPHICS);
+			auto shaderScreen = new TextureShaderScreen(gr->T("GPU texture upscaler (fast)"));
+			shaderScreen->OnChoice.Add([this](UI::EventParams &e) {
+				System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
+				RecreateViews(); // Update setting name
+				g_Config.bTexHardwareScaling = g_Config.sTextureShaderName != "Off";
+			});
+			if (e.v)
+				shaderScreen->SetPopupOrigin(e.v);
+			screenManager()->push(shaderScreen);
+		});
 		textureShaderChoice->SetDisabledPtr(&g_Config.bSoftwareRendering);
 	}
 
@@ -853,11 +870,11 @@ void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings)
 	if ((deviceType != DEVICE_TYPE_TV) && (deviceType != DEVICE_TYPE_VR)) {
 		controlsSettings->Add(new ItemHeader(co->T("On-screen touch controls")));
 		controlsSettings->Add(new CheckBox(&g_Config.bShowTouchControls, co->T("On-screen touch controls")));
-		layoutEditorChoice_ = controlsSettings->Add(new Choice(co->T("Edit touch control layout...")));
-		layoutEditorChoice_->OnClick.Add([this](UI::EventParams &e) {
+		Choice *layoutEditorChoice = controlsSettings->Add(new Choice(co->T("Edit touch control layout")));
+		layoutEditorChoice->OnClick.Add([this](UI::EventParams &e) {
 			screenManager()->push(new TouchControlLayoutScreen(gamePath_));
 		});
-		layoutEditorChoice_->SetEnabledPtr(&g_Config.bShowTouchControls);
+		layoutEditorChoice->SetEnabledPtr(&g_Config.bShowTouchControls);
 
 		Choice *gesture = controlsSettings->Add(new Choice(co->T("Gesture mapping")));
 		gesture->OnClick.Add([=](EventParams &e) {
@@ -1015,10 +1032,12 @@ void GameSettingsScreen::CreateNetworkingSettings(UI::ViewGroup *networkingSetti
 
 	networkingSettings->Add(new ItemHeader(n->T("AdHoc server")));
 	networkingSettings->Add(new CheckBox(&g_Config.bEnableAdhocServer, n->T("Enable built-in PRO Adhoc Server", "Enable built-in PRO Adhoc Server")));
-	networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.proAdhocServer, n->T("Change proAdhocServer Address"), I18NCat::NONE))->OnClick.Add([=](UI::EventParams &) {
-		screenManager()->push(new HostnameSelectScreen(&g_Config.proAdhocServer, &g_Config.proAdhocServerList, n->T("proAdhocServer Address:")));
+	networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.sProAdhocServer, n->T("Change proAdhocServer Address"), I18NCat::NONE))->OnClick.Add([=](UI::EventParams &) {
+		screenManager()->push(new HostnameSelectScreen(&g_Config.sProAdhocServer, &g_Config.proAdhocServerList, n->T("proAdhocServer Address:")));
 	});
 	networkingSettings->Add(new SettingHint(n->T("Change proAdhocServer address hint")));
+	networkingSettings->Add(new CheckBox(&g_Config.bUseServerRelay, n->T("Try to use server-provided packet relay")))->SetEnabled(!PSP_IsInited());
+	networkingSettings->Add(new SettingHint(n->T("PacketRelayHint", "Available on servers that provide 'aemu_postoffice' packet relay, like socom.cc. Disable this for LAN or VPN play. Can be more reliable, but sometimes slower.")));
 	networkingSettings->Add(new ItemHeader(n->T("UPnP (port-forwarding)")));
 	networkingSettings->Add(new CheckBox(&g_Config.bEnableUPnP, n->T("Enable UPnP", "Enable UPnP (need a few seconds to detect)")));
 	auto useOriPort = networkingSettings->Add(new CheckBox(&g_Config.bUPnPUseOriginalPort, n->T("UPnP use original port", "UPnP use original port (Enabled = PSP compatibility)")));
@@ -1054,11 +1073,11 @@ void GameSettingsScreen::CreateNetworkingSettings(UI::ViewGroup *networkingSetti
 #endif
 
 #if !defined(MOBILE_DEVICE) && !defined(USING_QT_UI)  // TODO: Add all platforms where KeyInputFlags::CHAR support is added
-	PopupTextInputChoice *qc1 = networkingSettings->Add(new PopupTextInputChoice(GetRequesterToken(), &g_Config.sQuickChat0, n->T("Quick Chat 1"), "", 32, screenManager()));
-	PopupTextInputChoice *qc2 = networkingSettings->Add(new PopupTextInputChoice(GetRequesterToken(), &g_Config.sQuickChat1, n->T("Quick Chat 2"), "", 32, screenManager()));
-	PopupTextInputChoice *qc3 = networkingSettings->Add(new PopupTextInputChoice(GetRequesterToken(), &g_Config.sQuickChat2, n->T("Quick Chat 3"), "", 32, screenManager()));
-	PopupTextInputChoice *qc4 = networkingSettings->Add(new PopupTextInputChoice(GetRequesterToken(), &g_Config.sQuickChat3, n->T("Quick Chat 4"), "", 32, screenManager()));
-	PopupTextInputChoice *qc5 = networkingSettings->Add(new PopupTextInputChoice(GetRequesterToken(), &g_Config.sQuickChat4, n->T("Quick Chat 5"), "", 32, screenManager()));
+	PopupTextInputChoice *qc1 = networkingSettings->Add(new PopupTextInputChoice(GetRequesterToken(), &g_Config.sQuickChat[0], n->T("Quick Chat 1"), "", 32, screenManager()));
+	PopupTextInputChoice *qc2 = networkingSettings->Add(new PopupTextInputChoice(GetRequesterToken(), &g_Config.sQuickChat[1], n->T("Quick Chat 2"), "", 32, screenManager()));
+	PopupTextInputChoice *qc3 = networkingSettings->Add(new PopupTextInputChoice(GetRequesterToken(), &g_Config.sQuickChat[2], n->T("Quick Chat 3"), "", 32, screenManager()));
+	PopupTextInputChoice *qc4 = networkingSettings->Add(new PopupTextInputChoice(GetRequesterToken(), &g_Config.sQuickChat[3], n->T("Quick Chat 4"), "", 32, screenManager()));
+	PopupTextInputChoice *qc5 = networkingSettings->Add(new PopupTextInputChoice(GetRequesterToken(), &g_Config.sQuickChat[4], n->T("Quick Chat 5"), "", 32, screenManager()));
 #elif defined(USING_QT_UI)
 	Choice *qc1 = networkingSettings->Add(new Choice(n->T("Quick Chat 1")));
 	Choice *qc2 = networkingSettings->Add(new Choice(n->T("Quick Chat 2")));
@@ -1066,11 +1085,11 @@ void GameSettingsScreen::CreateNetworkingSettings(UI::ViewGroup *networkingSetti
 	Choice *qc4 = networkingSettings->Add(new Choice(n->T("Quick Chat 4")));
 	Choice *qc5 = networkingSettings->Add(new Choice(n->T("Quick Chat 5")));
 #elif PPSSPP_PLATFORM(ANDROID)
-	ChoiceWithValueDisplay *qc1 = networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.sQuickChat0, n->T("Quick Chat 1"), I18NCat::NONE));
-	ChoiceWithValueDisplay *qc2 = networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.sQuickChat1, n->T("Quick Chat 2"), I18NCat::NONE));
-	ChoiceWithValueDisplay *qc3 = networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.sQuickChat2, n->T("Quick Chat 3"), I18NCat::NONE));
-	ChoiceWithValueDisplay *qc4 = networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.sQuickChat3, n->T("Quick Chat 4"), I18NCat::NONE));
-	ChoiceWithValueDisplay *qc5 = networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.sQuickChat4, n->T("Quick Chat 5"), I18NCat::NONE));
+	ChoiceWithValueDisplay *qc1 = networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.sQuickChat[0], n->T("Quick Chat 1"), I18NCat::NONE));
+	ChoiceWithValueDisplay *qc2 = networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.sQuickChat[1], n->T("Quick Chat 2"), I18NCat::NONE));
+	ChoiceWithValueDisplay *qc3 = networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.sQuickChat[2], n->T("Quick Chat 3"), I18NCat::NONE));
+	ChoiceWithValueDisplay *qc4 = networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.sQuickChat[3], n->T("Quick Chat 4"), I18NCat::NONE));
+	ChoiceWithValueDisplay *qc5 = networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.sQuickChat[4], n->T("Quick Chat 5"), I18NCat::NONE));
 #endif
 
 #if (!defined(MOBILE_DEVICE) && !defined(USING_QT_UI)) || defined(USING_QT_UI) || PPSSPP_PLATFORM(ANDROID)
@@ -1185,15 +1204,14 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 
 	const Path bgPng = GetSysDirectory(DIRECTORY_SYSTEM) / "background.png";
 	const Path bgJpg = GetSysDirectory(DIRECTORY_SYSTEM) / "background.jpg";
+	Choice *backgroundChoice = nullptr;
 	if (File::Exists(bgPng) || File::Exists(bgJpg)) {
-		backgroundChoice_ = systemSettings->Add(new Choice(sy->T("Clear UI background")));
+		backgroundChoice = systemSettings->Add(new Choice(sy->T("Clear UI background")));
 	} else if (System_GetPropertyBool(SYSPROP_HAS_IMAGE_BROWSER) || System_GetPropertyBool(SYSPROP_HAS_FILE_BROWSER)) {
-		backgroundChoice_ = systemSettings->Add(new Choice(sy->T("Set UI background...")));
-	} else {
-		backgroundChoice_ = nullptr;
+		backgroundChoice = systemSettings->Add(new Choice(sy->T("Set UI background...")));
 	}
-	if (backgroundChoice_ != nullptr) {
-		backgroundChoice_->OnClick.Handle(this, &GameSettingsScreen::OnChangeBackground);
+	if (backgroundChoice) {
+		backgroundChoice->OnClick.Handle(this, &GameSettingsScreen::OnChangeBackground);
 	}
 
 	systemSettings->Add(new CheckBox(&g_Config.bTransparentBackground, sy->T("Transparent UI background")));
@@ -1329,9 +1347,10 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	if (!enableReportsSet_)
 		enableReports_ = Reporting::IsEnabled();
 	enableReportsSet_ = true;
-	enableReportsCheckbox_ = new CheckBox(&enableReports_, sy->T("Enable Compatibility Server Reports"));
-	enableReportsCheckbox_->SetEnabled(Reporting::IsSupported());
-	systemSettings->Add(enableReportsCheckbox_);
+	CheckBox *enableReportsCheckbox;
+	enableReportsCheckbox = new CheckBox(&enableReports_, sy->T("Enable Compatibility Server Reports"));
+	enableReportsCheckbox->SetEnabledFunc([]() { return Reporting::IsSupported(); });
+	systemSettings->Add(enableReportsCheckbox);
 
 	systemSettings->Add(new ItemHeader(sy->T("Emulation")));
 
@@ -1342,9 +1361,6 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	View *ioTimingMethod = systemSettings->Add(new PopupMultiChoice(&g_Config.iIOTimingMethod, sy->T("I/O timing method"), ioTimingMethods, 0, ARRAY_SIZE(ioTimingMethods), I18NCat::SYSTEM, screenManager()));
 	systemSettings->Add(new CheckBox(&g_Config.bForceLagSync, sy->T("Force real clock sync (slower, less lag)")))->SetDisabledPtr(&g_Config.bAutoFrameSkip);
 	PopupSliderChoice *lockedMhz = systemSettings->Add(new PopupSliderChoice(&g_Config.iLockedCPUSpeed, 0, 1000, 0, sy->T("Change CPU Clock", "Change CPU Clock (unstable)"), screenManager(), sy->T("MHz, 0:default")));
-	lockedMhz->OnChange.Add([&](UI::EventParams &) {
-		enableReportsCheckbox_->SetEnabled(Reporting::IsSupported());
-	});
 	lockedMhz->SetZeroLabel(sy->T("Auto"));
 
 	auto sa = GetI18NCategory(I18NCat::SAVEDATA);
@@ -1403,10 +1419,7 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 #endif
 
 	systemSettings->Add(new ItemHeader(sy->T("Cheats", "Cheats")));
-	CheckBox *enableCheats = systemSettings->Add(new CheckBox(&g_Config.bEnableCheats, sy->T("Enable Cheats")));
-	enableCheats->OnClick.Add([&](UI::EventParams &) {
-		enableReportsCheckbox_->SetEnabled(Reporting::IsSupported());
-	});
+	systemSettings->Add(new CheckBox(&g_Config.bEnableCheats, sy->T("Enable Cheats")));
 	systemSettings->Add(new CheckBox(&g_Config.bEnablePlugins, sy->T("Enable plugins")));
 
 	systemSettings->Add(new ItemHeader(sy->T("PSP Settings")));
@@ -1470,10 +1483,6 @@ void GameSettingsScreen::CreateVRSettings(UI::ViewGroup *vrSettings) {
 	PopupSliderChoiceFloat* vrHudScale = vrSettings->Add(new PopupSliderChoiceFloat(&g_Config.fHeadUpDisplayScale, 0.0f, 1.5f, 0.3f, vr->T("Heads-up display scale"), 0.1f, screenManager(), ""));
 	vrHudScale->SetEnabledPtr(&g_Config.bRescaleHUD);
 	vrSettings->Add(new CheckBox(&g_Config.bManualForceVR, vr->T("Manual switching between flat screen and VR using SCREEN key")));
-}
-
-void GameSettingsScreen::OnAutoFrameskip(UI::EventParams &e) {
-	g_Config.UpdateAfterSettingAutoFrameSkip();
 }
 
 void GameSettingsScreen::OnAdhocGuides(UI::EventParams &e) {
@@ -1617,15 +1626,6 @@ void GameSettingsScreen::OnChangeBackground(UI::EventParams &e) {
 	// Change to a browse or clear button.
 }
 
-void GameSettingsScreen::OnFullscreenChange(UI::EventParams &e) {
-	g_Config.iForceFullScreen = -1;
-	System_ToggleFullscreenState(g_Config.UseFullScreen() ? "1" : "0");
-}
-
-void GameSettingsScreen::OnFullscreenMultiChange(UI::EventParams &e) {
-	System_ToggleFullscreenState(g_Config.UseFullScreen() ? "1" : "0");
-}
-
 void GameSettingsScreen::dialogFinished(const Screen *dialog, DialogResult result) {
 	bool recreate = false;
 	if (result == DialogResult::DR_OK) {
@@ -1752,52 +1752,37 @@ void GameSettingsScreen::OnAudioDevice(UI::EventParams &e) {
 
 void GameSettingsScreen::OnChangeQuickChat0(UI::EventParams &e) {
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
-	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 1"), g_Config.sQuickChat0, false, [](const std::string &value, int) {
-		g_Config.sQuickChat0 = value;
+	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 1"), g_Config.sQuickChat[0], false, [](const std::string &value, int) {
+		g_Config.sQuickChat[0] = value;
 	});
 }
 
 void GameSettingsScreen::OnChangeQuickChat1(UI::EventParams &e) {
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
-	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 2"), g_Config.sQuickChat1, false, [](const std::string &value, int) {
-		g_Config.sQuickChat1 = value;
+	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 2"), g_Config.sQuickChat[1], false, [](const std::string &value, int) {
+		g_Config.sQuickChat[1] = value;
 	});
 }
 
 void GameSettingsScreen::OnChangeQuickChat2(UI::EventParams &e) {
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
-	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 3"), g_Config.sQuickChat2, false, [](const std::string &value, int) {
-		g_Config.sQuickChat2 = value;
+	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 3"), g_Config.sQuickChat[2], false, [](const std::string &value, int) {
+		g_Config.sQuickChat[2] = value;
 	});
 }
 
 void GameSettingsScreen::OnChangeQuickChat3(UI::EventParams &e) {
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
-	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 4"), g_Config.sQuickChat3, false, [](const std::string &value, int) {
-		g_Config.sQuickChat3 = value;
+	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 4"), g_Config.sQuickChat[3], false, [](const std::string &value, int) {
+		g_Config.sQuickChat[3] = value;
 	});
 }
 
 void GameSettingsScreen::OnChangeQuickChat4(UI::EventParams &e) {
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
-	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 5"), g_Config.sQuickChat4, false, [](const std::string &value, int) {
-		g_Config.sQuickChat4 = value;
+	System_InputBoxGetString(GetRequesterToken(), n->T("Enter Quick Chat 5"), g_Config.sQuickChat[4], false, [](const std::string &value, int) {
+		g_Config.sQuickChat[4] = value;
 	});
-}
-
-void GameSettingsScreen::OnTextureShader(UI::EventParams &e) {
-	auto gr = GetI18NCategory(I18NCat::GRAPHICS);
-	auto shaderScreen = new TextureShaderScreen(gr->T("GPU texture upscaler (fast)"));
-	shaderScreen->OnChoice.Handle(this, &GameSettingsScreen::OnTextureShaderChange);
-	if (e.v)
-		shaderScreen->SetPopupOrigin(e.v);
-	screenManager()->push(shaderScreen);
-}
-
-void GameSettingsScreen::OnTextureShaderChange(UI::EventParams &e) {
-	System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
-	RecreateViews(); // Update setting name
-	g_Config.bTexHardwareScaling = g_Config.sTextureShaderName != "Off";
 }
 
 void GameSettingsScreen::CallbackRestoreDefaults(bool yes) {
@@ -1813,8 +1798,8 @@ void GameSettingsScreen::OnRestoreDefaultSettings(UI::EventParams &e) {
 		auto dev = GetI18NCategory(I18NCat::DEVELOPER);
 		auto di = GetI18NCategory(I18NCat::DIALOG);
 		screenManager()->push(
-			new PromptScreen(gamePath_, dev->T("RestoreGameDefaultSettings", "Are you sure you want to restore the game-specific settings back to the ppsspp defaults?\n"), di->T("OK"), di->T("Cancel"),
-			std::bind(&GameSettingsScreen::CallbackRestoreDefaults, this, std::placeholders::_1)));
+			new PromptScreen(gamePath_, dev->T("RestoreGameDefaultSettings", "Are you sure you want to restore the game-specific settings back to the ppsspp defaults?\n"),
+				di->T("OK"), di->T("Cancel"), [this](bool yes) { CallbackRestoreDefaults(yes); }));
 	} else {
 		std::string_view title = sy->T("Restore Default Settings");
 		screenManager()->push(new RestoreSettingsScreen(title));

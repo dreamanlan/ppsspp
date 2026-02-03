@@ -217,6 +217,7 @@
     <ClInclude Include="..\..\Common\UI\AsyncImageFileView.h" />
     <ClInclude Include="..\..\Common\UI\Context.h" />
     <ClInclude Include="..\..\Common\UI\IconCache.h" />
+    <ClInclude Include="..\..\Common\UI\Notice.h" />
     <ClInclude Include="..\..\Common\UI\PopupScreens.h" />
     <ClInclude Include="..\..\Common\UI\Root.h" />
     <ClInclude Include="..\..\Common\UI\Screen.h" />
@@ -236,6 +237,10 @@
     <ClInclude Include="..\..\Common\VR\VRRenderer.h" />
     <ClInclude Include="..\..\Common\x64Analyzer.h" />
     <ClInclude Include="..\..\Common\x64Emitter.h" />
+    <ClInclude Include="..\..\ext\aemu_postoffice\client\delay_impl.h" />
+    <ClInclude Include="..\..\ext\aemu_postoffice\client\log_impl.h" />
+    <ClInclude Include="..\..\ext\aemu_postoffice\client\postoffice_client.h" />
+    <ClInclude Include="..\..\ext\aemu_postoffice\client\sock_impl.h" />
     <ClInclude Include="..\..\ext\at3_standalone\aac_defines.h" />
     <ClInclude Include="..\..\ext\at3_standalone\at3_decoders.h" />
     <ClInclude Include="..\..\ext\at3_standalone\atrac.h" />
@@ -325,7 +330,6 @@
     <ClCompile Include="..\..\Common\Input\InputState.cpp" />
     <ClCompile Include="..\..\Common\Math\curves.cpp" />
     <ClCompile Include="..\..\Common\Math\expression_parser.cpp" />
-    <ClCompile Include="..\..\Common\Math\fast\fast_matrix.c" />
     <ClCompile Include="..\..\Common\Math\lin\matrix4x4.cpp" />
     <ClCompile Include="..\..\Common\Math\lin\vec3.cpp" />
     <ClCompile Include="..\..\Common\Math\math_util.cpp" />
@@ -381,6 +385,7 @@
     <ClCompile Include="..\..\Common\UI\AsyncImageFileView.cpp" />
     <ClCompile Include="..\..\Common\UI\Context.cpp" />
     <ClCompile Include="..\..\Common\UI\IconCache.cpp" />
+    <ClCompile Include="..\..\Common\UI\Notice.cpp" />
     <ClCompile Include="..\..\Common\UI\PopupScreens.cpp" />
     <ClCompile Include="..\..\Common\UI\Root.cpp" />
     <ClCompile Include="..\..\Common\UI\Screen.cpp" />
@@ -400,6 +405,11 @@
     <ClCompile Include="..\..\Common\VR\VRRenderer.cpp" />
     <ClCompile Include="..\..\Common\x64Analyzer.cpp" />
     <ClCompile Include="..\..\Common\x64Emitter.cpp" />
+    <ClCompile Include="..\..\ext\aemu_postoffice\client\delay_impl_cpp.cpp" />
+    <ClCompile Include="..\..\ext\aemu_postoffice\client\log_impl_ppsspp.cpp" />
+    <ClCompile Include="..\..\ext\aemu_postoffice\client\mutex_impl_cpp.cpp" />
+    <ClCompile Include="..\..\ext\aemu_postoffice\client\postoffice.c" />
+    <ClCompile Include="..\..\ext\aemu_postoffice\client\sock_impl_windows.c" />
     <ClCompile Include="..\..\ext\at3_standalone\atrac.cpp" />
     <ClCompile Include="..\..\ext\at3_standalone\atrac3.cpp" />
     <ClCompile Include="..\..\ext\at3_standalone\atrac3plus.cpp" />
@@ -449,10 +459,6 @@
     <None Include="..\..\ext\basis_universal\basisu_transcoder_tables_pvrtc2_45.inc" />
     <None Include="..\..\ext\basis_universal\basisu_transcoder_tables_pvrtc2_alpha_33.inc" />
     <None Include="..\..\ext\libpng17\CMakeLists.txt" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="..\..\Common\Math\fast\fast_matrix_neon.S" />
-    <None Include="..\..\Common\Math\lin\matrix_neon.s" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\cpu_features_UWP\cpu_features_UWP.vcxproj">

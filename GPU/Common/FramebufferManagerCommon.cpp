@@ -1273,6 +1273,21 @@ bool FramebufferManagerCommon::BindFramebufferAsColorTexture(int stage, VirtualF
 			return true;
 		}
 
+		// There's a special case we can handle here, where the game is texturing from the same pixels being read, in order to
+		// implement a DST*DST blending function, which the PSP can't do. However on the PC we can absolutely do this!
+		// TODO: Add more checks here.
+		if (PSP_CoreParameter().compat.flags().DetectDestBlendSquared &&
+			gstate.isAlphaBlendEnabled() && gstate.getBlendEq() == GE_BLENDMODE_MUL_AND_ADD && gstate.getBlendFuncA() == GE_SRCBLEND_DSTCOLOR && gstate.getBlendFuncB() == GE_DSTBLEND_FIXB && gstate.getFixB() == 0x0 &&
+			gstate.getMaterialAmbientRGBA() == 0xFFFFFFFF) {
+			// This is the pure DST*DST case, the SRC color is ignored.
+			// Used by Brave Story - New Traveller. This assumes that texture coordinates are set to match the framebuffer pixels - and to
+			// be able to make that assumption reasonably safely we use a compat flag to restrict it to that game.
+			// We can just override the blend mode. Let's set a state variable.
+			// We also just leave the last texture bound, ideally we should bind a placeholder here.
+			gstate_c.dstSquared = true;
+			return true;
+		}
+
 		Draw::Framebuffer *renderCopy = GetTempFBO(TempFBO::COPY, framebuffer->renderWidth, framebuffer->renderHeight);
 		if (renderCopy) {
 			VirtualFramebuffer copyInfo = *framebuffer;
@@ -2178,8 +2193,10 @@ bool FramebufferManagerCommon::NotifyFramebufferCopy(u32 src, u32 dst, int size,
 	} else if (dstBuffer) {
 		if (flags & GPUCopyFlag::MEMSET) {
 			gpuStats.numClears++;
+			WARN_LOG_N_TIMES(btucpy, 5, Log::FrameBuf, "Memcpy fbo memset-clear %08x (size: %x)", dst, size);
+		} else {
+			WARN_LOG_N_TIMES(btucpy, 5, Log::FrameBuf, "Memcpy fbo upload %08x -> %08x (size: %x)", src, dst, size);
 		}
-		WARN_LOG_N_TIMES(btucpy, 5, Log::FrameBuf, "Memcpy fbo upload %08x -> %08x (size: %x)", src, dst, size);
 		FlushBeforeCopy();
 
 		// TODO: Hot Shots Golf makes a lot of these during the "meter", to copy back the image to the screen, it copies line by line.
@@ -2612,7 +2629,7 @@ bool FramebufferManagerCommon::NotifyBlockTransferBefore(u32 dstBasePtr, int dst
 		if (PSP_CoreParameter().compat.flags().BlockTransferAllowCreateFB ||
 			GetSkipGPUReadbackMode() == SkipGPUReadbackMode::COPY_TO_TEXTURE ||
 			(PSP_CoreParameter().compat.flags().IntraVRAMBlockTransferAllowCreateFB &&
-				Memory::IsVRAMAddress(srcRect.vfb->fb_address) && Memory::IsVRAMAddress(dstBasePtr))) {
+				(srcRect.vfb && Memory::IsVRAMAddress(srcRect.vfb->fb_address)) && Memory::IsVRAMAddress(dstBasePtr))) {
 			GEBufferFormat ramFormat;
 			// Try to guess the appropriate format. We only know the bpp from the block transfer command (16 or 32 bit).
 			if (srcRect.channel == RASTER_COLOR) {
@@ -2704,9 +2721,11 @@ bool FramebufferManagerCommon::NotifyBlockTransferBefore(u32 dstBasePtr, int dst
 		}
 
 		// Getting to the more complex cases. Have not actually seen much of these yet.
-		WARN_LOG_N_TIMES(blockformat, 5, Log::G3D, "Mismatched buffer formats in block transfer: %s->%s (%dx%d)",
-			GeBufferFormatToString(srcRect.vfb->Format(srcRect.channel)), GeBufferFormatToString(dstRect.vfb->Format(dstRect.channel)),
-			width, height);
+		if (srcRect.vfb && dstRect.vfb) {
+			WARN_LOG_N_TIMES(blockformat, 5, Log::G3D, "Mismatched buffer formats in block transfer: %s->%s (%dx%d)",
+				GeBufferFormatToString(srcRect.vfb->Format(srcRect.channel)), GeBufferFormatToString(dstRect.vfb->Format(dstRect.channel)),
+				width, height);
+		}
 
 		// TODO
 
@@ -2738,7 +2757,7 @@ bool FramebufferManagerCommon::NotifyBlockTransferBefore(u32 dstBasePtr, int dst
 			srcBasePtr, srcRect.x_bytes / bpp, srcRect.y, srcStride,
 			dstBasePtr, dstRect.x_bytes / bpp, dstRect.y, dstStride);
 		FlushBeforeCopy();
-		if (GetSkipGPUReadbackMode() == SkipGPUReadbackMode::NO_SKIP && !srcRect.vfb->memoryUpdated) {
+		if (GetSkipGPUReadbackMode() == SkipGPUReadbackMode::NO_SKIP && srcRect.vfb && !srcRect.vfb->memoryUpdated) {
 			const int srcBpp = BufferFormatBytesPerPixel(srcRect.vfb->fb_format);
 			const float srcXFactor = (float)bpp / srcBpp;
 			const bool tooTall = srcY + srcRect.h > srcRect.vfb->bufferHeight;
@@ -3452,7 +3471,7 @@ void FramebufferManagerCommon::BlitFramebuffer(VirtualFramebuffer *dst, int dstX
 
 	bool useBlit = channel == RASTER_COLOR ? draw_->GetDeviceCaps().framebufferBlitSupported : false;
 	bool useCopy = channel == RASTER_COLOR ? draw_->GetDeviceCaps().framebufferCopySupported : false;
-	if (dst == currentRenderVfb_ || dst->fbo->MultiSampleLevel() != 0 || src->fbo->MultiSampleLevel() != 0) {
+	if (src != dst && (dst == currentRenderVfb_ || dst->fbo->MultiSampleLevel() != 0 || src->fbo->MultiSampleLevel() != 0)) {
 		// If already bound, using either a blit or a copy is unlikely to be an optimization.
 		// So we're gonna use a raster draw instead. Also multisampling has problems with copies currently.
 		useBlit = false;
@@ -3512,7 +3531,8 @@ void FramebufferManagerCommon::BlitFramebuffer(VirtualFramebuffer *dst, int dstX
 		Draw::Framebuffer *srcFBO = src->fbo;
 		if (src == dst) {
 			Draw::Framebuffer *tempFBO = GetTempFBO(TempFBO::BLIT, src->renderWidth, src->renderHeight);
-			BlitUsingRaster(src->fbo, srcX1, srcY1, srcX2, srcY2, tempFBO, dstX1, dstY1, dstX2, dstY2, false, dst->renderScaleFactor, pipeline, tag);
+			// We need to copy to the temp using only the source coordinates, since those are the ones we read in the next blit.
+			BlitUsingRaster(src->fbo, srcX1, srcY1, srcX2, srcY2, tempFBO, srcX1, srcY1, srcX2, srcY2, false, dst->renderScaleFactor, pipeline, tag);
 			srcFBO = tempFBO;
 		}
 		BlitUsingRaster(srcFBO, srcX1, srcY1, srcX2, srcY2, dst->fbo, dstX1, dstY1, dstX2, dstY2, false, dst->renderScaleFactor, pipeline, tag);

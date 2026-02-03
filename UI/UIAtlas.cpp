@@ -172,6 +172,11 @@ static const ImageMeta imageIDs[] = {
 	{"I_MOVE", false},
 	{"I_RESIZE", false},
 	{"I_LINK_OUT_QUESTION", false},
+	{"I_PSX_ISO", false},
+	{"I_PS2_ISO", false},
+	{"I_PS3_ISO", false},
+	{"I_UNKNOWN_ISO", false},
+	{"I_UMD_VIDEO_ISO", false},
 };
 
 static std::string PNGNameFromID(std::string_view id) {
@@ -409,7 +414,7 @@ static bool GenerateUIAtlasImage(Atlas *atlas, float dpiScale, Image *dest, int 
 	int imageWidth = RoundToNextPowerOf2((int)sqrtf(area));
 
 	Instant bucketStart = Instant::Now();
-	bucket.Pack(imageWidth);
+	bucket.Pack2(imageWidth);
 	INFO_LOG(Log::G3D, " - Packed in %.2f ms (image size: %dx%d)", bucketStart.ElapsedMs(), bucket.w, bucket.h);
 
 	Instant resolveStart = Instant::Now();

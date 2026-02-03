@@ -3,6 +3,8 @@
 // Just understands section headings and
 // keys and values, split by ' = '.
 
+use regex::Regex;
+
 #[derive(Debug, Clone)]
 pub struct Section {
     pub name: String,
@@ -27,6 +29,23 @@ pub fn line_value(line: &str) -> Option<&str> {
 }
 
 impl Section {
+	pub fn apply_regex(&mut self, key: &str, pattern: &str, replacement: &str) {
+		let re = Regex::new(pattern).unwrap();
+		for line in self.lines.iter_mut() {
+			let prefix = if let Some(pos) = line.find(" =") {
+				&line[0..pos]
+			} else {
+				continue;
+			};
+			if prefix.eq(key) {
+				if let Some((_, value)) = split_line(line) {
+					let new_value = re.replace_all(value, replacement);
+					*line = format!("{} = {}", key, new_value);
+				}
+			}
+		}
+	}
+
     pub fn remove_line(&mut self, key: &str) -> Option<String> {
         let mut remove_index = None;
         for (index, line) in self.lines.iter().enumerate() {
@@ -263,7 +282,7 @@ impl Section {
     }
 
     // Returns true if the key was found and updated.
-    pub fn set_value(&mut self, key: &str, value: &str) -> bool {
+    pub fn set_value(&mut self, key: &str, value: &str, comment: Option<&str>) -> bool {
         let mut found_index = None;
         for (index, line) in self.lines.iter().enumerate() {
             let prefix = if let Some(pos) = line.find(" =") {
@@ -279,7 +298,10 @@ impl Section {
         }
 
         if let Some(found_index) = found_index {
-            self.lines[found_index] = format!("{key} = {value}");
+            self.lines[found_index] = match comment {
+                Some(c) => format!("{} = {}  # {}", key, value, c),
+                None => format!("{} = {}", key, value),
+            };
             true
         } else {
             false

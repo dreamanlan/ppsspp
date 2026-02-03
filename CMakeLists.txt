@@ -256,6 +256,9 @@ if(LIBRETRO)
 	if(NOT MSVC)
 		add_compile_options(-fPIC)
 	endif()
+	if(ANDROID)
+		add_compile_definitions(HAVE_LIBRETRO_VFS)
+	endif()
 endif()
 
 if(ANDROID)
@@ -803,7 +806,6 @@ add_library(Common STATIC
 	Common/Input/KeyCodes.h
 	Common/Input/InputState.cpp
 	Common/Input/InputState.h
-	Common/Math/fast/fast_matrix.c
 	Common/Math/SIMDHeaders.h
 	Common/Math/SIMDHeaders.h
 	Common/Math/curves.cpp
@@ -890,6 +892,8 @@ add_library(Common STATIC
 	Common/UI/IconCache.h
 	Common/UI/UIScreen.cpp
 	Common/UI/UIScreen.h
+	Common/UI/Notice.cpp
+	Common/UI/Notice.h
 	Common/UI/Tween.cpp
 	Common/UI/Tween.h
 	Common/UI/View.cpp
@@ -943,6 +947,10 @@ add_library(Common STATIC
 	Common/TimeUtil.cpp
 	Common/TimeUtil.h
 )
+
+if(LIBRETRO)
+	target_include_directories(Common PRIVATE libretro/libretro-common/include)
+endif()
 
 include_directories(Common)
 setup_target_project(Common Common)
@@ -1671,7 +1679,7 @@ if(ANDROID)
 	endif()
 endif()
 
-if (IOS)
+if (IOS AND NOT LIBRETRO)
 	set(nativeExtra ${nativeExtra} ${NativeAppSource})
 endif()
 
@@ -1684,6 +1692,10 @@ add_library(native STATIC
 	ext/jpge/jpge.cpp
 	ext/jpge/jpge.h
 )
+
+if(LIBRETRO)
+	target_include_directories(native PRIVATE libretro/libretro-common/include)
+endif()
 
 if(LINUX AND NOT ANDROID)
 	set(RT_LIB rt)
@@ -1778,8 +1790,6 @@ list(APPEND CoreExtra
 	Core/MIPS/ARM/ArmCompFPU.cpp
 	Core/MIPS/ARM/ArmCompLoadStore.cpp
 	Core/MIPS/ARM/ArmCompVFPU.cpp
-	Core/MIPS/ARM/ArmCompVFPUNEON.cpp
-	Core/MIPS/ARM/ArmCompVFPUNEONUtil.cpp
 	Core/MIPS/ARM/ArmCompReplace.cpp
 	Core/MIPS/ARM/ArmJit.cpp
 	Core/MIPS/ARM/ArmJit.h
@@ -2073,6 +2083,27 @@ set(GPU_SOURCES
 	GPU/Software/TransformUnit.h
 )
 
+set(aemu_postoffice
+	ext/aemu_postoffice/client/postoffice.c
+	ext/aemu_postoffice/client/mutex_impl_cpp.cpp
+	ext/aemu_postoffice/client/delay_impl_cpp.cpp
+	ext/aemu_postoffice/client/log_impl_ppsspp.cpp
+)
+
+if(WIN32)
+	set(aemu_postoffice
+		${aemu_postoffice}
+		ext/aemu_postoffice/client/sock_impl_windows.c
+	)
+endif()
+
+if(LINUX OR ANDROID OR MACOSX OR IOS)
+	set(aemu_postoffice
+		${aemu_postoffice}
+		ext/aemu_postoffice/client/sock_impl_linux.c
+	)
+endif()
+
 # 'ppsspp_jni' on ANDROID, 'Core' everywhere else
 # SHARED on ANDROID, STATIC everywhere else
 add_library(${CoreLibName} ${CoreLinkType}
@@ -2318,6 +2349,7 @@ add_library(${CoreLibName} ${CoreLinkType}
 	Core/HLE/NetAdhocCommon.h
 	Core/HLE/sceNetAdhoc.cpp
 	Core/HLE/sceNetAdhoc.h
+	${aemu_postoffice}
 	Core/HLE/sceNetAdhocMatching.cpp
 	Core/HLE/sceNetAdhocMatching.h
 	Core/HLE/sceNetInet.cpp
@@ -2510,6 +2542,10 @@ add_library(${CoreLibName} ${CoreLinkType}
 	ext/loongarch-disasm.h
 	${CMAKE_CURRENT_BINARY_DIR}/git-version.cpp
 )
+
+if(LIBRETRO)
+	target_include_directories(${CoreLibName} PRIVATE libretro/libretro-common/include)
+endif()
 
 if(ANDROID)
 	set(CoreExtraLibs ${CoreExtraLibs} android)
@@ -2739,8 +2775,14 @@ set(WindowsFiles
 	Windows/CaptureDevice.h
 	Windows/DinputDevice.cpp
 	Windows/DinputDevice.h
-	Windows/HidInputDevice.h
-	Windows/HidInputDevice.cpp
+	Windows/Hid/HidInputDevice.h
+	Windows/Hid/HidInputDevice.cpp
+	Windows/Hid/DualSense.h
+	Windows/Hid/DualSense.cpp
+	Windows/Hid/DualShock.h
+	Windows/Hid/DualShock.cpp
+	Windows/Hid/SwitchPro.h
+	Windows/Hid/SwitchPro.cpp
 	Windows/EmuThread.cpp
 	Windows/EmuThread.h
 	Windows/GPU/D3D11Context.cpp
@@ -2908,7 +2950,7 @@ if(UNITTEST)
 	add_test(math_util PPSSPPUnitTest MathUtil)
 	add_test(parsers PPSSPPUnitTest Parsers)
 	add_test(jit PPSSPPUnitTest Jit)
-	add_test(matrix_transpose PPSSPPUnitTest MatrixTranspose)
+	add_test(matrix_transpose PPSSPPUnitTest VFPUMatrixTranspose)
 	add_test(parse_lbn PPSSPPUnitTest ParseLBN)
 	add_test(quick_texhash PPSSPPUnitTest QuickTexHash)
 	add_test(clz PPSSPPUnitTest CLZ)

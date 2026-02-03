@@ -81,6 +81,15 @@ static void LaunchFile(ScreenManager *screenManager, Screen *currentScreen, cons
 		// If is a zip file, we have a screen for that.
 		screenManager->push(new InstallZipScreen(path));
 	} else {
+		// Check if we already know that this game isn't playable.
+		auto info = g_gameInfoCache->GetInfo(nullptr, path, GameInfoFlags::FILE_TYPE);
+
+		if (info->fileType == IdentifiedFileType::PSP_UMD_VIDEO_ISO) {
+			// We show info about it.
+			screenManager->push(new GameScreen(path, false));
+			return;
+		}
+
 		if (currentScreen) {
 			screenManager->cancelScreensAbove(currentScreen);
 		}
@@ -114,6 +123,53 @@ static bool IsTempPath(const Path &str) {
 	return false;
 }
 
+static void DrawIconWithText(UIContext &dc, ImageID image, std::string_view text, const Bounds &bounds, bool gridStyle, const UI::Style &style) {
+	float tw, th;
+	dc.MeasureText(dc.GetFontStyle(), gridStyle ? g_Config.fGameGridScale : 1.0, gridStyle ? g_Config.fGameGridScale : 1.0, text, &tw, &th, 0);
+
+	const bool compact = bounds.w < 180 * (gridStyle ? g_Config.fGameGridScale : 1.0);
+	if (compact) {
+		dc.PushScissor(bounds);
+		const FontStyle *fontStyle = GetTextStyle(dc, UI::TextSize::Small);
+		dc.SetFontStyle(*GetTextStyle(dc, UI::TextSize::Small));
+
+		int iconSize = image == ImageID("I_UP_DIRECTORY") ? (float)dc.Draw()->GetAtlas()->getImage(image)->h : bounds.h * 0.3f;
+		float textWidth = 0.0f;
+		float textHeight = 0;
+		dc.MeasureTextRect(*fontStyle, 1.0f, 1.0f, text, bounds.w - 10, &textWidth, &textHeight, ALIGN_HCENTER | FLAG_WRAP_TEXT);
+
+		int totalHeight = iconSize + (int)textHeight;
+
+		const float y = std::max(0.0f, bounds.h / 2.0f - totalHeight / 2.0f);
+
+		if (image.isValid()) {
+			const AtlasImage *img = dc.Draw()->GetAtlas()->getImage(image);
+			if (img && img->h > 0) {
+				dc.RebindTexture();
+				dc.Draw()->DrawImage(image, bounds.centerX(), bounds.y + y + 2, iconSize / (float)img->h, style.fgColor, ALIGN_TOP | ALIGN_HCENTER);
+			}
+		}
+
+		if (image != ImageID("I_UP_DIRECTORY") && image != ImageID("I_PIN") && image != ImageID("I_UNPIN")) {
+			dc.DrawTextRect(text, bounds.Inset(5, y + iconSize + 4, 5, 2), style.fgColor, ALIGN_HCENTER | FLAG_WRAP_TEXT);
+		}
+		dc.SetFontStyle(dc.GetTheme().uiFont);
+		dc.PopScissor();
+	} else {
+		bool scissor = false;
+		if (tw + 150 > bounds.w) {
+			dc.PushScissor(bounds);
+			scissor = true;
+		}
+		dc.Draw()->DrawImage(image, bounds.x + 72, bounds.centerY(), 0.88f * (gridStyle ? g_Config.fGameGridScale : 1.0), style.fgColor, ALIGN_CENTER);
+		dc.DrawText(text, bounds.x + 150, bounds.centerY(), style.fgColor, ALIGN_VCENTER | FLAG_WRAP_TEXT);
+
+		if (scissor) {
+			dc.PopScissor();
+		}
+	}
+}
+
 class GameButton : public UI::Clickable {
 public:
 	GameButton(const Path &gamePath, bool gridStyle, UI::LayoutParams *layoutParams = nullptr)
@@ -137,7 +193,7 @@ public:
 		holdEnabled_ = hold;
 	}
 	bool Touch(const TouchInput &input) override {
-		bool retval = UI::Clickable::Touch(input);
+		const bool retval = UI::Clickable::Touch(input);
 		hovering_ = bounds_.Contains(input.x, input.y);
 		if (hovering_ && (input.flags & TouchInputFlags::DOWN)) {
 			holdStart_ = time_now_d();
@@ -152,9 +208,13 @@ public:
 		bool showInfo = false;
 
 		if (HasFocus() && UI::IsInfoKey(key)) {
-			// If the button mapped to triangle, then show the info.
-			if (key.flags & KeyInputFlags::UP) {
+			// If it's the button that's mapped to triangle, then show the info.
+			if (key.flags & KeyInputFlags::DOWN) {
+				infoKeyPressed_ = true;
+			}
+			if ((key.flags & KeyInputFlags::UP) && infoKeyPressed_) {
 				showInfo = true;
+				infoKeyPressed_ = false;
 			}
 		} else if (hovering_ && key.deviceId == DEVICE_ID_MOUSE && key.keyCode == NKCODE_EXT_MOUSEBUTTON_2) {
 			// If it's the right mouse button, and it's not otherwise mapped, show the info also.
@@ -214,6 +274,7 @@ private:
 	double holdStart_ = 0.0;
 	bool holdEnabled_ = true;
 	bool showInfoPressed_ = false;
+	bool infoKeyPressed_ = false;
 	bool hovering_ = false;
 };
 
@@ -223,6 +284,44 @@ void GameButton::Draw(UIContext &dc) {
 	u32 color = 0, shadowColor = 0;
 	using namespace UI;
 
+	UI::Style style = dc.GetTheme().itemStyle;
+	if (down_) {
+		style = dc.GetTheme().itemDownStyle;
+	}
+
+	// Some types we just draw a default icon for.
+	ImageID imageIcon = ImageID::invalid();
+	switch (ginfo->fileType) {
+	case IdentifiedFileType::UNKNOWN_ELF: imageIcon = ImageID("I_DEBUGGER"); break;
+	case IdentifiedFileType::PPSSPP_GE_DUMP: imageIcon = ImageID("I_DISPLAY"); break;
+	case IdentifiedFileType::PSX_ISO:
+	case IdentifiedFileType::PSP_PS1_PBP: imageIcon = ImageID("I_PSX_ISO"); break;
+	case IdentifiedFileType::PS2_ISO: imageIcon = ImageID("I_PS2_ISO"); break;
+	case IdentifiedFileType::PS3_ISO: imageIcon = ImageID("I_PS3_ISO"); break;
+	case IdentifiedFileType::PSP_UMD_VIDEO_ISO: imageIcon = ImageID("I_UMD_VIDEO_ISO"); break;
+	case IdentifiedFileType::UNKNOWN_ISO: imageIcon = ImageID("I_UNKNOWN_ISO"); break;
+	case IdentifiedFileType::PPSSPP_SAVESTATE:
+	case IdentifiedFileType::ERROR_IDENTIFYING:
+	case IdentifiedFileType::UNKNOWN_BIN: imageIcon = ImageID("I_FILE"); break;
+	default: break;
+	}
+
+	Bounds overlayBounds = bounds_;
+	u32 overlayColor = 0;
+	if (holdEnabled_ && holdStart_ != 0.0) {
+		double time_held = time_now_d() - holdStart_;
+		overlayColor = whiteAlpha(time_held / 2.5f);
+		if (holdStart_ != 0.0) {
+			double time_held = time_now_d() - holdStart_;
+			int holdFrameCount = (int)(time_held * 60.0f);
+			if (holdFrameCount > 60) {
+				// Blink before launching by holding
+				if (((holdFrameCount >> 3) & 1) == 0)
+					overlayColor = 0x0;
+			}
+		}
+	}
+
 	if (ginfo->Ready(GameInfoFlags::ICON) && ginfo->icon.texture) {
 		texture = ginfo->icon.texture;
 	}
@@ -231,10 +330,6 @@ void GameButton::Draw(UIContext &dc) {
 	int y = bounds_.y;
 	int w = gridStyle_ ? bounds_.w : 144;
 	int h = bounds_.h;
-
-	UI::Style style = dc.GetTheme().itemStyle;
-	if (down_)
-		style = dc.GetTheme().itemDownStyle;
 
 	if (!gridStyle_ || !texture) {
 		if (HasFocus())
@@ -264,13 +359,6 @@ void GameButton::Draw(UIContext &dc) {
 	int txOffset = down_ ? 4 : 0;
 	if (!gridStyle_) txOffset = 0;
 
-	Bounds overlayBounds = bounds_;
-	u32 overlayColor = 0;
-	if (holdEnabled_ && holdStart_ != 0.0) {
-		double time_held = time_now_d() - holdStart_;
-		overlayColor = whiteAlpha(time_held / 2.5f);
-	}
-
 	// Render button
 	int dropsize = 10;
 	if (texture) {
@@ -297,17 +385,23 @@ void GameButton::Draw(UIContext &dc) {
 
 		dc.Draw()->Flush();
 		dc.GetDrawContext()->BindTexture(0, texture);
-		if (holdStart_ != 0.0) {
-			double time_held = time_now_d() - holdStart_;
-			int holdFrameCount = (int)(time_held * 60.0f);
-			if (holdFrameCount > 60) {
-				// Blink before launching by holding
-				if (((holdFrameCount >> 3) & 1) == 0)
-					color = darkenColor(color);
-			}
-		}
 		dc.Draw()->DrawTexRect(x, y, x+w, y+h, 0, 0, 1, 1, color);
 		dc.Draw()->Flush();
+	}
+
+	if (imageIcon.isValid()) {
+		Style style = dc.GetTheme().itemStyle;
+
+		if (HasFocus()) style = dc.GetTheme().itemFocusedStyle;
+		if (down_) style = dc.GetTheme().itemDownStyle;
+		if (!IsEnabled()) style = dc.GetTheme().itemDisabledStyle;
+
+		DrawIconWithText(dc, imageIcon, ginfo->GetTitle(), bounds_, gridStyle_, style);
+
+		if (overlayColor) {
+			dc.FillRect(Drawable(overlayColor), overlayBounds);
+		}
+		return;
 	}
 
 	char discNumInfo[8];
@@ -320,10 +414,12 @@ void GameButton::Draw(UIContext &dc) {
 	dc.RebindTexture();
 	dc.SetFontStyle(dc.GetTheme().uiFont);
 	if (gridStyle_ && ginfo->fileType == IdentifiedFileType::PPSSPP_GE_DUMP) {
-		// Super simple drawing for GE dumps.
+		// Super simple drawing for GE dumps (no icon, just the filename).
 		dc.PushScissor(bounds_);
 		const std::string currentTitle = ginfo->GetTitle();
+		dc.SetFontStyle(*GetTextStyle(dc, UI::TextSize::Small));
 		dc.DrawText(title_, bounds_.x + 4.0f, bounds_.centerY(), style.fgColor, ALIGN_VCENTER | ALIGN_LEFT);
+		dc.SetFontStyle(dc.GetTheme().uiFont);
 		title_ = currentTitle;
 		dc.Draw()->Flush();
 		dc.PopScissor();
@@ -457,6 +553,14 @@ private:
 
 void DirButton::Draw(UIContext &dc) {
 	using namespace UI;
+
+	std::string_view text(GetText());
+	ImageID image = ImageID(pinned_ ? "I_FOLDER_PINNED" : "I_FOLDER");
+	if (text == "..") {
+		image = ImageID("I_UP_DIRECTORY");
+		text = "";
+	}
+
 	Style style = dc.GetTheme().itemStyle;
 
 	if (HasFocus()) style = dc.GetTheme().itemFocusedStyle;
@@ -464,46 +568,7 @@ void DirButton::Draw(UIContext &dc) {
 	if (!IsEnabled()) style = dc.GetTheme().itemDisabledStyle;
 
 	dc.FillRect(style.background, bounds_);
-
-	std::string_view text(GetText());
-
-	ImageID image = ImageID(pinned_ ? "I_FOLDER_PINNED" : "I_FOLDER");
-	if (text == "..") {
-		image = ImageID("I_UP_DIRECTORY");
-	}
-
-	float tw, th;
-	dc.MeasureText(dc.GetFontStyle(), gridStyle_ ? g_Config.fGameGridScale : 1.0, gridStyle_ ? g_Config.fGameGridScale : 1.0, text, &tw, &th, 0);
-
-	bool compact = bounds_.w < 180 * (gridStyle_ ? g_Config.fGameGridScale : 1.0);
-
-	if (compact) {
-		// No folder icon, except "up"
-		dc.PushScissor(bounds_);
-		if (image == ImageID("I_FOLDER") || image == ImageID("I_FOLDER_PINNED")) {
-			dc.DrawTextRect(text, bounds_.Inset(5, 2), style.fgColor, ALIGN_VCENTER | FLAG_WRAP_TEXT);
-			if (pinned_) {
-				ImageID pinID = ImageID("I_PIN");
-				const AtlasImage *pinImg = dc.Draw()->GetAtlas()->getImage(pinID);
-				dc.Draw()->DrawImage(pinID, bounds_.x + bounds_.w - pinImg->w * g_Config.fGameGridScale, bounds_.y, g_Config.fGameGridScale);
-			}
-		} else {
-			dc.Draw()->DrawImage(image, bounds_.centerX(), bounds_.centerY(), gridStyle_ ? g_Config.fGameGridScale : 1.0, style.fgColor, ALIGN_CENTER);
-		}
-		dc.PopScissor();
-	} else {
-		bool scissor = false;
-		if (tw + 150 > bounds_.w) {
-			dc.PushScissor(bounds_);
-			scissor = true;
-		}
-		dc.Draw()->DrawImage(image, bounds_.x + 72, bounds_.centerY(), 0.88f*(gridStyle_ ? g_Config.fGameGridScale : 1.0), style.fgColor, ALIGN_CENTER);
-		dc.DrawText(text, bounds_.x + 150, bounds_.centerY(), style.fgColor, ALIGN_VCENTER| FLAG_WRAP_TEXT);
-
-		if (scissor) {
-			dc.PopScissor();
-		}
-	}
+	DrawIconWithText(dc, image, text, bounds_, gridStyle_, style);
 }
 
 GameBrowser::GameBrowser(int token, const Path &path, BrowseFlags browseFlags, bool portrait, bool *gridStyle, ScreenManager *screenManager, std::string_view lastText, std::string_view lastLink, UI::LayoutParams *layoutParams)
@@ -962,7 +1027,7 @@ void GameBrowser::Refresh() {
 		if (!*gridStyle_) {
 			caption = IsCurrentPathPinned() ? mm->T("UnpinPath", "Unpin") : mm->T("PinPath", "Pin");
 		}
-		UI::Button *pinButton = gameList_->Add(new UI::Button(caption, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
+		UI::Button *pinButton = gameList_->Add(new Button(caption, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
 		pinButton->OnClick.Handle(this, &GameBrowser::PinToggleClick);
 		pinButton->SetImageID(ImageID(IsCurrentPathPinned() ? "I_UNPIN" : "I_PIN"));
 	}
@@ -1022,7 +1087,6 @@ void GameBrowser::GameButtonClick(UI::EventParams &e) {
 	GameButton *button = static_cast<GameButton *>(e.v);
 	UI::EventParams e2{};
 	e2.s = button->GamePath().ToString();
-	// Insta-update - here we know we are already on the right thread.
 	OnChoice.Trigger(e2);
 }
 
@@ -1030,12 +1094,10 @@ void GameBrowser::GameButtonHoldClick(UI::EventParams &e) {
 	GameButton *button = static_cast<GameButton *>(e.v);
 	UI::EventParams e2{};
 	e2.s = button->GamePath().ToString();
-	// Insta-update - here we know we are already on the right thread.
 	OnHoldChoice.Trigger(e2);
 }
 
 void GameBrowser::GameButtonHighlight(UI::EventParams &e) {
-	// Insta-update - here we know we are already on the right thread.
 	OnHighlight.Trigger(e);
 }
 
@@ -1138,44 +1200,76 @@ GameBrowser *MainScreen::CreateBrowserTab(const Path &path, std::string_view tit
 	return gameBrowser;
 }
 
-UI::ViewGroup *MainScreen::CreateLogoView(bool portrait, UI::LayoutParams *layoutParams) {
-	using namespace UI;
-	AnchorLayout *logos = new AnchorLayout(layoutParams);
-	if (System_GetPropertyBool(SYSPROP_APP_GOLD)) {
-		logos->Add(new ImageView(ImageID("I_ICON_GOLD"), "", IS_DEFAULT, new AnchorLayoutParams(64, 64, 0, 0, NONE, NONE)));
-	} else {
-		logos->Add(new ImageView(ImageID("I_ICON"), "", IS_DEFAULT, new AnchorLayoutParams(64, 64, 0, 0, NONE, NONE)));
-	}
-	logos->Add(new ImageView(ImageID("I_LOGO"), "PPSSPP", IS_DEFAULT, new AnchorLayoutParams(180, 64, 68, 2, NONE, NONE)));
+class LogoView : public UI::AnchorLayout {
+public:
+	LogoView(bool portrait, UI::LayoutParams *layoutParams) : UI::AnchorLayout(layoutParams), portrait_(portrait) {}
+	void Draw(UIContext &dc) override {
+		using namespace UI;
+		UI::AnchorLayout::Draw(dc);
 
-	std::string versionString = PPSSPP_GIT_VERSION;
-	// Strip the 'v' from the displayed version, and shorten the commit hash.
-	if (versionString.size() > 2) {
-		if (versionString[0] == 'v' && isdigit(versionString[1])) {
-			versionString = versionString.substr(1);
+		const AtlasImage *iconImg = dc.Draw()->GetAtlas()->getImage(GetIconID());
+		const AtlasImage *logoImg = dc.Draw()->GetAtlas()->getImage(ImageID("I_LOGO"));
+		if (!iconImg) {
+			return;
 		}
-		if (CountChar(versionString, '-') == 2) {
-			// Shorten the commit hash.
-			size_t cutPos = versionString.find_last_of('-') + 8;
-			versionString = versionString.substr(0, std::min(cutPos, versionString.size()));
+
+		dc.Draw()->DrawImage(GetIconID(), bounds_.x, bounds_.y, 1.0f);
+
+		if (bounds_.w < iconImg->w + logoImg->w + 36) {
+			return;
 		}
+
+		dc.Draw()->DrawImage(ImageID("I_LOGO"), bounds_.x + iconImg->w + 8, bounds_.y + 4, 1.0f);
+
+		std::string versionString = PPSSPP_GIT_VERSION;
+		// Strip the 'v' from the displayed version, and shorten the commit hash.
+		if (versionString.size() > 2) {
+			if (versionString[0] == 'v' && isdigit(versionString[1])) {
+				versionString = versionString.substr(1);
+			}
+			if (CountChar(versionString, '-') == 2) {
+				// Shorten the commit hash.
+				size_t cutPos = versionString.find_last_of('-') + 8;
+				versionString = versionString.substr(0, std::min(cutPos, versionString.size()));
+			}
+		}
+		dc.Flush();
+
+		const bool tiny = versionString.size() > 10;
+
+		const FontStyle *style = GetTextStyle(dc, tiny ? TextSize::Tiny : TextSize::Small);
+		dc.SetFontStyle(*style);
+		dc.DrawText(versionString,
+			bounds_.x + iconImg->w + 8,
+			bounds_.y + logoImg->h + (tiny ? 8 : 6),
+			dc.GetTheme().itemStyle.fgColor);
+		dc.SetFontStyle(dc.GetTheme().uiFont);
 	}
 
-	ClickableTextView *ver = logos->Add(new ClickableTextView(versionString, new AnchorLayoutParams(68, NONE, NONE, 0)));
-	ver->SetSmall(true);
-	ver->SetClip(false);
+	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override {
+		const AtlasImage *iconImg = dc.Draw()->GetAtlas()->getImage(GetIconID());
+		w = iconImg->w;
+		h = iconImg->h;
+	}
 
-	// Only allow copying the version if it looks like a git version string. 1.19 for example is not really necessary to be able to copy/paste.
-	if (!portrait && strchr(PPSSPP_GIT_VERSION, '-')) {
-		ver->OnClick.Add([](UI::EventParams &e) {
+	bool Touch(const TouchInput &touch) override {
+		bool retval = UI::AnchorLayout::Touch(touch);
+		if (!portrait_ && (touch.flags & TouchInputFlags::DOWN) && bounds_.Contains(touch.x, touch.y) && touch.y >= bounds_.y2() - 20) {
 			auto di = GetI18NCategory(I18NCat::DIALOG);
 			System_CopyStringToClipboard(PPSSPP_GIT_VERSION);
-			g_OSD.Show(OSDType::MESSAGE_INFO, ApplySafeSubstitutions(di->T("Copied to clipboard: %1"), PPSSPP_GIT_VERSION));
-		});
+			g_OSD.Show(OSDType::MESSAGE_INFO, ApplySafeSubstitutions(di->T("Copied to clipboard: %1"), PPSSPP_GIT_VERSION), 1.0f, "copyToClip");
+			return true;
+		}
+		return retval;
 	}
 
-	return logos;
-}
+private:
+	ImageID GetIconID() const {
+		return System_GetPropertyBool(SYSPROP_APP_GOLD) ? ImageID("I_ICON_GOLD") : ImageID("I_ICON");
+	}
+
+	const bool portrait_;
+};
 
 void MainScreen::CreateMainButtons(UI::ViewGroup *parent, bool portrait) {
 	using namespace UI;
@@ -1318,7 +1412,7 @@ void MainScreen::CreateViews() {
 	if (vertical) {
 		LinearLayout *header = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(8, 8, 8, 16)));
 		header->SetSpacing(5.0f);
-		header->Add(CreateLogoView(true, new LinearLayoutParams(WRAP_CONTENT, 80.0f, false)));
+		header->Add(new LogoView(true, new LinearLayoutParams(1.0f)));
 
 		LinearLayout *buttonGroup = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT, 1.0f, UI::Gravity::G_VCENTER));
 
@@ -1337,13 +1431,19 @@ void MainScreen::CreateViews() {
 		ViewGroup *rightColumn = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(300, FILL_PARENT, actionMenuMargins));
 		LinearLayout *rightColumnItems = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 		rightColumnItems->SetSpacing(0.0f);
-		ViewGroup *logo = CreateLogoView(false, new LinearLayoutParams(FILL_PARENT, 80.0f));
+		ViewGroup *logo = new LogoView(false, new LinearLayoutParams(FILL_PARENT, 80.0f));
 #if !defined(MOBILE_DEVICE)
 		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
-		ImageID icon(g_Config.UseFullScreen() ? "I_RESTORE" : "I_FULLSCREEN");
+		ImageID icon(g_Config.bFullScreen ? "I_RESTORE" : "I_FULLSCREEN");
 		fullscreenButton_ = logo->Add(new Button(gr->T("FullScreen", "Full Screen"), icon, new AnchorLayoutParams(48, 48, NONE, 0, 0, NONE, Centering::None)));
 		fullscreenButton_->SetIgnoreText(true);
-		fullscreenButton_->OnClick.Handle(this, &MainScreen::OnFullScreenToggle);
+		fullscreenButton_->OnClick.Add([this](UI::EventParams &e) {
+			if (fullscreenButton_) {
+				fullscreenButton_->SetImageID(ImageID(!g_Config.bFullScreen ? "I_RESTORE" : "I_FULLSCREEN"));
+			}
+			g_Config.bFullScreen = !g_Config.bFullScreen;
+			System_ApplyFullscreenState();
+		});
 #endif
 		rightColumnItems->Add(logo);
 
@@ -1420,18 +1520,6 @@ void MainScreen::OnLoadFile(UI::EventParams &e) {
 			System_PostUIMessage(UIMessage::REQUEST_GAME_BOOT, value);
 		});
 	}
-}
-
-void MainScreen::OnFullScreenToggle(UI::EventParams &e) {
-	if (g_Config.iForceFullScreen != -1)
-		g_Config.bFullScreen = g_Config.UseFullScreen();
-	if (fullscreenButton_) {
-		fullscreenButton_->SetImageID(ImageID(!g_Config.UseFullScreen() ? "I_RESTORE" : "I_FULLSCREEN"));
-	}
-#if !defined(MOBILE_DEVICE)
-	g_Config.bFullScreen = !g_Config.bFullScreen;
-	System_ToggleFullscreenState("");
-#endif
 }
 
 void MainScreen::DrawBackground(UIContext &dc) {

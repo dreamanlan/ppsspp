@@ -114,6 +114,7 @@ bool GameInfo::Delete() {
 	case IdentifiedFileType::PSP_ISO_NP:
 		{
 			// Just delete the one file (TODO: handle two-disk games as well somehow).
+			// Also remove from recent files.
 			Path fileToRemove = filePath_;
 			INFO_LOG(Log::System, "Deleting file %s", fileToRemove.c_str());
 			MoveFileToTrashOrDelete(fileToRemove);
@@ -152,6 +153,7 @@ bool GameInfo::Delete() {
 	case IdentifiedFileType::ARCHIVE_ZIP:
 	case IdentifiedFileType::ARCHIVE_7Z:
 	case IdentifiedFileType::UNKNOWN:
+	case IdentifiedFileType::PSP_UMD_VIDEO_ISO:
 	case IdentifiedFileType::PPSSPP_GE_DUMP:
 		{
 			const Path &fileToRemove = filePath_;
@@ -362,14 +364,20 @@ bool GameInfo::DeleteAllSaveData() {
 	return true;
 }
 
-void GameInfo::ParseParamSFO() {
+void GameInfo::ParseParamSFO(IdentifiedFileType type) {
 	title = paramSFO.GetValueString("TITLE");
-	id = paramSFO.GetValueString("DISC_ID");
-	id_version = id + "_" + paramSFO.GetValueString("DISC_VERSION");
-	disc_total = paramSFO.GetValueInt("DISC_TOTAL");
-	disc_number = paramSFO.GetValueInt("DISC_NUMBER");
-	// region = paramSFO.GetValueInt("REGION");  // Always seems to be 32768?
-	region = DetectGameRegionFromID(id);
+	if (type != IdentifiedFileType::PSP_UMD_VIDEO_ISO) {
+		id = paramSFO.GetValueString("DISC_ID");
+		id_version = id + "_" + paramSFO.GetValueString("DISC_VERSION");
+		disc_total = paramSFO.GetValueInt("DISC_TOTAL");
+		disc_number = paramSFO.GetValueInt("DISC_NUMBER");
+		// region = paramSFO.GetValueInt("REGION");  // Always seems to be 32768?
+		region = DetectGameRegionFromID(id);
+	} else {
+		id.clear();
+		id_version.clear();
+		region = GameRegion::UNKNOWN;
+	}
 }
 
 std::string GameInfo::GetTitle() {
@@ -435,13 +443,14 @@ void GameInfo::SetupTexture(Draw::DrawContext *thin3d, GameInfoTex &tex) {
 	}
 }
 
-static bool ReadFileToString(IFileSystem *fs, const char *filename, std::string *contents, std::mutex *mtx) {
-	PSPFileInfo info = fs->GetFileInfo(filename);
+static bool ReadFileToString(IFileSystem *fs, std::string_view filename, std::string *contents, std::mutex *mtx) {
+	std::string fn(filename);
+	PSPFileInfo info = fs->GetFileInfo(fn);
 	if (!info.exists) {
 		return false;
 	}
 
-	int handle = fs->OpenFile(filename, FILEACCESS_READ);
+	int handle = fs->OpenFile(fn, FILEACCESS_READ);
 	if (handle < 0) {
 		return false;
 	}
@@ -587,7 +596,7 @@ public:
 					if (pbp.GetSubFile(PBP_PARAM_SFO, &sfoData)) {
 						std::lock_guard<std::mutex> lock(info_->lock);
 						info_->paramSFO.ReadSFO(sfoData);
-						info_->ParseParamSFO();
+						info_->ParseParamSFO(info_->fileType);
 
 						// Assuming PSP_PBP_DIRECTORY without ID or with disc_total < 1 in GAME dir must be homebrew
 						if ((info_->id.empty() || !info_->disc_total)
@@ -656,6 +665,7 @@ public:
 
 		case IdentifiedFileType::PSP_ELF:
 handleELF:
+			info_->title = info_->GetFilePath().GetFilename();
 			// An elf on its own has no usable information, no icons, no nothing.
 			if (flags_ & GameInfoFlags::PARAM_SFO) {
 				info_->id = g_paramSFO.GenerateFakeID(gamePath_);
@@ -693,7 +703,7 @@ handleELF:
 				if (ReadFileToString(&umd, "/PARAM.SFO", &paramSFOcontents, 0)) {
 					std::lock_guard<std::mutex> lock(info_->lock);
 					info_->paramSFO.ReadSFO((const u8 *)paramSFOcontents.data(), paramSFOcontents.size());
-					info_->ParseParamSFO();
+					info_->ParseParamSFO(info_->fileType);
 					info_->MarkReadyNoLock(GameInfoFlags::PARAM_SFO);
 				}
 			}
@@ -728,6 +738,7 @@ handleELF:
 
 		case IdentifiedFileType::PPSSPP_GE_DUMP:
 		{
+			info_->title = info_->GetFilePath().GetFilename();
 			if (flags_ & GameInfoFlags::ICON) {
 				Path screenshotPath = gamePath_.WithReplacedExtension(".ppdmp", ".png");
 				// Let's use the comparison screenshot as an icon, if it exists.
@@ -749,7 +760,7 @@ handleELF:
 					if (ReadFileToString(&umd, "/PSP_GAME/PARAM.SFO", &paramSFOcontents, nullptr)) {
 						std::lock_guard<std::mutex> lock(info_->lock);
 						info_->paramSFO.ReadSFO((const u8 *)paramSFOcontents.data(), paramSFOcontents.size());
-						info_->ParseParamSFO();
+						info_->ParseParamSFO(info_->fileType);
 					}
 				}
 
@@ -774,7 +785,9 @@ handleELF:
 
 		case IdentifiedFileType::PSP_ISO:
 		case IdentifiedFileType::PSP_ISO_NP:
+		case IdentifiedFileType::PSP_UMD_VIDEO_ISO:
 			{
+				std::string_view gameRoot = info_->fileType == IdentifiedFileType::PSP_UMD_VIDEO_ISO ? "/UMD_VIDEO/" : "/PSP_GAME/";
 				SequentialHandleAllocator handles;
 				// Let's assume it's an ISO.
 				// TODO: This will currently read in the whole directory tree. Not really necessary for just a
@@ -799,28 +812,31 @@ handleELF:
 				// Alright, let's fetch the PARAM.SFO.
 				if (flags_ & GameInfoFlags::PARAM_SFO) {
 					std::string paramSFOcontents;
-					if (ReadFileToString(&umd, "/PSP_GAME/PARAM.SFO", &paramSFOcontents, nullptr)) {
+
+					if (ReadFileToString(&umd, join(gameRoot, "PARAM.SFO"), &paramSFOcontents, nullptr)) {
 						{
 							std::lock_guard<std::mutex> lock(info_->lock);
 							info_->paramSFO.ReadSFO((const u8 *)paramSFOcontents.data(), paramSFOcontents.size());
-							info_->ParseParamSFO();
+							info_->ParseParamSFO(info_->fileType);
 
 							// quick-update the info while we have the lock, so we don't need to wait for the image load to display the title.
 							info_->MarkReadyNoLock(GameInfoFlags::PARAM_SFO);
 						}
+					} else {
+						info_->title = info_->GetFilePath().GetFilename();
 					}
 				}
 
 				if (flags_ & GameInfoFlags::PIC0) {
-					info_->pic0.dataLoaded = ReadFileToString(&umd, "/PSP_GAME/PIC0.PNG", &info_->pic0.data, &info_->lock);
+					info_->pic0.dataLoaded = ReadFileToString(&umd, join(gameRoot, "PIC0.PNG"), &info_->pic0.data, &info_->lock);
 				}
 
 				if (flags_ & GameInfoFlags::PIC1) {
-					info_->pic1.dataLoaded = ReadFileToString(&umd, "/PSP_GAME/PIC1.PNG", &info_->pic1.data, &info_->lock);
+					info_->pic1.dataLoaded = ReadFileToString(&umd, join(gameRoot, "PIC1.PNG"), &info_->pic1.data, &info_->lock);
 				}
 
 				if (flags_ & GameInfoFlags::SND) {
-					info_->sndDataLoaded = ReadFileToString(&umd, "/PSP_GAME/SND0.AT3", &info_->sndFileData, &info_->lock);
+					info_->sndDataLoaded = ReadFileToString(&umd, join(gameRoot, "SND0.AT3"), &info_->sndFileData, &info_->lock);
 				}
 
 				// Fall back to unknown icon if ISO is broken/is a homebrew ISO, override is allowed though
@@ -828,7 +844,7 @@ handleELF:
 				if (flags_ & GameInfoFlags::ICON) {
 					if (LoadReplacementImage(info_.get(), &info_->icon, "icon.png")) {
 						// Nothing more to do
-					} else if (ReadFileToString(&umd, "/PSP_GAME/ICON0.PNG", &info_->icon.data, &info_->lock)) {
+					} else if (ReadFileToString(&umd, join(gameRoot, "ICON0.PNG"), &info_->icon.data, &info_->lock)) {
 						info_->icon.dataLoaded = true;
 					} else {
 						Path screenshot_jpg = GetSysDirectory(DIRECTORY_SCREENSHOT) / (info_->id + "_00000.jpg");
@@ -848,6 +864,7 @@ handleELF:
 			}
 
 			case IdentifiedFileType::ARCHIVE_ZIP:
+				info_->title = info_->GetFilePath().GetFilename();
 				if (flags_ & GameInfoFlags::ICON) {
 					ReadVFSToString("zip.png", &info_->icon.data, &info_->lock);
 					info_->icon.dataLoaded = true;
@@ -855,6 +872,7 @@ handleELF:
 				break;
 
 			case IdentifiedFileType::ARCHIVE_RAR:
+				info_->title = info_->GetFilePath().GetFilename();
 				if (flags_ & GameInfoFlags::ICON) {
 					ReadVFSToString("rargray.png", &info_->icon.data, &info_->lock);
 					info_->icon.dataLoaded = true;
@@ -862,6 +880,7 @@ handleELF:
 				break;
 
 			case IdentifiedFileType::ARCHIVE_7Z:
+				info_->title = info_->GetFilePath().GetFilename();
 				if (flags_ & GameInfoFlags::ICON) {
 					ReadVFSToString("7z.png", &info_->icon.data, &info_->lock);
 					info_->icon.dataLoaded = true;
@@ -870,6 +889,10 @@ handleELF:
 
 			case IdentifiedFileType::NORMAL_DIRECTORY:
 			default:
+				info_->title = info_->GetFilePath().GetFilename();
+				if (info_->errorString.empty()) {
+					info_->errorString = errorString;
+				}
 				break;
 		}
 

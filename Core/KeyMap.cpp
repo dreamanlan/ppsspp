@@ -24,10 +24,13 @@
 
 #include "Common/System/NativeApp.h"
 #include "Common/System/System.h"
+#include "Common/System/OSD.h"
+#include "Common/Data/Text/I18n.h"
 #include "Common/Data/Format/IniFile.h"
 #include "Common/Input/InputState.h"
 #include "Common/VR/PPSSPPVR.h"
 #include "Common/Log.h"
+#include "Common/TimeUtil.h"
 #include "Common/StringUtils.h"
 #include "Core/HLE/sceUtility.h"
 #include "Core/HLE/sceCtrl.h"   // psp keys
@@ -812,43 +815,101 @@ void ClearAllMappings() {
 	g_controllerMapGeneration++;
 }
 
-bool IsNvidiaShield(const std::string &name) {
+bool IsNvidiaShield(std::string_view name) {
 	return name == "NVIDIA:SHIELD";
 }
 
-bool IsRetroid(const std::string &name) {
+bool IsRetroid(std::string_view name) {
 	// TODO: Not sure if there are differences between different Retroid devices.
 	// The one I have is a "Retroid Pocket 2+".
 	return startsWith(name, "Retroid:");
 }
 
-bool IsNvidiaShieldTV(const std::string &name) {
+bool IsNvidiaShieldTV(std::string_view name) {
 	return name == "NVIDIA:SHIELD Android TV";
 }
 
-bool IsXperiaPlay(const std::string &name) {
+bool IsXperiaPlay(std::string_view name) {
 	return name == "Sony Ericsson:R800a" || name == "Sony Ericsson:R800i" || name == "Sony Ericsson:R800x" || name == "Sony Ericsson:R800at" || name == "Sony Ericsson:SO-01D" || name == "Sony Ericsson:zeus";
 }
 
-bool IsMOQII7S(const std::string &name) {
+bool IsMOQII7S(std::string_view name) {
 	return name == "MOQI:I7S";
 }
 
-bool HasBuiltinController(const std::string &name) {
+bool HasBuiltinController(std::string_view name) {
 	return IsXperiaPlay(name) || IsNvidiaShield(name) || IsMOQII7S(name) || IsRetroid(name);
 }
 
-void NotifyPadConnected(InputDeviceID deviceId, const std::string &name) {
-	std::lock_guard<std::recursive_mutex> guard(g_controllerMapLock);
-	g_seenPads.insert(name);
-	g_padNames[deviceId] = name;
+void NotifyPadConnected(InputDeviceID deviceId, std::string_view name) {
+	{
+		std::lock_guard<std::recursive_mutex> guard(g_controllerMapLock);
+		g_seenPads.insert(std::string(name));
+		g_padNames[deviceId] = name;
+
+		// Don't notify within the first 5 seconds, to avoid notification spam on startup.
+		// Also for some reason we get some strange things on Android... "Virtual"?
+		if (time_now_d() >= 5.0 && name != "Virtual") {
+			auto co = GetI18NCategory(I18NCat::CONTROLS);
+			g_OSD.Show(OSDType::MESSAGE_SUCCESS, ApplySafeSubstitutions("%1: %2", co->T("Game controller connected"), name), "", "I_CONTROLLER", 2.0f, "controller_connected");
+		}
+	}
+
+	System_Notify(SystemNotification::PAD_STATE_CHANGED);
 }
 
-void AutoConfForPad(const std::string &name) {
-	std::lock_guard<std::recursive_mutex> guard(g_controllerMapLock);
-	g_controllerMap.clear();
+void NotifyPadDisconnected(InputDeviceID deviceId) {
+	{
+		std::lock_guard<std::recursive_mutex> guard(g_controllerMapLock);
+		auto iter = g_padNames.find(deviceId);
+		if (iter != g_padNames.end()) {
+			auto co = GetI18NCategory(I18NCat::CONTROLS);
+			g_OSD.Show(OSDType::MESSAGE_WARNING, ApplySafeSubstitutions("%1: %2", co->T("Game controller disconnected"), iter->second), "", "I_CONTROLLER", 2.0f, "controller_connected");
+			g_seenPads.erase(iter->second);
+		}
+		g_padNames.erase(deviceId);
+	}
+	System_Notify(SystemNotification::PAD_STATE_CHANGED);
+}
 
-	INFO_LOG(Log::System, "Autoconfiguring pad for '%s'", name.c_str());
+void ClearControlsWithDeviceId(InputDeviceID deviceId) {
+	bool modified = false;
+	std::lock_guard<std::recursive_mutex> guard(g_controllerMapLock);
+	for (auto iter = g_controllerMap.begin(); iter != g_controllerMap.end(); ++iter) {
+		auto &mappings = iter->second;
+		for (auto mapIter = mappings.begin(); mapIter != mappings.end(); ) {
+			bool found = false;
+			for (auto &mapping : mapIter->mappings) {
+				if (mapping.deviceId == deviceId) {
+					found = true;
+					break;
+				}
+			}
+			if (found) {
+				mapIter = mappings.erase(mapIter);
+				modified = true;
+			} else {
+				++mapIter;
+			}
+		}
+	}
+
+	if (modified) {
+		g_controllerMapGeneration++;
+	}
+}
+
+void AutoConfForPad(std::string_view name) {
+	std::lock_guard<std::recursive_mutex> guard(g_controllerMapLock);
+
+	InputDeviceID deviceId = DEVICE_ID_PAD_0;
+	for (auto [padDeviceId, padName] : g_padNames) {
+		if (padName == name) {
+			// Already configured.
+			deviceId = padDeviceId;
+		}
+	}
+	ClearControlsWithDeviceId(deviceId);
 
 #if PPSSPP_PLATFORM(ANDROID)
 	if (name.find("Xbox") != std::string::npos) {
@@ -872,8 +933,10 @@ void AutoConfForPad(const std::string &name) {
 #endif
 
 	// Add a couple of convenient keyboard mappings by default, too.
+#if !defined(MOBILE_DEVICE)
 	g_controllerMap[VIRTKEY_PAUSE].push_back(MultiInputMapping(InputMapping(DEVICE_ID_KEYBOARD, NKCODE_ESCAPE)));
 	g_controllerMap[VIRTKEY_FASTFORWARD].push_back(MultiInputMapping(InputMapping(DEVICE_ID_KEYBOARD, NKCODE_TAB)));
+#endif
 	g_controllerMapGeneration++;
 }
 
@@ -896,55 +959,6 @@ bool HasChanged(int &prevGeneration) {
 		return true;
 	}
 	return false;
-}
-
-static const char * const g_vKeyNames[] = {
-	"AXIS_X_MIN",
-	"AXIS_Y_MIN",
-	"AXIS_X_MAX",
-	"AXIS_Y_MAX",
-	"RAPID_FIRE",
-	"FASTFORWARD",
-	"PAUSE",
-	"SPEED_TOGGLE",
-	"AXIS_RIGHT_X_MIN",
-	"AXIS_RIGHT_Y_MIN",
-	"AXIS_RIGHT_X_MAX",
-	"AXIS_RIGHT_Y_MAX",
-	"REWIND",
-	"SAVE_STATE",
-	"LOAD_STATE",
-	"NEXT_SLOT",
-	"TOGGLE_FULLSCREEN",
-	"ANALOG_LIGHTLY",
-	"AXIS_SWAP",
-	"DEVMENU",
-	"FRAME_ADVANCE",
-	"RECORD",
-	"SPEED_CUSTOM1",
-	"SPEED_CUSTOM2",
-	"TEXTURE_DUMP",
-	"TEXTURE_REPLACE",
-	"SCREENSHOT",
-	"MUTE_TOGGLE",
-	"OPENCHAT",
-	"ANALOG_ROTATE_CW",
-	"ANALOG_ROTATE_CCW",
-	"SCREEN_ROTATION_VERTICAL",
-	"SCREEN_ROTATION_VERTICAL180",
-	"SCREEN_ROTATION_HORIZONTAL",
-	"SCREEN_ROTATION_HORIZONTAL180",
-	"SPEED_ANALOG",
-	"VR_CAMERA_ADJUST",
-	"VR_CAMERA_RESET",
-};
-
-const char *GetVirtKeyName(int vkey) {
-	int index = vkey - VIRTKEY_FIRST;
-	if (index < 0 || index >= ARRAY_SIZE(g_vKeyNames)) {
-		return "N/A";
-	}
-	return g_vKeyNames[index];
 }
 
 MultiInputMapping MultiInputMapping::FromConfigString(std::string_view str) {

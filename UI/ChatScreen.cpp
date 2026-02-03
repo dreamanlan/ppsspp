@@ -40,11 +40,12 @@ void ChatMenu::CreateContents(UI::ViewGroup *parent) {
 
 	if (g_Config.bEnableQuickChat) {
 		LinearLayout *quickChat = outer->Add(new LinearLayout(ORIENT_HORIZONTAL, new LayoutParams(FILL_PARENT, WRAP_CONTENT)));
-		quickChat->Add(new Button("1", new LinearLayoutParams(1.0)))->OnClick.Handle(this, &ChatMenu::OnQuickChat1);
-		quickChat->Add(new Button("2", new LinearLayoutParams(1.0)))->OnClick.Handle(this, &ChatMenu::OnQuickChat2);
-		quickChat->Add(new Button("3", new LinearLayoutParams(1.0)))->OnClick.Handle(this, &ChatMenu::OnQuickChat3);
-		quickChat->Add(new Button("4", new LinearLayoutParams(1.0)))->OnClick.Handle(this, &ChatMenu::OnQuickChat4);
-		quickChat->Add(new Button("5", new LinearLayoutParams(1.0)))->OnClick.Handle(this, &ChatMenu::OnQuickChat5);
+		for (int i = 0; i < 5; i++) {
+			std::string name = std::to_string(i + 1);
+			quickChat->Add(new Button(name, new LinearLayoutParams(1.0)))->OnClick.Add([i](UI::EventParams &e) {
+				sendChat(g_Config.sQuickChat[i]);
+			});
+		}
 	}
 	chatVert_ = scroll_->Add(new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
 	chatVert_->SetSpacing(0);
@@ -127,26 +128,6 @@ void ChatMenu::OnAskForChatMessage(UI::EventParams &e) {
 	}
 }
 
-void ChatMenu::OnQuickChat1(UI::EventParams &e) {
-	sendChat(g_Config.sQuickChat0);
-}
-
-void ChatMenu::OnQuickChat2(UI::EventParams &e) {
-	sendChat(g_Config.sQuickChat1);
-}
-
-void ChatMenu::OnQuickChat3(UI::EventParams &e) {
-	sendChat(g_Config.sQuickChat2);
-}
-
-void ChatMenu::OnQuickChat4(UI::EventParams &e) {
-	sendChat(g_Config.sQuickChat3);
-}
-
-void ChatMenu::OnQuickChat5(UI::EventParams &e) {
-	sendChat(g_Config.sQuickChat4);
-}
-
 void ChatMenu::UpdateChat() {
 	using namespace UI;
 	if (chatVert_ != nullptr) {
@@ -197,7 +178,7 @@ void ChatMenu::Update() {
 #if defined(USING_WIN_UI)
 	// Could remove the fullscreen check here, it works now.
 	auto n = GetI18NCategory(I18NCat::NETWORKING);
-	if (promptInput_ && g_Config.bBypassOSKWithKeyboard && !g_Config.UseFullScreen()) {
+	if (promptInput_ && g_Config.bBypassOSKWithKeyboard && !g_Config.bFullScreen) {
 		System_InputBoxGetString(token_, n->T("Chat"), n->T("Chat Here"), false, [](const std::string &value, int) {
 			sendChat(value);
 		});

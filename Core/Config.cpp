@@ -33,7 +33,6 @@
 #include "Common/TimeUtil.h"
 #include "Common/Thread/ThreadUtil.h"
 #include "Common/Data/Format/IniFile.h"
-#include "Common/Data/Format/JSONReader.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/Data/Text/Parsers.h"
 #include "Common/CPUDetect.h"
@@ -47,13 +46,11 @@
 #include "Common/StringUtils.h"
 #include "Common/GPU/Vulkan/VulkanLoader.h"
 #include "Common/VR/PPSSPPVR.h"
-#include "Common/System/OSD.h"
 #include "Common/System/Request.h"
 #include "Core/Config.h"
 #include "Core/ConfigSettings.h"
 #include "Core/ConfigValues.h"
 #include "Core/KeyMap.h"
-#include "Core/System.h"
 #include "Core/HLE/sceUtility.h"
 #include "Core/Instance.h"
 #include "Core/Util/RecentFiles.h"
@@ -75,7 +72,7 @@ static const std::string_view logSectionName = "Log";
 #endif
 
 static const std::vector<std::string_view> defaultProAdhocServerList = {
-	"socom.cc", "psp.gameplayer.club", // TODO: Add some saved recent history too?
+	"socom.cc", "psp.gameplayer.club",  // TODO: Add some saved recent history too?
 };
 
 std::string GPUBackendToString(GPUBackend backend) {
@@ -201,6 +198,14 @@ static bool DefaultEnableStateUndo() {
 	return true;
 }
 
+static float DefaultGameGridScale() {
+#if PPSSPP_PLATFORM(IOS)
+	return 1.25f;
+#else
+	return 1.0f;
+#endif
+}
+
 static float DefaultUISaturation() {
 	return IsVREnabled() ? 1.5f : 1.0f;
 }
@@ -272,7 +277,7 @@ static const ConfigSetting generalSettings[] = {
 
 	ConfigSetting("ShowRegionOnGameIcon", SETTING(g_Config, bShowRegionOnGameIcon), false, CfgFlag::DEFAULT),
 	ConfigSetting("ShowIDOnGameIcon", SETTING(g_Config, bShowIDOnGameIcon), false, CfgFlag::DEFAULT),
-	ConfigSetting("GameGridScale", SETTING(g_Config, fGameGridScale), 1.0, CfgFlag::DEFAULT),
+	ConfigSetting("GameGridScale", SETTING(g_Config, fGameGridScale), &DefaultGameGridScale, CfgFlag::DEFAULT),
 	ConfigSetting("GridView1", SETTING(g_Config, bGridView1), true, CfgFlag::DEFAULT),
 	ConfigSetting("GridView2", SETTING(g_Config, bGridView2), true, CfgFlag::DEFAULT),
 	ConfigSetting("GridView3", SETTING(g_Config, bGridView3), false, CfgFlag::DEFAULT),
@@ -331,6 +336,7 @@ static const ConfigSetting generalSettings[] = {
 	ConfigSetting("WindowY", SETTING(g_Config, iWindowY), -1, CfgFlag::DEFAULT),
 	ConfigSetting("WindowWidth", SETTING(g_Config, iWindowWidth), 0, CfgFlag::DEFAULT),   // 0 will be automatically reset later (need to do the AdjustWindowRect dance).
 	ConfigSetting("WindowHeight", SETTING(g_Config, iWindowHeight), 0, CfgFlag::DEFAULT),
+	ConfigSetting("WindowSizeState", SETTING(g_Config, iWindowSizeState), (int)WindowSizeState::Normal, CfgFlag::DEFAULT),
 	ConfigSetting("ShrinkIfWindowSmall", SETTING(g_Config, bShrinkIfWindowSmall), false, CfgFlag::DEFAULT),
 #endif
 
@@ -467,7 +473,9 @@ static int DefaultGPUBackend() {
 		return (int)GPUBackend::OPENGL;
 	}
 
-#if PPSSPP_PLATFORM(WINDOWS)
+#if PPSSPP_PLATFORM(UWP)
+	return (int)GPUBackend::DIRECT3D11;
+#elif PPSSPP_PLATFORM(WINDOWS)
 	// On Win10, there's a good chance Vulkan will work by default.
 	if (IsWin10OrHigher()) {
 		return (int)GPUBackend::VULKAN;
@@ -664,6 +672,7 @@ static const ConfigSetting displayLayoutSettings[] = {
 	ConfigSetting("DisplayAspectRatio", SETTING(g_Config.displayLayoutLandscape, fDisplayAspectRatio), CfgFlag::PER_GAME),
 	ConfigSetting("IgnoreScreenInsets", SETTING(g_Config.displayLayoutLandscape, bIgnoreScreenInsets), CfgFlag::PER_GAME),
 	ConfigSetting("InternalScreenRotation", SETTING(g_Config.displayLayoutLandscape, iInternalScreenRotation), CfgFlag::PER_GAME),
+	ConfigSetting("RotateControlsWithScreen", SETTING(g_Config.displayLayoutLandscape, bRotateControlsWithScreen), CfgFlag::PER_GAME),
 	ConfigSetting("EnableCardboardVR", SETTING(g_Config.displayLayoutLandscape, bEnableCardboardVR), CfgFlag::PER_GAME),
 	ConfigSetting("CardboardScreenSize", SETTING(g_Config.displayLayoutLandscape, iCardboardScreenSize), CfgFlag::PER_GAME),
 	ConfigSetting("CardboardXShift", SETTING(g_Config.displayLayoutLandscape, iCardboardXShift), CfgFlag::PER_GAME),
@@ -1011,7 +1020,8 @@ static const ConfigSetting controlSettings[] = {
 static const ConfigSetting networkSettings[] = {
 	ConfigSetting("EnableWlan", SETTING(g_Config, bEnableWlan), false, CfgFlag::PER_GAME),
 	ConfigSetting("EnableAdhocServer", SETTING(g_Config, bEnableAdhocServer), false, CfgFlag::PER_GAME),
-	ConfigSetting("proAdhocServer", SETTING(g_Config, proAdhocServer), "socom.cc", CfgFlag::PER_GAME),
+	ConfigSetting("proAdhocServer", SETTING(g_Config, sProAdhocServer), "socom.cc", CfgFlag::PER_GAME),
+	ConfigSetting("UseServerRelay", SETTING(g_Config, bUseServerRelay), false, CfgFlag::PER_GAME),
 	ConfigSetting("proAdhocServerList", SETTING(g_Config, proAdhocServerList), &defaultProAdhocServerList, CfgFlag::DEFAULT),
 	ConfigSetting("PortOffset", SETTING(g_Config, iPortOffset), 10000, CfgFlag::PER_GAME),
 	ConfigSetting("PrimaryDNSServer", SETTING(g_Config, sInfrastructureDNSServer), "67.222.156.250", CfgFlag::PER_GAME),
@@ -1029,11 +1039,11 @@ static const ConfigSetting networkSettings[] = {
 	ConfigSetting("ChatButtonPosition", SETTING(g_Config, iChatButtonPosition), (int)ScreenEdgePosition::BOTTOM_LEFT, CfgFlag::PER_GAME),
 	ConfigSetting("ChatScreenPosition", SETTING(g_Config, iChatScreenPosition), (int)ScreenEdgePosition::BOTTOM_LEFT, CfgFlag::PER_GAME),
 	ConfigSetting("EnableQuickChat", SETTING(g_Config, bEnableQuickChat), true, CfgFlag::PER_GAME),
-	ConfigSetting("QuickChat1", SETTING(g_Config, sQuickChat0), "Quick Chat 1", CfgFlag::PER_GAME),
-	ConfigSetting("QuickChat2", SETTING(g_Config, sQuickChat1), "Quick Chat 2", CfgFlag::PER_GAME),
-	ConfigSetting("QuickChat3", SETTING(g_Config, sQuickChat2), "Quick Chat 3", CfgFlag::PER_GAME),
-	ConfigSetting("QuickChat4", SETTING(g_Config, sQuickChat3), "Quick Chat 4", CfgFlag::PER_GAME),
-	ConfigSetting("QuickChat5", SETTING(g_Config, sQuickChat4), "Quick Chat 5", CfgFlag::PER_GAME),
+	ConfigSetting("QuickChat1", SETTING(g_Config, sQuickChat[0]), "Quick Chat 1", CfgFlag::PER_GAME),
+	ConfigSetting("QuickChat2", SETTING(g_Config, sQuickChat[1]), "Quick Chat 2", CfgFlag::PER_GAME),
+	ConfigSetting("QuickChat3", SETTING(g_Config, sQuickChat[2]), "Quick Chat 3", CfgFlag::PER_GAME),
+	ConfigSetting("QuickChat4", SETTING(g_Config, sQuickChat[3]), "Quick Chat 4", CfgFlag::PER_GAME),
+	ConfigSetting("QuickChat5", SETTING(g_Config, sQuickChat[4]), "Quick Chat 5", CfgFlag::PER_GAME),
 };
 
 static const ConfigSetting systemParamSettings[] = {
@@ -1224,10 +1234,6 @@ bool Config::LoadAppendedConfig() {
 }
 
 void Config::UpdateAfterSettingAutoFrameSkip() {
-	if (bAutoFrameSkip && iFrameSkip == 0) {
-		iFrameSkip = 1;
-	}
-	
 	if (bAutoFrameSkip && bSkipBufferEffects) {
 		bSkipBufferEffects = false;
 	}
@@ -1375,6 +1381,10 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
 	INFO_LOG(Log::Loader, "Config loaded: '%s' (%0.1f ms)", iniFilename_.c_str(), (time_now_d() - startTime) * 1000.0);
 }
 
+bool Config::ShouldSaveSetting(const void *ptr) const {
+	return std::find(settingsNotToSave_.begin(), settingsNotToSave_.end(), ptr) == settingsNotToSave_.end();
+}
+
 // If we're in game specific mode, we need to:
 // * Save the game-specific settings to the game-specific ini file.
 // * Then, save the NON-game-specific settings ONLY to the regular ini file!
@@ -1412,6 +1422,11 @@ bool Config::Save(const char *saveReason) {
 			for (size_t j = 0; j < meta.settingsCount; j++) {
 				if (IsGameSpecific() && (meta.settings[j].Flags() & CfgFlag::PER_GAME)) {
 					// Skip per-game settings in non-game-specific ini.
+					continue;
+				}
+				if (!ShouldSaveSetting(meta.settings[j].GetVoidPtr(configBlock))) {
+					// Skip settings marked as "don't save".
+					INFO_LOG(Log::System, "Not saving setting '%.*s' as marked as don't save.", STR_VIEW(meta.settings[j].IniKey()));
 					continue;
 				}
 				meta.settings[j].WriteToIniSection(configBlock, section);
@@ -1500,12 +1515,19 @@ void Config::PostLoadCleanup() {
 		g_Config.iCpuCore = (int)CPUCore::IR_INTERPRETER;
 	}
 
-	// This caps the exponent 4 (so 16x.). No hardware supports more anyway.
+	// This caps the aniso level exponent to 4 (so 16x.). No hardware supports more anyway.
 	iAnisotropyLevel = std::clamp(iAnisotropyLevel, 0, 4);
 
-	if (iGPUBackend == 1) {  // d3d9, no longer supported
-		iGPUBackend = 2;  // d3d11
+	if (iGPUBackend == 1) {  // d3d9, no longer supported. Fall back to D3D11.
+		iGPUBackend = (int)GPUBackend::DIRECT3D11;
+	} else if (iGPUBackend < 0 || iGPUBackend > 3) {
+		iGPUBackend = (int)DefaultGPUBackend();
 	}
+
+#if PPSSPP_PLATFORM(UWP)
+	// Enforce D3D11.
+	iGPUBackend = (int)GPUBackend::DIRECT3D11;
+#endif
 
 	// Set a default MAC, and correct if it's an old format.
 	if (sMACAddress.length() != 17)
@@ -1815,13 +1837,13 @@ void Config::GetReportingInfo(UrlEncoder &data) const {
 	}
 }
 
-void PlayTimeTracker::Start(const std::string &gameId) {
+void PlayTimeTracker::Start(std::string_view gameId) {
 	if (gameId.empty()) {
 		return;
 	}
-	VERBOSE_LOG(Log::System, "GameTimeTracker::Start(%s)", gameId.c_str());
+	VERBOSE_LOG(Log::System, "GameTimeTracker::Start(%.*s)", STR_VIEW(gameId));
 
-	auto iter = tracker_.find(std::string(gameId));
+	auto iter = tracker_.find(gameId);
 	if (iter != tracker_.end()) {
 		if (iter->second.startTime == 0.0) {
 			iter->second.lastTimePlayed = time_now_unix_utc();
@@ -1834,17 +1856,17 @@ void PlayTimeTracker::Start(const std::string &gameId) {
 	playTime.lastTimePlayed = time_now_unix_utc();
 	playTime.totalTimePlayed = 0.0;
 	playTime.startTime = time_now_d();
-	tracker_[gameId] = playTime;
+	tracker_[std::string(gameId)] = playTime;
 }
 
-void PlayTimeTracker::Stop(const std::string &gameId) {
+void PlayTimeTracker::Stop(std::string_view gameId) {
 	if (gameId.empty()) {
 		return;
 	}
 
-	VERBOSE_LOG(Log::System, "GameTimeTracker::Stop(%s)", gameId.c_str());
+	VERBOSE_LOG(Log::System, "GameTimeTracker::Stop(%.*s)", STR_VIEW(gameId));
 
-	auto iter = tracker_.find(std::string(gameId));
+	auto iter = tracker_.find(gameId);
 	if (iter != tracker_.end()) {
 		if (iter->second.startTime != 0.0) {
 			iter->second.totalTimePlayed += time_now_d() - iter->second.startTime;
@@ -1856,6 +1878,15 @@ void PlayTimeTracker::Stop(const std::string &gameId) {
 
 	// Shouldn't happen, ignore this case.
 	WARN_LOG(Log::System, "GameTimeTracker::Stop called without corresponding GameTimeTracker::Start");
+}
+
+void PlayTimeTracker::Reset(std::string_view gameId) {
+	auto iter = tracker_.find(gameId);
+	if (iter != tracker_.end()) {
+		iter->second.lastTimePlayed = 0;
+		iter->second.totalTimePlayed = 0;
+		iter->second.startTime = 0.0;
+	}
 }
 
 void PlayTimeTracker::Load(const Section *section) {
@@ -1880,7 +1911,7 @@ void PlayTimeTracker::Save(Section *section) {
 	}
 }
 
-bool PlayTimeTracker::GetPlayedTimeString(const std::string &gameId, std::string *str) const {
+bool PlayTimeTracker::GetPlayedTimeString(std::string_view gameId, std::string *str) const {
 	auto ga = GetI18NCategory(I18NCat::GAME);
 
 	auto iter = tracker_.find(gameId);

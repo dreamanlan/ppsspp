@@ -24,6 +24,7 @@
 #include "Common/UI/View.h"
 #include "Common/UI/ViewGroup.h"
 #include "Common/UI/PopupScreens.h"
+#include "Common/UI/Notice.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/Data/Text/Parsers.h"
 #include "Common/Data/Encoding/Utf8.h"
@@ -37,9 +38,10 @@
 #include "Core/Reporting.h"
 #include "Core/System.h"
 #include "Core/Loaders.h"
-#include "Core/Util/GameDB.h"
 #include "Core/HLE/Plugins.h"
+#include "Core/Util/GameDB.h"
 #include "Core/Util/RecentFiles.h"
+#include "Core/Util/PathUtil.h"
 #include "UI/OnScreenDisplay.h"
 #include "UI/Background.h"
 #include "UI/CwCheatScreen.h"
@@ -118,6 +120,39 @@ static bool FileTypeSupportsCRC(IdentifiedFileType fileType) {
 	}
 }
 
+static bool FileTypeHasIcon(IdentifiedFileType fileType) {
+	switch (fileType) {
+	case IdentifiedFileType::PSP_PBP:
+	case IdentifiedFileType::PSP_PBP_DIRECTORY:
+	case IdentifiedFileType::PSP_ISO_NP:
+	case IdentifiedFileType::PSP_ISO:
+	case IdentifiedFileType::PSP_UMD_VIDEO_ISO:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool FileTypeIsPlayable(IdentifiedFileType fileType) {
+	switch (fileType) {
+	case IdentifiedFileType::ERROR_IDENTIFYING:
+	case IdentifiedFileType::UNKNOWN:
+	case IdentifiedFileType::PSX_ISO:
+	case IdentifiedFileType::PS2_ISO:
+	case IdentifiedFileType::PS3_ISO:
+	case IdentifiedFileType::UNKNOWN_BIN:
+	case IdentifiedFileType::UNKNOWN_ELF:
+	case IdentifiedFileType::UNKNOWN_ISO:
+	case IdentifiedFileType::NORMAL_DIRECTORY:
+	case IdentifiedFileType::PSP_SAVEDATA_DIRECTORY:
+	case IdentifiedFileType::PSP_UMD_VIDEO_ISO:
+		// Reverse logic.
+		return false;
+	default:
+		return true;
+	}
+}
+
 void GameScreen::CreateContentViews(UI::ViewGroup *parent) {
 	if (!info_) {
 		// Shouldn't happen
@@ -145,18 +180,23 @@ void GameScreen::CreateContentViews(UI::ViewGroup *parent) {
 	parent->Add(leftScroll);
 
 	const bool fileTypeSupportCRC = FileTypeSupportsCRC(info_->fileType);
+	const bool fileTypeHasIcon = FileTypeHasIcon(info_->fileType);
 
 	// Need an explicit size here because homebrew uses screenshots as icons.
 	LinearLayout *mainGameInfo;
 	if (portrait) {
 		mainGameInfo = new LinearLayout(ORIENT_VERTICAL);
 		leftColumn->Add(new Spacer(8.0f));
-		leftColumn->Add(new GameImageView(gamePath_, GameInfoFlags::ICON, 2.0f, new LinearLayoutParams(UI::Margins(0))));
+		if (fileTypeHasIcon) {
+			leftColumn->Add(new GameImageView(gamePath_, GameInfoFlags::ICON, 2.0f, new LinearLayoutParams(UI::Margins(0))));
+		}
 		leftColumn->Add(mainGameInfo);
 	} else {
 		mainGameInfo = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(1.0f));
 		ViewGroup *badgeHolder = new LinearLayout(ORIENT_HORIZONTAL);
-		badgeHolder->Add(new GameImageView(gamePath_, GameInfoFlags::ICON, 2.0f, new LinearLayoutParams(144 * 2, 80 * 2, UI::Margins(0))));
+		if (fileTypeHasIcon) {
+			badgeHolder->Add(new GameImageView(gamePath_, GameInfoFlags::ICON, 2.0f, new LinearLayoutParams(144 * 2, 80 * 2, UI::Margins(0))));
+		}
 		badgeHolder->Add(mainGameInfo);
 		leftColumn->Add(badgeHolder);
 	}
@@ -167,14 +207,16 @@ void GameScreen::CreateContentViews(UI::ViewGroup *parent) {
 	const bool inGameDB = g_gameDB.GetGameInfos(info_->id_version, &dbInfos);
 
 	if (knownFlags_ & GameInfoFlags::PARAM_SFO) {
-		// Show the game ID title below the icon. The top title will be from the DB.
-		std::string title = info_->GetTitle();
-
-		TextView *tvTitle = mainGameInfo->Add(new TextView(title, ALIGN_LEFT | FLAG_WRAP_TEXT, false, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
-		tvTitle->SetShadow(true);
-
 		std::string regionID = ReplaceAll(info_->id_version, "_", " v");
-		regionID += ": ";
+		if (!regionID.empty()) {
+			regionID += ": ";
+
+			// Show the game ID title below the icon. The top title will be from the DB.
+			std::string title = info_->GetTitle();
+
+			TextView *tvTitle = mainGameInfo->Add(new TextView(title, ALIGN_LEFT | FLAG_WRAP_TEXT, false, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
+			tvTitle->SetShadow(true);
+		}
 
 		if (info_->region != GameRegion::UNKNOWN) {
 			regionID += GameRegionToString(info_->region);
@@ -184,14 +226,27 @@ void GameScreen::CreateContentViews(UI::ViewGroup *parent) {
 
 		TextView *tvID = mainGameInfo->Add(new TextView(regionID, ALIGN_LEFT | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
 		tvID->SetShadow(true);
+
+		if (!info_->errorString.empty()) {
+			mainGameInfo->Add(new NoticeView(NoticeLevel::WARN, info_->errorString, ""));
+		}
 	}
 
 	LinearLayout *infoLayout = new LinearLayout(ORIENT_VERTICAL, new AnchorLayoutParams(10, 200, NONE, NONE));
 	leftColumn->Add(infoLayout);
 
+	if (info_->fileType == IdentifiedFileType::PSP_UMD_VIDEO_ISO) {
+		auto er = GetI18NCategory(I18NCat::ERRORS);
+		leftColumn->Add(new NoticeView(NoticeLevel::INFO, er->T("PPSSPP doesn't support UMD Video."), ""));
+		leftColumn->Add(new Choice(di->T("More info"), ImageID("I_LINK_OUT_QUESTION"), new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT)))->OnClick.Add([](UI::EventParams &e) {
+			System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org/docs/reference/umd-video/");
+		});
+	}
+
 	if ((knownFlags_ & GameInfoFlags::UNCOMPRESSED_SIZE) && (knownFlags_ & GameInfoFlags::SIZE)) {
+		auto st = GetI18NCategory(I18NCat::STORE);  // Borrow the size string from here
 		char temp[256];
-		snprintf(temp, sizeof(temp), "%s: %s", ga->T_cstr("Game"), NiceSizeFormat(info_->gameSizeOnDisk).c_str());
+		snprintf(temp, sizeof(temp), "%s: %s", st->T_cstr("Size"), NiceSizeFormat(info_->gameSizeOnDisk).c_str());
 		if (info_->gameSizeUncompressed != info_->gameSizeOnDisk) {
 			size_t len = strlen(temp);
 			snprintf(temp + len, sizeof(temp) - len, " (%s: %s)", ga->T_cstr("Uncompressed"), NiceSizeFormat(info_->gameSizeUncompressed).c_str());
@@ -211,13 +266,33 @@ void GameScreen::CreateContentViews(UI::ViewGroup *parent) {
 		}
 	}
 
-	infoLayout->Add(new TextView(gamePath_.ToVisualString(), ALIGN_LEFT | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetShadow(true);
+	infoLayout->Add(new TextView(GetFriendlyPath(gamePath_), ALIGN_LEFT | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)))->SetShadow(true);
 
-	std::string str;
-	if (g_Config.TimeTracker().GetPlayedTimeString(info_->id, &str)) {
-		TextView *tvPlayTime = infoLayout->Add(new TextView(str, ALIGN_LEFT, true, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
+	std::string timeStr;
+	if (g_Config.TimeTracker().GetPlayedTimeString(info_->id, &timeStr)) {
+		LinearLayout *timeHoriz = infoLayout->Add(new LinearLayout(ORIENT_HORIZONTAL));
+
+		TextView *tvPlayTime = timeHoriz->Add(new TextView(timeStr, ALIGN_LEFT, true, new LinearLayoutParams(0.0f, Gravity::G_VCENTER)));
 		tvPlayTime->SetShadow(true);
-		tvPlayTime->SetText(str);
+		tvPlayTime->SetText(timeStr);
+
+		auto di = GetI18NCategory(I18NCat::DIALOG);
+		Choice *btnResetTime = timeHoriz->Add(new Choice(di->T("Reset"), new LinearLayoutParams(0.0f, Gravity::G_VCENTER)));
+		btnResetTime->OnClick.Add([this, ga, timeStr](UI::EventParams &) {
+			auto di = GetI18NCategory(I18NCat::DIALOG);
+			auto gta = GetI18NCategory(I18NCat::GAME);
+			std::string id = info_->id;
+			std::string questionText(ga->T("Are you sure you want to reset the played time counter?"));
+			questionText += "\n";
+			questionText += timeStr;
+			screenManager()->push(
+				new PromptScreen(gamePath_, questionText, di->T("Reset"), di->T("Cancel"), [id](bool yes) {
+				if (yes) {
+					g_Config.TimeTracker().Reset(id);
+				}
+			}));
+			RecreateViews();
+		});
 	}
 
 	LinearLayout *crcHoriz = infoLayout->Add(new LinearLayout(ORIENT_HORIZONTAL));
@@ -315,7 +390,7 @@ void GameScreen::CreateSettingsViews(UI::ViewGroup *rightColumn) {
 	rightColumnItems->SetSpacing(0.0f);
 	rightColumn->Add(rightColumnItems);
 
-	if (!inGame_) {
+	if (!inGame_ && FileTypeIsPlayable(info_->fileType)) {
 		rightColumnItems->Add(new Choice(ga->T("Play"), ImageID("I_PLAY")))->OnClick.Handle(this, &GameScreen::OnPlay);
 	}
 

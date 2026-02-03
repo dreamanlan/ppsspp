@@ -20,13 +20,9 @@
 #include <string>
 #include <memory>
 
-#ifdef SHARED_LIBZIP
-#include <zip.h>
-#else
-#include "ext/libzip/zip.h"
-#endif
 #include "Common/CommonTypes.h"
 #include "Common/File/Path.h"
+#include "Common/File/VFS/ZipFileReader.h"
 
 enum class IdentifiedFileType {
 	ERROR_IDENTIFYING,
@@ -40,16 +36,19 @@ enum class IdentifiedFileType {
 
 	PSP_DISC_DIRECTORY,
 
-	UNKNOWN_BIN,
-	UNKNOWN_ELF,
-	UNKNOWN_ISO,
-
 	// Try to reduce support emails...
 	ARCHIVE_RAR,
 	ARCHIVE_ZIP,
 	ARCHIVE_7Z,
 	PSP_PS1_PBP,
-	ISO_MODE2,
+	PSX_ISO,
+	PS2_ISO,
+	PS3_ISO,
+	PSP_UMD_VIDEO_ISO,
+
+	UNKNOWN_BIN,
+	UNKNOWN_ELF,
+	UNKNOWN_ISO,
 
 	NORMAL_DIRECTORY,
 
@@ -153,8 +152,8 @@ inline u32 operator & (const FileLoader::Flags &a, const FileLoader::Flags &b) {
 }
 
 FileLoader *ConstructFileLoader(const Path &filename);
-// Resolve to the target binary, ISO, or other file (e.g. from a directory.)
-FileLoader *ResolveFileLoaderTarget(FileLoader *fileLoader);
+// Identifies the file and resolves to the target binary, ISO, or other file (e.g. from a directory.)
+FileLoader *ResolveFileLoaderTarget(FileLoader *fileLoader, IdentifiedFileType *fileType, std::string *errorString);
 
 Path ResolvePBPDirectory(const Path &filename);
 Path ResolvePBPFile(const Path &filename);
@@ -172,6 +171,7 @@ enum class ZipFileContents {
 	TEXTURE_PACK,
 	SAVE_DATA,
 	FRAME_DUMP,
+	SAVE_STATES,
 };
 
 struct ZipFileInfo {
@@ -191,8 +191,8 @@ struct ZipFileInfo {
 	std::string contentName;
 };
 
-struct zip *ZipOpenPath(const Path &fileName);
-void ZipClose(zip *z);
+ZipContainer ZipOpenPath(const Path &fileName);
+void ZipClose(ZipContainer &z);
 
 bool DetectZipFileContents(const Path &fileName, ZipFileInfo *info);
-void DetectZipFileContents(struct zip *z, ZipFileInfo *info);
+void DetectZipFileContents(zip_t *z, ZipFileInfo *info);

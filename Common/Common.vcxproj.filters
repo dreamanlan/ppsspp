@@ -707,6 +707,24 @@
     <ClInclude Include="..\ext\stb\stb_rect_pack.h">
       <Filter>ext\stb</Filter>
     </ClInclude>
+    <ClInclude Include="..\ext\aemu_postoffice\client\delay_impl.h">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\aemu_postoffice\client\log_impl.h">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\aemu_postoffice\client\mutex_impl.h">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\aemu_postoffice\client\postoffice_client.h">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\aemu_postoffice\client\sock_impl.h">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\Notice.h">
+      <Filter>UI</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ABI.cpp" />
@@ -842,9 +860,6 @@
     </ClCompile>
     <ClCompile Include="Math\lin\vec3.cpp">
       <Filter>Math\lin</Filter>
-    </ClCompile>
-    <ClCompile Include="Math\fast\fast_matrix.c">
-      <Filter>Math\fast</Filter>
     </ClCompile>
     <ClCompile Include="Data\Format\RIFF.cpp">
       <Filter>Data\Format</Filter>
@@ -1314,6 +1329,24 @@
     <ClCompile Include="UI\TabHolder.cpp">
       <Filter>UI</Filter>
     </ClCompile>
+    <ClCompile Include="..\ext\aemu_postoffice\client\delay_impl_cpp.cpp">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\aemu_postoffice\client\log_impl_ppsspp.cpp">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\aemu_postoffice\client\mutex_impl_cpp.cpp">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\aemu_postoffice\client\postoffice.c">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\aemu_postoffice\client\sock_impl_windows.c">
+      <Filter>ext\aemu_postoffice</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\Notice.cpp">
+      <Filter>UI</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Crypto">
@@ -1447,6 +1480,9 @@
     </Filter>
     <Filter Include="ext\stb">
       <UniqueIdentifier>{8e8641a4-f1db-4609-acc4-66aec9ed8440}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ext\aemu_postoffice">
+      <UniqueIdentifier>{9352e975-d162-4110-b6a0-e8a4639d5b90}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>

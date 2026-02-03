@@ -136,15 +136,15 @@ static void SetPSPAnalog(int iInternalScreenRotation, int stick, float x, float 
 		break;
 	case ROTATION_LOCKED_VERTICAL:
 	{
-		float new_y = -x;
-		x = y;
+		float new_y = y;
+		x = -y;
 		y = new_y;
 		break;
 	}
 	case ROTATION_LOCKED_VERTICAL180:
 	{
-		float new_y = y = x;
-		x = -y;
+		float new_y = -x;
+		x = y;
 		y = new_y;
 		break;
 	}
@@ -209,7 +209,7 @@ bool EmuScreen::bootAllowStorage(const Path &filename) {
 }
 
 void EmuScreen::ProcessGameBoot(const Path &filename) {
-	if (!bootPending_) {
+	if (!bootPending_ && !readyToFinishBoot_) {
 		// Nothing to do.
 		return;
 	}
@@ -227,6 +227,13 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
 
 	if (Achievements::IsBlockingExecution()) {
 		// Keep waiting.
+		return;
+	}
+
+	if (readyToFinishBoot_) {
+		// Finish booting.
+		bootComplete();
+		readyToFinishBoot_ = false;
 		return;
 	}
 
@@ -263,10 +270,9 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
 			coreState = CORE_RUNNING_CPU;
 		}
 
-		bootComplete();
+		Achievements::Initialize();
 
-		// Reset views in case controls are in a different place.
-		RecreateViews();
+		readyToFinishBoot_ = true;
 		return;
 	case BootState::Off:
 		// Gotta start the boot process! Continue below.
@@ -376,7 +382,7 @@ void EmuScreen::bootComplete() {
 	System_Notify(SystemNotification::DISASSEMBLY);
 
 	NOTICE_LOG(Log::Boot, "Booted %s...", PSP_CoreParameter().fileToStart.c_str());
-	if (!Achievements::HardcoreModeActive()) {
+	if (!Achievements::HardcoreModeActive() && !bootIsReset_) {
 		// Don't auto-load savestates in hardcore mode.
 		AutoLoadSaveState();
 	}
@@ -428,6 +434,11 @@ void EmuScreen::bootComplete() {
 
 	std::string gameID = g_paramSFO.GetValueString("DISC_ID");
 	g_Config.TimeTracker().Start(gameID);
+
+	bootIsReset_ = false;
+
+	// Reset views in case controls are in a different place.
+	RecreateViews();
 }
 
 EmuScreen::~EmuScreen() {
@@ -444,6 +455,11 @@ EmuScreen::~EmuScreen() {
 	if (!bootPending_) {
 		Achievements::UnloadGame();
 		PSP_Shutdown(true);
+	}
+
+	// If achievements are disabled in the global config, let's shut it down here.
+	if (!g_Config.bAchievementsEnable) {
+		Achievements::Shutdown();
 	}
 
 	_dbg_assert_(coreState == CORE_POWERDOWN);
@@ -548,6 +564,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 
 		// Restart the boot process
 		bootPending_ = true;
+		bootIsReset_ = true;
 		RecreateViews();
 		_dbg_assert_(coreState == CORE_POWERDOWN);
 		if (!PSP_InitStart(PSP_CoreParameter())) {
@@ -588,6 +605,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 			screenManager()->cancelScreensAbove(this);
 
 			bootPending_ = true;
+			bootIsReset_ = false;
 			gamePath_ = newGamePath;
 		}
 	} else if (message == UIMessage::CONFIG_LOADED) {
@@ -953,7 +971,9 @@ void EmuScreen::ProcessVKey(VirtKey virtKey) {
 		break;
 
 	case VIRTKEY_TOGGLE_FULLSCREEN:
-		System_ToggleFullscreenState("");
+		// TODO: Limit to platforms that can support fullscreen.
+		g_Config.bFullScreen = !g_Config.bFullScreen;
+		System_ApplyFullscreenState();
 		break;
 
 	case VIRTKEY_TOGGLE_TOUCH_CONTROLS:
@@ -1450,10 +1470,10 @@ void EmuScreen::update() {
 	if (errorMessage_.size()) {
 		auto err = GetI18NCategory(I18NCat::ERRORS);
 		auto di = GetI18NCategory(I18NCat::DIALOG);
-		std::string errLoadingFile = gamePath_.ToVisualString() + "\n";
+		std::string errLoadingFile = gamePath_.ToVisualString() + "\n\n";
 		errLoadingFile.append(err->T("Error loading file", "Could not load game"));
-		errLoadingFile.append(" ");
-		errLoadingFile.append(err->T(errorMessage_.c_str()));
+		errLoadingFile.append("\n");
+		errLoadingFile.append(errorMessage_);
 
 		screenManager()->push(new PromptScreen(gamePath_, errLoadingFile, di->T("OK"), ""));
 		errorMessage_.clear();
@@ -1659,7 +1679,8 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 
 		Draw::BackendState state = draw->GetCurrentBackendState();
 		if (state.valid) {
-			_dbg_assert_msg_(state.passes >= 1, "skipB: %d sw: %d mode: %d back: %d tag: %s behi: %d", (int)skipBufferEffects, (int)g_Config.bSoftwareRendering, (int)mode, (int)g_Config.iGPUBackend, screenManager()->topScreen()->tag(), (int)g_Config.bRunBehindPauseMenu);
+			// The below can trigger when switching from skip-buffer-effects. We don't really care anymore...
+			// _dbg_assert_msg_(state.passes >= 1, "skipB: %d sw: %d mode: %d back: %d tag: %s behi: %d", (int)skipBufferEffects, (int)g_Config.bSoftwareRendering, (int)mode, (int)g_Config.iGPUBackend, screenManager()->topScreen()->tag(), (int)g_Config.bRunBehindPauseMenu);
 			// Workaround any remaining bugs like this.
 			if (state.passes == 0) {
 				draw->BindFramebufferAsRenderTarget(nullptr, { RPAction::CLEAR, RPAction::CLEAR, RPAction::CLEAR, }, "EmuScreen_SafeFallback");
@@ -1775,6 +1796,7 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 
 			// Restart the boot process
 			bootPending_ = true;
+			bootIsReset_ = true;
 			RecreateViews();
 			_dbg_assert_(coreState == CORE_POWERDOWN);
 			if (!PSP_InitStart(PSP_CoreParameter())) {

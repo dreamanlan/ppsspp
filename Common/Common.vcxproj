@@ -290,6 +290,11 @@
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="..\ext\aemu_postoffice\client\delay_impl.h" />
+    <ClInclude Include="..\ext\aemu_postoffice\client\log_impl.h" />
+    <ClInclude Include="..\ext\aemu_postoffice\client\mutex_impl.h" />
+    <ClInclude Include="..\ext\aemu_postoffice\client\postoffice_client.h" />
+    <ClInclude Include="..\ext\aemu_postoffice\client\sock_impl.h" />
     <ClInclude Include="..\ext\at3_standalone\at3_decoders.h" />
     <ClInclude Include="..\ext\at3_standalone\atrac.h" />
     <ClInclude Include="..\ext\at3_standalone\atrac3data.h" />
@@ -536,6 +541,7 @@
     <ClInclude Include="UI\AsyncImageFileView.h" />
     <ClInclude Include="UI\Context.h" />
     <ClInclude Include="UI\IconCache.h" />
+    <ClInclude Include="UI\Notice.h" />
     <ClInclude Include="UI\PopupScreens.h" />
     <ClInclude Include="UI\Root.h" />
     <ClInclude Include="UI\Screen.h" />
@@ -557,6 +563,11 @@
     <ClInclude Include="x64Emitter.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\ext\aemu_postoffice\client\delay_impl_cpp.cpp" />
+    <ClCompile Include="..\ext\aemu_postoffice\client\log_impl_ppsspp.cpp" />
+    <ClCompile Include="..\ext\aemu_postoffice\client\mutex_impl_cpp.cpp" />
+    <ClCompile Include="..\ext\aemu_postoffice\client\postoffice.c" />
+    <ClCompile Include="..\ext\aemu_postoffice\client\sock_impl_windows.c" />
     <ClCompile Include="..\ext\at3_standalone\atrac.cpp" />
     <ClCompile Include="..\ext\at3_standalone\atrac3.cpp" />
     <ClCompile Include="..\ext\at3_standalone\atrac3plus.cpp" />
@@ -907,7 +918,6 @@
     <ClCompile Include="LoongArch64Emitter.cpp" />
     <ClCompile Include="Math\curves.cpp" />
     <ClCompile Include="Math\expression_parser.cpp" />
-    <ClCompile Include="Math\fast\fast_matrix.c" />
     <ClCompile Include="Math\lin\matrix4x4.cpp" />
     <ClCompile Include="Math\lin\vec3.cpp" />
     <ClCompile Include="Math\math_util.cpp" />
@@ -982,6 +992,7 @@
     <ClCompile Include="UI\AsyncImageFileView.cpp" />
     <ClCompile Include="UI\Context.cpp" />
     <ClCompile Include="UI\IconCache.cpp" />
+    <ClCompile Include="UI\Notice.cpp" />
     <ClCompile Include="UI\PopupScreens.cpp" />
     <ClCompile Include="UI\Root.cpp" />
     <ClCompile Include="UI\Screen.cpp" />

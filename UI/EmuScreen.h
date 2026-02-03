@@ -97,6 +97,7 @@ private:
 	UI::Event OnDevMenu;
 	UI::Event OnChatMenu;
 	bool bootPending_ = true;
+	bool bootIsReset_ = false;
 	Path gamePath_;
 
 	bool quit_ = false;
@@ -156,6 +157,7 @@ private:
 	bool startDumping_ = false;
 #endif
 	bool autoLoadFailed_ = false;  // to prevent repeat reloads
+	bool readyToFinishBoot_ = false;
 };
 
 bool MustRunBehind();
