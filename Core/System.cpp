@@ -58,6 +58,7 @@
 #include "Core/HW/Display.h"
 #include "Core/Config.h"
 #include "Core/Core.h"
+#include "Core/Util/PathUtil.h"
 #include "Core/CoreTiming.h"
 #include "Core/CoreParameter.h"
 #include "Core/FileLoaders/RamCachingFileLoader.h"
@@ -251,17 +252,23 @@ static void ShowCompatWarnings(const Compatibility &compat) {
 	// UI changes are best done after PSP_InitStart.
 	if (compat.flags().RequireBufferedRendering && g_Config.bSkipBufferEffects && !g_Config.bSoftwareRendering) {
 		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
-		g_OSD.Show(OSDType::MESSAGE_WARNING, gr->T("BufferedRenderingRequired", "Warning: This game requires Rendering Mode to be set to Buffered."), 10.0f);
+		g_OSD.Show(OSDType::MESSAGE_WARNING, gr->T("BufferedRenderingRequired", "Warning: This game requires Rendering Mode to be set to Buffered."), 10.0f, "bufreq");
+	} else {
+		g_OSD.CancelById("bufreq");
 	}
 
 	if (compat.flags().RequireBlockTransfer && g_Config.iSkipGPUReadbackMode != (int)SkipGPUReadbackMode::NO_SKIP && !PSP_CoreParameter().compat.flags().ForceEnableGPUReadback) {
 		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
-		g_OSD.Show(OSDType::MESSAGE_WARNING, gr->T("BlockTransferRequired", "Warning: This game requires Skip GPU Readbacks be set to No."), 10.0f);
+		g_OSD.Show(OSDType::MESSAGE_WARNING, gr->T("BlockTransferRequired", "Warning: This game requires Skip GPU Readbacks be set to No."), 10.0f, "blockxfer");
+	} else {
+		g_OSD.CancelById("blockxfer");
 	}
 
 	if (compat.flags().RequireDefaultCPUClock && g_Config.iLockedCPUSpeed != 0) {
 		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
-		g_OSD.Show(OSDType::MESSAGE_WARNING, gr->T("DefaultCPUClockRequired", "Warning: This game requires the CPU clock to be set to default."), 10.0f);
+		g_OSD.Show(OSDType::MESSAGE_WARNING, gr->T("DefaultCPUClockRequired", "Warning: This game requires the CPU clock to be set to default."), 10.0f, "defaultclock");
+	} else {
+		g_OSD.CancelById("defaultclock");
 	}
 }
 
@@ -300,7 +307,7 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 			// TODO: Better would be to check that it was loaded successfully.
 			if (!File::Exists(g_CoreParameter.fileToStart / INDEX_FILENAME)) {
 				auto sc = GetI18NCategory(I18NCat::SCREEN);
-				g_OSD.Show(OSDType::MESSAGE_WARNING, sc->T("ExtractedIsoWarning", "Extracted ISOs often don't work.\nPlay the ISO file directly."), g_CoreParameter.fileToStart.ToVisualString(), 7.0f);
+				g_OSD.Show(OSDType::MESSAGE_WARNING, sc->T("ExtractedIsoWarning", "Extracted ISOs often don't work.\nPlay the ISO file directly."), GetFriendlyPath(g_CoreParameter.fileToStart), 7.0f);
 			} else {
 				INFO_LOG(Log::Loader, "Extracted ISO loaded without warning - %s is present.", INDEX_FILENAME.c_str());
 			}
@@ -396,22 +403,13 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 	if ((g_logManager.GetOutputsEnabled() & LogOutput::File) && !g_logManager.GetLogFilePath().empty()) {
 		auto dev = GetI18NCategory(I18NCat::DEVELOPER);
 
-		std::string logPath = g_logManager.GetLogFilePath().ToString();
-
-		// TODO: Really need a cleaner way to make clickable path notifications.
-		char *path = new char[logPath.size() + 1];
-		strcpy(path, logPath.data());
+		Path logPath = g_logManager.GetLogFilePath();
 
 		g_OSD.Show(OSDType::MESSAGE_INFO, ApplySafeSubstitutions("%1: %2", dev->T("Log to file"), g_logManager.GetLogFilePath().ToVisualString()), 0.0f, "log_to_file");
 		if (System_GetPropertyBool(SYSPROP_CAN_SHOW_FILE)) {
-			g_OSD.SetClickCallback("log_to_file", [](bool clicked, void *userdata) {
-				char *path = (char *)userdata;
-				if (clicked) {
-					System_ShowFileInFolder(Path(path));
-				} else {
-					delete[] path;
-				}
-			}, path);
+			g_OSD.SetClickCallback("log_to_file", [logPath]() {
+				System_ShowFileInFolder(logPath);
+			});
 		}
 	}
 
@@ -830,21 +828,11 @@ void DumpFileIfEnabled(const u8 *dataPtr, const u32 length, std::string_view nam
 	if (File::Exists(fullPath)) {
 		INFO_LOG(Log::sceModule, "%s already exists for this game, skipping dump.", filenameToDumpTo.c_str());
 
-		char *path = new char[strlen(fullPath.c_str()) + 1];
-		strcpy(path, fullPath.c_str());
-
-		g_OSD.Show(OSDType::MESSAGE_INFO, titleStr, fullPath.ToVisualString(), 5.0f);
+		g_OSD.Show(OSDType::MESSAGE_INFO, titleStr, fullPath.ToVisualString(), 5.0f, "file_dumped");
 		if (System_GetPropertyBool(SYSPROP_CAN_SHOW_FILE)) {
-			g_OSD.SetClickCallback("file_dumped", [](bool clicked, void *userdata) {
-				char *path = (char *)userdata;
-				if (clicked) {
-					System_ShowFileInFolder(Path(path));
-				} else {
-					delete[] path;
-				}
-			}, path);
-		} else {
-			delete[] path;
+			g_OSD.SetClickCallback("file_dumped", [fullPath]() {
+				System_ShowFileInFolder(fullPath);
+			});
 		}
 		return;
 	}
@@ -870,18 +858,11 @@ void DumpFileIfEnabled(const u8 *dataPtr, const u32 length, std::string_view nam
 
 	INFO_LOG(Log::sceModule, "Successfully wrote %s to %s", DumpFileTypeToString(type), fullPath.ToVisualString().c_str());
 
-	char *path = new char[strlen(fullPath.c_str()) + 1];
-	strcpy(path, fullPath.c_str());
-
-	// Re-suing the translation string here.
-	g_OSD.Show(OSDType::MESSAGE_SUCCESS, titleStr, fullPath.ToVisualString(), 5.0f);
+	// Re-using the translation string here.
+	g_OSD.Show(OSDType::MESSAGE_SUCCESS, titleStr, fullPath.ToVisualString(), 5.0f, "decr");
 	if (System_GetPropertyBool(SYSPROP_CAN_SHOW_FILE)) {
-		g_OSD.SetClickCallback("decr", [](bool clicked, void *userdata) {
-			char *path = (char *)userdata;
-			if (clicked) {
-				System_ShowFileInFolder(Path(path));
-			}
-			delete[] path;
-		}, path);
+		g_OSD.SetClickCallback("decr", [fullPath]() {
+			System_ShowFileInFolder(fullPath);
+		});
 	}
 }

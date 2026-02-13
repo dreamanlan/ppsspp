@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include "Common/Common.h"
 #include "Common/CommonTypes.h"
 #include "Common/Log.h"
 #include "Core/MIPS/MIPS.h"
@@ -27,8 +28,7 @@ class JitBlockCache;
 
 namespace MIPSComp {
 
-	enum CompileDelaySlotFlags
-	{
+	enum CompileDelaySlotFlags {
 		// Easy, nothing extra.
 		DELAYSLOT_NICE = 0,
 		// Flush registers after delay slot.
@@ -39,18 +39,15 @@ namespace MIPSComp {
 		DELAYSLOT_SAFE_FLUSH = DELAYSLOT_FLUSH | DELAYSLOT_SAFE,
 	};
 
-	struct JitState
-	{
-		enum PrefixState
-		{
+	struct JitState {
+		enum PrefixState {
 			PREFIX_UNKNOWN = 0x00,
 			PREFIX_KNOWN = 0x01,
 			PREFIX_DIRTY = 0x10,
 			PREFIX_KNOWN_DIRTY = 0x11,
 		};
 
-		enum AfterOp
-		{
+		enum AfterOp {
 			AFTER_NONE = 0x00,
 			AFTER_CORE_STATE = 0x01,
 		};
@@ -83,6 +80,8 @@ namespace MIPSComp {
 		PrefixState prefixSFlag = PREFIX_UNKNOWN;
 		PrefixState prefixTFlag = PREFIX_UNKNOWN;
 		PrefixState prefixDFlag = PREFIX_UNKNOWN;
+
+		void Begin(JitBlock *block);
 
 		void PrefixStart() {
 			if (startDefaultPrefix) {
@@ -179,7 +178,9 @@ namespace MIPSComp {
 		}
 	};
 
-	enum class JitDisable {
+	enum class JitDisable : u32 {
+		DEFAULT = 0,
+
 		ALU = 0x0001,
 		ALU_IMM = 0x0002,
 		ALU_BIT = 0x0004,
@@ -212,13 +213,14 @@ namespace MIPSComp {
 
 		ALL_FLAGS = 0x3FFFFFFF,
 	};
+	ENUM_CLASS_BITOPS(JitDisable);
 
 	struct JitOptions {
 		JitOptions();
 
 		bool Disabled(JitDisable bit);
 
-		uint32_t disableFlags;
+		JitDisable disableFlags;
 
 		// x86
 		bool enableVFPUSIMD;

@@ -178,7 +178,7 @@ namespace MainWindow {
 
 	static bool trapMouse = true; // Handles some special cases(alt+tab, win menu) when game is running and mouse is confined
 
-	static constexpr wchar_t *szWindowClass = L"PPSSPPWnd";
+	static constexpr const wchar_t *szWindowClass = L"PPSSPPWnd";
 
 	static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
@@ -503,11 +503,22 @@ namespace MainWindow {
 		g_hMenu = GetMenu(hwndMain);
 
 		WINDOWPLACEMENT placement = {sizeof(WINDOWPLACEMENT)};
+		if ((g_Config.iWindowX == -1 && g_Config.iWindowY == -1) || g_Config.iWindowWidth < 20 || g_Config.iWindowHeight < 20) {
+			RECT rc = DetermineDefaultWindowRectangle();
+			// Should be a first boot, or just bad parameters. Reset.
+			g_Config.iWindowSizeState = (int)WindowSizeState::Normal;
+			g_Config.iWindowX = rc.left;
+			g_Config.iWindowY = rc.top;
+			g_Config.iWindowWidth = rc.right - rc.left;
+			g_Config.iWindowHeight = rc.bottom - rc.top;
+		}
+
 		placement.showCmd = WindowSizeStateToShowCmd((WindowSizeState)g_Config.iWindowSizeState);
 		placement.rcNormalPosition.left = g_Config.iWindowX;
 		placement.rcNormalPosition.top = g_Config.iWindowY;
 		placement.rcNormalPosition.right = g_Config.iWindowX + g_Config.iWindowWidth;
 		placement.rcNormalPosition.bottom = g_Config.iWindowY + g_Config.iWindowHeight;
+
 		SetWindowPlacement(hwndMain, &placement);
 
 		// SetWindowLong(hwndMain, GWL_EXSTYLE, WS_EX_APPWINDOW);

@@ -99,7 +99,14 @@ void InstallZipScreen::CreateSettingsViews(UI::ViewGroup *parent) {
 	default:
 		// Nothing to do!
 		break;
-	}	
+	}
+
+	if (System_GetPropertyBool(SYSPROP_CAN_SHOW_FILE)) {
+		parent->Add(new Spacer(12.0f));
+		parent->Add(new Choice(di->T("Show in folder")))->OnClick.Add([this](UI::EventParams &) {
+			System_ShowFileInFolder(zipPath_);
+		});
+	}
 
 	if (showDeleteCheckbox) {
 		parent->Add(new Spacer(12.0f));
@@ -168,8 +175,6 @@ void InstallZipScreen::CreateContentViews(UI::ViewGroup *parent) {
 		leftColumn->Add(new TextView(question));
 		leftColumn->Add(new TextView(shortFilename));
 
-		doneView_ = leftColumn->Add(new TextView(""));
-
 		showDeleteCheckbox = true;
 		break;
 	}
@@ -188,7 +193,6 @@ void InstallZipScreen::CreateContentViews(UI::ViewGroup *parent) {
 		destFolders_.push_back(savestateDir);
 
 		// TODO: Use the GameInfoCache to display data about the game if available.
-		doneView_ = leftColumn->Add(new TextView(""));
 		showDeleteCheckbox = true;
 		break;
 	}
@@ -230,21 +234,31 @@ void InstallZipScreen::CreateContentViews(UI::ViewGroup *parent) {
 			}
 		}
 
-		doneView_ = leftColumn->Add(new TextView(""));
 		showDeleteCheckbox = true;
 		break;
 	}
 	case ZipFileContents::FRAME_DUMP:
+		// Re-use an almost correct string, not worth it to add a new one
+		leftColumn->Add(new TextView(di->T("GE Frame Dumps")));
 		leftColumn->Add(new TextView(zipFileInfo_.contentName));
 		// It's a frame dump, add a play button!
 		break;
+	case ZipFileContents::EXTRACTED_GAME:
+		// We can do something smarter here later.
+		leftColumn->Add(new TextView(GetFriendlyPath(zipPath_)));
+		leftColumn->Add(new TextView(er->T("File format not supported")));
+		break;
 	case ZipFileContents::UNKNOWN:
+		leftColumn->Add(new TextView(GetFriendlyPath(zipPath_)));
 		leftColumn->Add(new TextView(iz->T("Zip file does not contain PSP software"), ALIGN_LEFT, false, new AnchorLayoutParams(10, 10, NONE, NONE)));
 		break;
 	default:
+		leftColumn->Add(new TextView(GetFriendlyPath(zipPath_)));
 		leftColumn->Add(new TextView(er->T("The file is not a valid zip file"), ALIGN_LEFT, false, new AnchorLayoutParams(10, 10, NONE, NONE)));
 		break;
 	}
+
+	doneView_ = leftColumn->Add(new TextView(""));
 
 	if (destFolders_.size() > 1) {
 		leftColumn->Add(new TextView(iz->T("Install into folder")));
@@ -255,7 +269,6 @@ void InstallZipScreen::CreateContentViews(UI::ViewGroup *parent) {
 		leftColumn->Add(new TextView(iz->T("Install into folder")));
 		leftColumn->Add(new TextView(GetFriendlyPath(destFolders_[0])))->SetAlign(FLAG_WRAP_TEXT);
 	}
-
 	if (overwrite) {
 		leftColumn->Add(new NoticeView(NoticeLevel::WARN, di->T("Confirm Overwrite"), ""));
 	}

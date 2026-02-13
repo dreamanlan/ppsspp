@@ -661,7 +661,7 @@ void __DisplayFlip(int cyclesLate) {
 			}
 		}
 		if (nextFrame) {
-			gpu->CopyDisplayToOutput(g_displayLayoutConfigCached, fbReallyDirty);
+			gpu->SetCurFramebufferDirty(fbReallyDirty);
 			if (fbReallyDirty) {
 				DisplayFireActualFlip();
 			}

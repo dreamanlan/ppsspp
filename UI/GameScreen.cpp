@@ -187,14 +187,14 @@ void GameScreen::CreateContentViews(UI::ViewGroup *parent) {
 	if (portrait) {
 		mainGameInfo = new LinearLayout(ORIENT_VERTICAL);
 		leftColumn->Add(new Spacer(8.0f));
-		if (fileTypeHasIcon) {
+		if (fileTypeHasIcon && !(info_->icon.dataLoaded && info_->icon.data.empty())) {
 			leftColumn->Add(new GameImageView(gamePath_, GameInfoFlags::ICON, 2.0f, new LinearLayoutParams(UI::Margins(0))));
 		}
 		leftColumn->Add(mainGameInfo);
 	} else {
 		mainGameInfo = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(1.0f));
 		ViewGroup *badgeHolder = new LinearLayout(ORIENT_HORIZONTAL);
-		if (fileTypeHasIcon) {
+		if (fileTypeHasIcon && !(info_->icon.dataLoaded && info_->icon.data.empty())) {
 			badgeHolder->Add(new GameImageView(gamePath_, GameInfoFlags::ICON, 2.0f, new LinearLayoutParams(144 * 2, 80 * 2, UI::Margins(0))));
 		}
 		badgeHolder->Add(mainGameInfo);
@@ -202,17 +202,16 @@ void GameScreen::CreateContentViews(UI::ViewGroup *parent) {
 	}
 	mainGameInfo->SetSpacing(3.0f);
 
-	GameDBInfo dbInfo;
 	std::vector<GameDBInfo> dbInfos;
 	const bool inGameDB = g_gameDB.GetGameInfos(info_->id_version, &dbInfos);
+
+	// Show the game ID title below the icon. The top title will be from the DB.
+	std::string title = info_->GetTitle();
 
 	if (knownFlags_ & GameInfoFlags::PARAM_SFO) {
 		std::string regionID = ReplaceAll(info_->id_version, "_", " v");
 		if (!regionID.empty()) {
 			regionID += ": ";
-
-			// Show the game ID title below the icon. The top title will be from the DB.
-			std::string title = info_->GetTitle();
 
 			TextView *tvTitle = mainGameInfo->Add(new TextView(title, ALIGN_LEFT | FLAG_WRAP_TEXT, false, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
 			tvTitle->SetShadow(true);
@@ -278,7 +277,7 @@ void GameScreen::CreateContentViews(UI::ViewGroup *parent) {
 
 		auto di = GetI18NCategory(I18NCat::DIALOG);
 		Choice *btnResetTime = timeHoriz->Add(new Choice(di->T("Reset"), new LinearLayoutParams(0.0f, Gravity::G_VCENTER)));
-		btnResetTime->OnClick.Add([this, ga, timeStr](UI::EventParams &) {
+		btnResetTime->OnClick.Add([this, ga, timeStr, title](UI::EventParams &) {
 			auto di = GetI18NCategory(I18NCat::DIALOG);
 			auto gta = GetI18NCategory(I18NCat::GAME);
 			std::string id = info_->id;
@@ -286,12 +285,12 @@ void GameScreen::CreateContentViews(UI::ViewGroup *parent) {
 			questionText += "\n";
 			questionText += timeStr;
 			screenManager()->push(
-				new PromptScreen(gamePath_, questionText, di->T("Reset"), di->T("Cancel"), [id](bool yes) {
-				if (yes) {
+				new UI::MessagePopupScreen(title, questionText, di->T("Reset"), di->T("Cancel"), [this, id](bool reset) {
+				if (reset) {
 					g_Config.TimeTracker().Reset(id);
+					RecreateViews();
 				}
 			}));
-			RecreateViews();
 		});
 	}
 
@@ -482,10 +481,18 @@ void GameScreen::OnCreateConfig(UI::EventParams &e) {
 }
 
 std::string_view GameScreen::GetTitle() const {
-	if (knownFlags_ & GameInfoFlags::PARAM_SFO) {
-		titleCache_ = info_->GetDBTitle();
+	if (!info_->Ready(GameInfoFlags::PARAM_SFO)) {
+		return "";
 	}
 
+	// Don't look up homebrew in the database, sometimes they take IDs from games.
+	if (info_->fileType != IdentifiedFileType::PSP_PBP_DIRECTORY) {
+		if (knownFlags_ & GameInfoFlags::PARAM_SFO) {
+			titleCache_ = info_->GetDBTitle();
+		}
+	} else {
+		titleCache_ = info_->GetTitle();
+	}
 	return titleCache_;
 }
 

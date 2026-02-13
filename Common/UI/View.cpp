@@ -68,7 +68,6 @@ void Event::Add(std::function<void(EventParams&)> func) {
 	func_ = func;
 }
 
-// Call this from input thread or whatever, it doesn't matter
 void Event::Trigger(EventParams &e) {
 	if (!func_) {
 		return;
@@ -76,7 +75,6 @@ void Event::Trigger(EventParams &e) {
 	EventTriggered(this, e);
 }
 
-// Call this from UI thread
 void Event::Dispatch(EventParams &e) {
 	if (func_)
 		func_(e);
@@ -570,7 +568,7 @@ void Choice::Draw(UIContext &dc) {
 	}
 
 	if (selected_) {
-		dc.Draw()->DrawImage(dc.GetTheme().checkOn, bounds_.x2() - 40, bounds_.centerY(), 1.0f, style.fgColor, ALIGN_CENTER);
+		dc.Draw()->DrawImage(ImageID("I_CHECKMARK"), bounds_.x2() - 30, bounds_.centerY(), 1.0f, style.fgColor, ALIGN_CENTER);
 	}
 }
 
@@ -1029,8 +1027,8 @@ void RadioButton::Draw(UIContext &dc) {
 	}
 }
 
-ImageView::ImageView(ImageID atlasImage, const std::string &text, ImageSizeMode sizeMode, LayoutParams *layoutParams)
-	: InertView(layoutParams), text_(text), atlasImage_(atlasImage), sizeMode_(sizeMode) {}
+ImageView::ImageView(ImageID atlasImage, const std::string &text, LayoutParams *layoutParams)
+	: InertView(layoutParams), text_(text), atlasImage_(atlasImage) {}
 
 void ImageView::GetContentDimensions(const UIContext &dc, float &w, float &h) const {
 	dc.Draw()->GetAtlas()->measureImage(atlasImage_, &w, &h);

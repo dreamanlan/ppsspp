@@ -76,8 +76,6 @@ private:
 	void OnChangeQuickChat3(UI::EventParams &e);
 	void OnChangeQuickChat4(UI::EventParams &e);
 	void OnChangeBackground(UI::EventParams &e);
-	void OnFullscreenChange(UI::EventParams &e);
-	void OnFullscreenMultiChange(UI::EventParams &e);
 	void OnRestoreDefaultSettings(UI::EventParams &e);
 	void OnRenderingBackend(UI::EventParams &e);
 	void OnRenderingDevice(UI::EventParams &e);
@@ -183,7 +181,7 @@ public:
 	const char *tag() const override { return "GestureMapping"; }
 	bool ShowSearchControls() const override { return false; }
 protected:
-	void CreateGestureTab(UI::LinearLayout *parent);
+	void CreateGestureTab(UI::LinearLayout *parent, int zoneIndex, bool portrait);
 };
 
 class RestoreSettingsScreen : public UI::PopupScreen {

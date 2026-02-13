@@ -124,7 +124,9 @@ public:
 	uint32_t GetAddrTranslation() override;
 
 	virtual void SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) = 0;
-	virtual void CopyDisplayToOutput(const DisplayLayoutConfig &config, bool reallyDirty) = 0;
+	virtual void SetCurFramebufferDirty(bool dirty) = 0;
+	virtual void PrepareCopyDisplayToOutput(const DisplayLayoutConfig &config) = 0;
+	virtual void CopyDisplayToOutput(const DisplayLayoutConfig &config) = 0;
 	virtual bool PresentedThisFrame() const = 0;
 
 	// Invalidate any cached content sourced from the specified range.
@@ -330,7 +332,7 @@ protected:
 	bool flushOnParams_ = true;
 
 	GraphicsContext *gfxCtx_;
-	Draw::DrawContext *draw_;
+	Draw::DrawContext *draw_ = nullptr;
 
 	typedef std::list<int> DisplayListQueue;
 

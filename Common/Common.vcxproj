@@ -110,7 +110,6 @@
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <FloatingPointModel>Precise</FloatingPointModel>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <MinimalRebuild>false</MinimalRebuild>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -138,7 +137,6 @@
       <FloatingPointModel>Precise</FloatingPointModel>
       <OmitFramePointers>false</OmitFramePointers>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <MinimalRebuild>false</MinimalRebuild>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -166,7 +164,6 @@
       <FloatingPointModel>Precise</FloatingPointModel>
       <OmitFramePointers>false</OmitFramePointers>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <MinimalRebuild>false</MinimalRebuild>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -198,7 +195,6 @@
       <AdditionalIncludeDirectories>../ext/OpenXR-SDK/include;../ext/glew;../ext/snappy;../ext/glslang;../ext/libpng17;../ext;../ext/zlib;..;../ext/zstd/lib</AdditionalIncludeDirectories>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <LanguageStandard>stdcpp17</LanguageStandard>
@@ -233,7 +229,6 @@
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <OmitFramePointers>false</OmitFramePointers>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <StringPooling>true</StringPooling>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
@@ -269,7 +264,6 @@
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <OmitFramePointers>false</OmitFramePointers>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <StringPooling>true</StringPooling>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
@@ -294,6 +288,7 @@
     <ClInclude Include="..\ext\aemu_postoffice\client\log_impl.h" />
     <ClInclude Include="..\ext\aemu_postoffice\client\mutex_impl.h" />
     <ClInclude Include="..\ext\aemu_postoffice\client\postoffice_client.h" />
+    <ClInclude Include="..\ext\aemu_postoffice\client\postoffice_mem.h" />
     <ClInclude Include="..\ext\aemu_postoffice\client\sock_impl.h" />
     <ClInclude Include="..\ext\at3_standalone\at3_decoders.h" />
     <ClInclude Include="..\ext\at3_standalone\atrac.h" />
@@ -567,6 +562,7 @@
     <ClCompile Include="..\ext\aemu_postoffice\client\log_impl_ppsspp.cpp" />
     <ClCompile Include="..\ext\aemu_postoffice\client\mutex_impl_cpp.cpp" />
     <ClCompile Include="..\ext\aemu_postoffice\client\postoffice.c" />
+    <ClCompile Include="..\ext\aemu_postoffice\client\postoffice_mem_stdc.c" />
     <ClCompile Include="..\ext\aemu_postoffice\client\sock_impl_windows.c" />
     <ClCompile Include="..\ext\at3_standalone\atrac.cpp" />
     <ClCompile Include="..\ext\at3_standalone\atrac3.cpp" />

@@ -43,6 +43,7 @@ static float g_gamepadOpacity;
 static double g_lastTouch;
 
 MultiTouchButton *primaryButton[TOUCH_MAX_POINTERS]{};
+std::set<int> g_activeGesturePointers;
 
 void GamepadUpdateOpacity(float force) {
 	if (force >= 0.0f) {
@@ -73,8 +74,12 @@ void GamepadUpdateOpacity(float force) {
 	g_gamepadOpacity = opacity * multiplier;
 }
 
-void GamepadTouch(bool reset) {
-	g_lastTouch = reset ? 0.0f : time_now_d();
+void GamepadResetTouch() {
+	g_lastTouch = 0.0f;
+}
+
+void GamepadTouch() {
+	g_lastTouch = time_now_d();
 }
 
 float GamepadGetOpacity() {
@@ -85,11 +90,10 @@ static u32 GetButtonColor() {
 	return g_Config.iTouchButtonStyle != 0 ? 0xFFFFFF : 0xc0b080;
 }
 
-GamepadView::GamepadView(const char *key, UI::LayoutParams *layoutParams) : UI::View(layoutParams), key_(key) {}
+GamepadComponent::GamepadComponent(std::string_view key, UI::LayoutParams *layoutParams) : UI::View(layoutParams), key_(key) {}
 
-std::string GamepadView::DescribeText() const {
-	auto co = GetI18NCategory(I18NCat::CONTROLS);
-	return std::string(co->T(key_));
+std::string GamepadComponent::DescribeText() const {
+	return key_;
 }
 
 void MultiTouchButton::GetContentDimensions(const UIContext &dc, float &w, float &h) const {
@@ -110,7 +114,7 @@ bool MultiTouchButton::CanGlide() const {
 bool MultiTouchButton::Touch(const TouchInput &input) {
 	_dbg_assert_(input.id >= 0 && input.id < TOUCH_MAX_POINTERS);
 
-	bool retval = GamepadView::Touch(input);
+	bool retval = GamepadComponent::Touch(input);
 	if ((input.flags & TouchInputFlags::DOWN) && bounds_.Contains(input.x, input.y)) {
 		pointerDownMask_ |= 1 << input.id;
 		usedPointerMask |= 1 << input.id;
@@ -119,11 +123,18 @@ bool MultiTouchButton::Touch(const TouchInput &input) {
 	}
 	if (input.flags & TouchInputFlags::MOVE) {
 		if (!(input.flags & TouchInputFlags::MOUSE) || input.buttons) {
+			bool ignorePress = false;
+			if (g_activeGesturePointers.count(input.id)) {
+				// Don't start a button touch if dragging and this pointer is already being used for a gesture.
+				ignorePress = true;
+			}
 			if (bounds_.Contains(input.x, input.y) && !(analogPointerMask & (1 << input.id))) {
-				if (CanGlide() && !primaryButton[input.id]) {
-					primaryButton[input.id] = this;
+				if (!ignorePress) {
+					if (CanGlide() && !primaryButton[input.id]) {
+						primaryButton[input.id] = this;
+					}
+					pointerDownMask_ |= 1 << input.id;
 				}
-				pointerDownMask_ |= 1 << input.id;
 			} else if (primaryButton[input.id] != this) {
 				pointerDownMask_ &= ~(1 << input.id);
 			}
@@ -207,13 +218,24 @@ bool PSPButton::Touch(const TouchInput &input) {
 	return retval;
 }
 
-bool CustomButton::IsDown() {
+bool CustomButton::IsDown() const {
 	return (toggle_ && on_) || (!toggle_ && pointerDownMask_ != 0);
+}
+
+bool CustomButton::IsDownForFadeoutCheck() const {
+	// This check is due to a stupid mistake, see the header.
+#ifdef MOBILE_DEVICE
+	constexpr int bitNumber = 36;
+#else
+	constexpr int bitNumber = 38;
+#endif
+	const bool down = IsDown() && !(pspButtonBit_ & (1ULL << bitNumber));  // VIRTKEY_TOGGLE_TOUCH_CONTROLS from g_customKeyList
+	return down;
 }
 
 void CustomButton::GetContentDimensions(const UIContext &dc, float &w, float &h) const {
 	MultiTouchButton::GetContentDimensions(dc, w, h);
-	if (invertedContextDimension_) {
+	if (invertedContentDimension_) {
 		float tmp = w;
 		w = h;
 		h = tmp;
@@ -281,12 +303,12 @@ void CustomButton::Update() {
 	}
 }
 
-bool PSPButton::IsDown() {
+bool PSPButton::IsDown() const {
 	return (__CtrlPeekButtonsVisual() & pspButtonBit_) != 0;
 }
 
-PSPDpad::PSPDpad(ImageID arrowIndex, const char *key, ImageID arrowDownIndex, ImageID overlayIndex, float scale, float spacing, UI::LayoutParams *layoutParams)
-	: GamepadView(key, layoutParams), arrowIndex_(arrowIndex), arrowDownIndex_(arrowDownIndex), overlayIndex_(overlayIndex),
+PSPDpad::PSPDpad(ImageID arrowIndex, std::string_view key, ImageID arrowDownIndex, ImageID overlayIndex, float scale, float spacing, UI::LayoutParams *layoutParams)
+	: GamepadComponent(key, layoutParams), arrowIndex_(arrowIndex), arrowDownIndex_(arrowDownIndex), overlayIndex_(overlayIndex),
 		scale_(scale), spacing_(spacing), dragPointerId_(-1), down_(0) {
 }
 
@@ -302,22 +324,29 @@ void PSPDpad::GetContentDimensions(const UIContext &dc, float &w, float &h) cons
 }
 
 bool PSPDpad::Touch(const TouchInput &input) {
-	bool retval = GamepadView::Touch(input);
+	bool retval = GamepadComponent::Touch(input);
 
 	if (input.flags & TouchInputFlags::DOWN) {
 		if (dragPointerId_ == -1 && bounds_.Contains(input.x, input.y)) {
 			dragPointerId_ = input.id;
 			usedPointerMask |= 1 << input.id;
-			ProcessTouch(input.x, input.y, true);
+			ProcessTouch(input.x, input.y, true, false);
 		}
 	}
 	if (input.flags & TouchInputFlags::MOVE) {
 		if (!(input.flags & TouchInputFlags::MOUSE) || input.buttons) {
+			bool ignorePress = false;
+			if (g_activeGesturePointers.count(input.id)) {
+				// Don't start a dpad touch if dragging and this pointer is already being used for a gesture.
+				ignorePress = true;
+			}
+
 			if (dragPointerId_ == -1 && bounds_.Contains(input.x, input.y) && !(analogPointerMask & (1 << input.id))) {
 				dragPointerId_ = input.id;
 			}
+
 			if (input.id == dragPointerId_) {
-				ProcessTouch(input.x, input.y, true);
+				ProcessTouch(input.x, input.y, true, ignorePress);
 			}
 		}
 	}
@@ -325,13 +354,13 @@ bool PSPDpad::Touch(const TouchInput &input) {
 		if (input.id == dragPointerId_) {
 			dragPointerId_ = -1;
 			usedPointerMask &= ~(1 << input.id);
-			ProcessTouch(input.x, input.y, false);
+			ProcessTouch(input.x, input.y, false, false);
 		}
 	}
 	return retval;
 }
 
-void PSPDpad::ProcessTouch(float x, float y, bool down) {
+void PSPDpad::ProcessTouch(float x, float y, bool down, bool ignorePress) {
 	float stick_size = bounds_.w;
 	float inv_stick_size = 1.0f / stick_size;
 	const float deadzone = 0.05f;
@@ -377,7 +406,7 @@ void PSPDpad::ProcessTouch(float x, float y, bool down) {
 	bool vibrate = false;
 	static const int dir[4] = { CTRL_RIGHT, CTRL_DOWN, CTRL_LEFT, CTRL_UP };
 	for (int i = 0; i < 4; i++) {
-		if (pressed & dir[i]) {
+		if (!ignorePress && (pressed & dir[i])) {
 			vibrate = true;
 			__CtrlUpdateButtons(dir[i], 0);
 		}
@@ -429,8 +458,8 @@ void PSPDpad::Draw(UIContext &dc) {
 	}
 }
 
-PSPStick::PSPStick(ImageID bgImg, const char *key, ImageID stickImg, ImageID stickDownImg, int stick, float scale, UI::LayoutParams *layoutParams)
-	: GamepadView(key, layoutParams), dragPointerId_(-1), bgImg_(bgImg), stickImageIndex_(stickImg), stickDownImg_(stickDownImg), stick_(stick), scale_(scale), centerX_(-1), centerY_(-1) {
+PSPStick::PSPStick(ImageID bgImg, std::string_view key, ImageID stickImg, ImageID stickDownImg, int stick, float scale, UI::LayoutParams *layoutParams)
+	: GamepadComponent(key, layoutParams), bgImg_(bgImg), stickImageIndex_(stickImg), stickDownImg_(stickDownImg), stick_(stick), scale_(scale) {
 	stick_size_ = 50;
 }
 
@@ -474,7 +503,7 @@ void PSPStick::Draw(UIContext &dc) {
 }
 
 bool PSPStick::Touch(const TouchInput &input) {
-	bool retval = GamepadView::Touch(input);
+	bool retval = GamepadComponent::Touch(input);
 	if (input.flags & TouchInputFlags::RELEASE_ALL) {
 		dragPointerId_ = -1;
 		centerX_ = bounds_.centerX();
@@ -585,7 +614,7 @@ void PSPCustomStick::Draw(UIContext &dc) {
 }
 
 bool PSPCustomStick::Touch(const TouchInput &input) {
-	bool retval = GamepadView::Touch(input);
+	bool retval = GamepadComponent::Touch(input);
 	if (input.flags & TouchInputFlags::RELEASE_ALL) {
 		dragPointerId_ = -1;
 		centerX_ = bounds_.centerX();
@@ -900,11 +929,17 @@ void InitPadLayout(TouchControlConfig *config, DeviceOrientation orientation, fl
 
 UI::ViewGroup *CreatePadLayout(const TouchControlConfig &config, float xres, float yres, bool *pause, ControlMapper *controlMapper) {
 	using namespace UI;
+	return new GamepadEmuView(config, xres, yres, pause, controlMapper, new UI::LayoutParams(UI::FILL_PARENT, UI::FILL_PARENT));
+}
 
-	AnchorLayout *root = new AnchorLayout(new LayoutParams(FILL_PARENT, FILL_PARENT));
+GamepadEmuView::GamepadEmuView(const TouchControlConfig &config, float xres, float yres, bool *pause, ControlMapper *controlMapper, UI::LayoutParams *layoutParams)
+	: UI::AnchorLayout(layoutParams)
+{
 	if (!g_Config.bShowTouchControls) {
-		return root;
+		return;
 	}
+
+	using namespace UI;
 
 	struct ButtonOffset {
 		float x;
@@ -914,7 +949,7 @@ UI::ViewGroup *CreatePadLayout(const TouchControlConfig &config, float xres, flo
 		return new AnchorLayoutParams(touch.x * xres + off.x, touch.y * yres + off.y, NONE, NONE, Centering::Both);
 	};
 
-	// Space between the PSP buttons (traingle, circle, square and cross)
+	// Space between the PSP buttons (triangle, circle, square and cross)
 	const float actionButtonSpacing = config.fActionButtonSpacing * baseActionButtonSpacing;
 	// Position of the circle button (the PSP circle button).  It is the farthest to the right.
 	ButtonOffset circleOffset{ actionButtonSpacing, 0.0f };
@@ -930,26 +965,26 @@ UI::ViewGroup *CreatePadLayout(const TouchControlConfig &config, float xres, flo
 	const ImageID stickImage = g_Config.iTouchButtonStyle ? ImageID("I_STICK_LINE") : ImageID("I_STICK");
 	const ImageID stickBg = g_Config.iTouchButtonStyle ? ImageID("I_STICK_BG_LINE") : ImageID("I_STICK_BG");
 
-	auto addPSPButton = [=](int buttonBit, const char *key, ImageID bgImg, ImageID bgDownImg, ImageID img, const ConfigTouchPos &touch, ButtonOffset off = { 0, 0 }) -> PSPButton * {
+	auto addPSPButton = [this, buttonLayoutParams](int buttonBit, const char *key, ImageID bgImg, ImageID bgDownImg, ImageID img, const ConfigTouchPos &touch, ButtonOffset off = { 0, 0 }) -> PSPButton * {
 		if (touch.show) {
-			return root->Add(new PSPButton(buttonBit, key, bgImg, bgDownImg, img, touch.scale, buttonLayoutParams(touch, off)));
+			return Add(new PSPButton(buttonBit, key, bgImg, bgDownImg, img, touch.scale, buttonLayoutParams(touch, off)));
 		}
 		return nullptr;
 	};
-	auto addBoolButton = [=](bool *value, const char *key, ImageID bgImg, ImageID bgDownImg, ImageID img, const ConfigTouchPos &touch) -> BoolButton * {
+	auto addBoolButton = [this, buttonLayoutParams](bool *value, const char *key, ImageID bgImg, ImageID bgDownImg, ImageID img, const ConfigTouchPos &touch) -> BoolButton * {
 		if (touch.show) {
-			return root->Add(new BoolButton(value, key, bgImg, bgDownImg, img, touch.scale, buttonLayoutParams(touch)));
+			return Add(new BoolButton(value, key, bgImg, bgDownImg, img, touch.scale, buttonLayoutParams(touch)));
 		}
 		return nullptr;
 	};
-	auto addCustomButton = [=](const ConfigCustomButton& cfg, const char *key, const ConfigTouchPos &touch) -> CustomButton * {
+	auto addCustomButton = [this, buttonLayoutParams, controlMapper](const ConfigCustomButton& cfg, const char *key, const ConfigTouchPos &touch) -> CustomButton * {
 		using namespace CustomKeyData;
 		if (touch.show) {
 			_dbg_assert_(cfg.shape < ARRAY_SIZE(customKeyShapes));
 			_dbg_assert_(cfg.image < ARRAY_SIZE(customKeyImages));
 
 			// Note: cfg.shape and cfg.image are bounds-checked elsewhere.
-			auto aux = root->Add(new CustomButton(cfg.key, key, cfg.toggle, cfg.repeat, controlMapper,
+			auto aux = Add(new CustomButton(cfg.key, key, cfg.toggle, cfg.repeat, controlMapper,
 					g_Config.iTouchButtonStyle == 0 ? customKeyShapes[cfg.shape].i : customKeyShapes[cfg.shape].l, customKeyShapes[cfg.shape].i,
 					customKeyImages[cfg.image].i, touch.scale, customKeyShapes[cfg.shape].d, buttonLayoutParams(touch)));
 			aux->SetAngle(customKeyImages[cfg.image].r, customKeyShapes[cfg.shape].r);
@@ -996,17 +1031,17 @@ UI::ViewGroup *CreatePadLayout(const TouchControlConfig &config, float xres, flo
 
 	if (config.touchDpad.show) {
 		const ImageID dirImage = g_Config.iTouchButtonStyle ? ImageID("I_DIR_LINE") : ImageID("I_DIR");
-		root->Add(new PSPDpad(dirImage, "D-pad", ImageID("I_DIR"), ImageID("I_ARROW"), config.touchDpad.scale, config.fDpadSpacing, buttonLayoutParams(config.touchDpad)));
+		Add(new PSPDpad(dirImage, "D-pad", ImageID("I_DIR"), ImageID("I_ARROW"), config.touchDpad.scale, config.fDpadSpacing, buttonLayoutParams(config.touchDpad)));
 	}
 
 	if (config.touchAnalogStick.show)
-		root->Add(new PSPStick(stickBg, "Left analog stick", stickImage, ImageID("I_STICK"), 0, config.touchAnalogStick.scale, buttonLayoutParams(config.touchAnalogStick)));
+		Add(new PSPStick(stickBg, "Left analog stick", stickImage, ImageID("I_STICK"), 0, config.touchAnalogStick.scale, buttonLayoutParams(config.touchAnalogStick)));
 
 	if (config.touchRightAnalogStick.show) {
 		if (g_Config.bRightAnalogCustom)
-			root->Add(new PSPCustomStick(stickBg, "Right analog stick", stickImage, ImageID("I_STICK"), 1, config.touchRightAnalogStick.scale, buttonLayoutParams(config.touchRightAnalogStick)));
+			Add(new PSPCustomStick(stickBg, "Right analog stick", stickImage, ImageID("I_STICK"), 1, config.touchRightAnalogStick.scale, buttonLayoutParams(config.touchRightAnalogStick)));
 		else
-			root->Add(new PSPStick(stickBg, "Right analog stick", stickImage, ImageID("I_STICK"), 1, config.touchRightAnalogStick.scale, buttonLayoutParams(config.touchRightAnalogStick)));
+			Add(new PSPStick(stickBg, "Right analog stick", stickImage, ImageID("I_STICK"), 1, config.touchRightAnalogStick.scale, buttonLayoutParams(config.touchRightAnalogStick)));
 	}
 
 	// Sanitize custom button images, while adding them.
@@ -1023,14 +1058,50 @@ UI::ViewGroup *CreatePadLayout(const TouchControlConfig &config, float xres, flo
 		addCustomButton(g_Config.CustomButton[i], temp, config.touchCustom[i]);
 	}
 
-	if (g_Config.bGestureControlEnabled) {
-		root->Add(new GestureGamepad(controlMapper));
+	// Add the two gesture zones.
+	for (int i = 0; i < 2; i++) {
+		if (g_Config.gestureControls[i].bGestureControlEnabled) {
+			// We have them both cover the whole surface, then limit in the touch handler.
+			// This is because there's no easy way to do "half the screen" in AnchorLayout.
+			// We can do more complex layout combinations, but meh.
+			Add(new GestureGamepad(controlMapper, i, new AnchorLayoutParams(FILL_PARENT, FILL_PARENT, 0.0f, 0.0f, 0.0f, 0.0f)));
+		}
+	}
+}
+
+void GamepadEmuView::Update() {
+	AnchorLayout::Update();
+	GamepadUpdateOpacity();
+
+	bool anyDown = false;
+	for (auto view : views_) {
+		GamepadComponent *component = dynamic_cast<GamepadComponent *>(view);
+		if (component && component->IsDownForFadeoutCheck()) {
+			// INFO_LOG(Log::System, "GamepadEmuView::Update: component is down for fadeout check: %s", component->DescribeText().c_str());
+			anyDown = true;
+		}
 	}
 
-	return root;
+	if (anyDown) {
+		// INFO_LOG(Log::System, "last touch in update");
+		g_lastTouch = time_now_d();
+	}
+}
+
+const GestureControlConfig &GestureGamepad::GetZone() {
+	// TODO: Add support for multiple zones.
+	return g_Config.gestureControls[zoneIndex_];
+}
+
+GestureGamepad::~GestureGamepad() {
+	if (dragPointerId_ != -1) {
+		g_activeGesturePointers.erase(dragPointerId_);
+	}
 }
 
 bool GestureGamepad::Touch(const TouchInput &input) {
+	const GestureControlConfig &zone = GetZone();
+
 	if (usedPointerMask & (1 << input.id)) {
 		if (input.id == dragPointerId_)
 			dragPointerId_ = -1;
@@ -1039,20 +1110,26 @@ bool GestureGamepad::Touch(const TouchInput &input) {
 
 	if (input.flags & TouchInputFlags::RELEASE_ALL) {
 		dragPointerId_ = -1;
+		g_activeGesturePointers.clear();
 		return false;
 	}
 
 	if (input.flags & TouchInputFlags::DOWN) {
-		if (dragPointerId_ == -1) {
+		// Handle the zones here, easier than with AnchorLayout.
+		const float minX = zoneIndex_ == 0 ? 0.0f : bounds_.w * 0.5f;
+		const float maxX = zoneIndex_ == 0 ? bounds_.w * 0.5f : bounds_.w;
+
+		if (dragPointerId_ == -1 && input.x >= minX && input.x < maxX) {
 			dragPointerId_ = input.id;
 			lastX_ = input.x;
 			lastY_ = input.y;
 			downX_ = input.x;
 			downY_ = input.y;
+
 			const float now = time_now_d();
 			if (now - lastTapRelease_ < 0.3f && !haveDoubleTapped_) {
-				if (g_Config.iDoubleTapGesture != 0 )
-					controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[g_Config.iDoubleTapGesture-1], KeyInputFlags::DOWN);
+				if (zone.iDoubleTapGesture != 0 )
+					controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[zone.iDoubleTapGesture - 1], KeyInputFlags::DOWN);
 				haveDoubleTapped_ = true;
 			}
 
@@ -1066,29 +1143,39 @@ bool GestureGamepad::Touch(const TouchInput &input) {
 			lastX_ = input.x;
 			lastY_ = input.y;
 
-			if (g_Config.bAnalogGesture) {
-				const float k = g_Config.fAnalogGestureSensibility * 0.02;
-				float dx = (input.x - downX_)*g_display.dpi_scale_x * k;
-				float dy = (input.y - downY_)*g_display.dpi_scale_y * k;
-				dx = std::min(1.0f, std::max(-1.0f, dx));
-				dy = std::min(1.0f, std::max(-1.0f, dy));
+			const float distance = sqrtf((input.x - downX_) * (input.x - downX_) + (input.y - downY_) * (input.y - downY_));
+			// TODO: Configurable distance?
+			if (distance > 50.0f * g_display.dpi_scale_x) {
+				// The user has dragged some distance from the initial touch. Start ignoring button presses.
+				g_activeGesturePointers.insert(input.id);
+			} else {
+				g_activeGesturePointers.erase(input.id);
+			}
+
+			if (zone.bAnalogGesture) {
+				const float k = zone.fAnalogGestureSensitivity * 0.02;
+				float dx = (input.x - downX_) * g_display.dpi_scale_x * k;
+				float dy = (input.y - downY_) * g_display.dpi_scale_y * k;
+				dx = std::clamp(dx, -1.0f, 1.0f);
+				dy = std::clamp(dy, -1.0f, 1.0f);
 				__CtrlSetAnalogXY(0, dx, -dy);
 			}
 		}
 	}
 	if (input.flags & TouchInputFlags::UP) {
+		g_activeGesturePointers.erase(input.id);
 		if (input.id == dragPointerId_) {
 			dragPointerId_ = -1;
 			if (time_now_d() - lastTouchDown_ < 0.3f)
 				lastTapRelease_ = time_now_d();
 
 			if (haveDoubleTapped_) {
-				if (g_Config.iDoubleTapGesture != 0)
-					controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[g_Config.iDoubleTapGesture-1], KeyInputFlags::UP);
+				if (zone.iDoubleTapGesture != 0)
+					controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[zone.iDoubleTapGesture - 1], KeyInputFlags::UP);
 				haveDoubleTapped_ = false;
 			}
 
-			if (g_Config.bAnalogGesture)
+			if (zone.bAnalogGesture)
 				__CtrlSetAnalogXY(0, 0, 0);
 		}
 	}
@@ -1102,51 +1189,52 @@ void GestureGamepad::Draw(UIContext &dc) {
 
 	uint32_t colorBg = colorAlpha(GetButtonColor(), opacity);
 
-	if (g_Config.bAnalogGesture && dragPointerId_ != -1) {
+	if (GetZone().bAnalogGesture && dragPointerId_ != -1) {
 		dc.Draw()->DrawImage(ImageID("I_CIRCLE"), downX_, downY_, 0.7f, colorBg, ALIGN_CENTER);
 	}
 }
 
 void GestureGamepad::Update() {
 	const float th = 1.0f;
-	float dx = deltaX_ * g_display.dpi_scale_x * g_Config.fSwipeSensitivity;
-	float dy = deltaY_ * g_display.dpi_scale_y * g_Config.fSwipeSensitivity;
-	if (g_Config.iSwipeRight != 0) {
+	float dx = deltaX_ * g_display.dpi_scale_x * GetZone().fSwipeSensitivity;
+	float dy = deltaY_ * g_display.dpi_scale_y * GetZone().fSwipeSensitivity;
+	if (GetZone().iSwipeRight != 0) {
 		if (dx > th) {
-			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[g_Config.iSwipeRight-1], KeyInputFlags::DOWN);
+			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[GetZone().iSwipeRight - 1], KeyInputFlags::DOWN);
 			swipeRightReleased_ = false;
 		} else if (!swipeRightReleased_) {
-			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[g_Config.iSwipeRight-1], KeyInputFlags::UP);
+			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[GetZone().iSwipeRight -1], KeyInputFlags::UP);
 			swipeRightReleased_ = true;
 		}
 	}
-	if (g_Config.iSwipeLeft != 0) {
+	if (GetZone().iSwipeLeft != 0) {
 		if (dx < -th) {
-			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[g_Config.iSwipeLeft-1], KeyInputFlags::DOWN);
+			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[GetZone().iSwipeLeft - 1], KeyInputFlags::DOWN);
 			swipeLeftReleased_ = false;
 		} else if (!swipeLeftReleased_) {
-			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[g_Config.iSwipeLeft-1], KeyInputFlags::UP);
+			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[GetZone().iSwipeLeft - 1], KeyInputFlags::UP);
 			swipeLeftReleased_ = true;
 		}
 	}
-	if (g_Config.iSwipeUp != 0) {
+	if (GetZone().iSwipeUp != 0) {
 		if (dy < -th) {
-			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[g_Config.iSwipeUp-1], KeyInputFlags::DOWN);
+			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[GetZone().iSwipeUp - 1], KeyInputFlags::DOWN);
 			swipeUpReleased_ = false;
 		} else if (!swipeUpReleased_) {
-			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[g_Config.iSwipeUp-1], KeyInputFlags::UP);
+			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[GetZone().iSwipeUp - 1], KeyInputFlags::UP);
 			swipeUpReleased_ = true;
 		}
 	}
-	if (g_Config.iSwipeDown != 0) {
+	if (GetZone().iSwipeDown != 0) {
 		if (dy > th) {
-			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[g_Config.iSwipeDown-1], KeyInputFlags::DOWN);
+			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[GetZone().iSwipeDown - 1], KeyInputFlags::DOWN);
 			swipeDownReleased_ = false;
 		} else if (!swipeDownReleased_) {
-			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[g_Config.iSwipeDown-1], KeyInputFlags::UP);
+			controlMapper_->PSPKey(DEVICE_ID_TOUCH, GestureKey::keyList[GetZone().iSwipeDown - 1], KeyInputFlags::UP);
 			swipeDownReleased_ = true;
 		}
 	}
-	deltaX_ *= g_Config.fSwipeSmoothing;
-	deltaY_ *= g_Config.fSwipeSmoothing;
+	const float smoothing = GetZone().fSwipeSmoothing;
+	deltaX_ *= smoothing;
+	deltaY_ *= smoothing;
 }

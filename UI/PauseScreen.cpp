@@ -352,30 +352,32 @@ GamePauseScreen::GamePauseScreen(const Path &filename, bool bootPending)
 	SetExtraAssertInfo(assertStr.c_str());
 	saveStatePrefix_ = SaveState::GetGamePrefix(g_paramSFO);
 	SaveState::Rescan(saveStatePrefix_);
+	g_controlMapper.AddListener(this);
+	createdTime_ = time_now_d();
 }
 
 GamePauseScreen::~GamePauseScreen() {
+	g_controlMapper.RemoveListener(this);
 	__DisplaySetWasPaused();
 }
 
-bool GamePauseScreen::key(const KeyInput &key) {
-	bool handled = UIDialogScreen::key(key);
+bool GamePauseScreen::UnsyncKey(const KeyInput &key) {
+	int retval = UIScreen::UnsyncKey(key);
+	bool pauseTrigger = false;
+	return retval || g_controlMapper.Key(key, &pauseTrigger);
+}
 
-	if (!handled && (key.flags & KeyInputFlags::DOWN)) {
-		// Special case to be able to unpause with a bound pause key.
-		// Normally we can't bind keys used in the UI.
-		InputMapping mapping(key.deviceId, key.keyCode);
-		std::vector<int> pspButtons;
-		KeyMap::InputMappingToPspButton(mapping, &pspButtons);
-		for (auto button : pspButtons) {
-			if (button == VIRTKEY_PAUSE) {
-				TriggerFinish(DR_CANCEL);
-				return true;
-			}
-		}
-		return false;
+void GamePauseScreen::UnsyncAxis(const AxisInput *axes, size_t count) {
+	UIScreen::UnsyncAxis(axes, count);
+	g_controlMapper.Axis(axes, count);
+}
+
+void GamePauseScreen::OnVKey(VirtKey virtualKeyCode, bool down) {
+	// Simple de-bounce using createdTime_, just to be safe.
+	if (down && virtualKeyCode == VIRTKEY_PAUSE && time_now_d() > createdTime_ + 0.1) {
+		finishNextFrame_ = true;
+		finishNextFrameResult_ = DR_BACK;
 	}
-	return handled;
 }
 
 void GamePauseScreen::CreateSavestateControls(UI::LinearLayout *leftColumnItems) {
@@ -526,7 +528,7 @@ void GamePauseScreen::CreateViews() {
 
 		if (NetAdhocctl_GetState() >= ADHOCCTL_STATE_CONNECTED) {
 			// Awkwardly re-using a string here
-			saveDataScrollItems->Add(new TextView(std::string(nw->T("AdHoc server")) + ": " + std::string(nw->T("Connected"))));
+			saveDataScrollItems->Add(new TextView(ApplySafeSubstitutions("%1: %2 (%3)", nw->T("AdHoc server"), nw->T("Connected"), g_Config.sProAdhocServer)));
 		}
 	}
 
@@ -670,10 +672,10 @@ void GamePauseScreen::CreateViews() {
 
 	if (middleColumn) {
 		middleColumn->SetSpacing(portrait ? 8.0f : 0.0f);
-		playButton_ = middleColumn->Add(new Choice(g_Config.bRunBehindPauseMenu ? ImageID("I_PAUSE") : ImageID("I_PLAY"), new LinearLayoutParams(64, 64)));
+		playButton_ = middleColumn->Add(new Choice(g_Config.bRunBehindPauseMenu ? ImageID("I_PAUSE_LINE") : ImageID("I_PLAY_LINE"), new LinearLayoutParams(64, 64)));
 		playButton_->OnClick.Add([this](UI::EventParams &e) {
 			g_Config.bRunBehindPauseMenu = !g_Config.bRunBehindPauseMenu;
-			playButton_->SetIconLeft(g_Config.bRunBehindPauseMenu ? ImageID("I_PAUSE") : ImageID("I_PLAY"));
+			playButton_->SetIconLeft(g_Config.bRunBehindPauseMenu ? ImageID("I_PAUSE_LINE") : ImageID("I_PLAY_LINE"));
 		});
 
 		bool mustRunBehind = MustRunBehind();
@@ -711,13 +713,17 @@ void GamePauseScreen::ShowContextMenu(UI::View *menuButton, bool portrait) {
 			std::string confirmMessage = GetConfirmExitMessage();
 			if (!confirmMessage.empty()) {
 				auto di = GetI18NCategory(I18NCat::DIALOG);
-				screenManager()->push(new UI::MessagePopupScreen(di->T("Reset"), confirmMessage, di->T("Reset"), di->T("Cancel"), [](bool result) {
+				screenManager()->push(new UI::MessagePopupScreen(di->T("Reset"), confirmMessage, di->T("Reset"), di->T("Cancel"), [this](bool result) {
 					if (result) {
 						System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
+						finishNextFrameResult_ = DR_BACK;  // resume
+						finishNextFrame_ = true;
 					}
 				}));
 			} else {
 				System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
+				finishNextFrameResult_ = DR_BACK;  // resume
+				finishNextFrame_ = true;
 			}
 		});
 

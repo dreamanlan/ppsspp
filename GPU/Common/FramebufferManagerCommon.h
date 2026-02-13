@@ -142,15 +142,16 @@ struct VirtualFramebuffer {
 
 	// These are mainly used for garbage collection purposes and similar.
 	// Cannot be used to determine new-ness against a similar other buffer, since they are
-	// only at frame granularity.
+	// only at frame granularity. Although, can be used to check for -1 to see if they have ever
+	// been affected in that way.
 	int last_frame_used;
 	int last_frame_attached;
 	int last_frame_render;
 	int last_frame_displayed;
 	int last_frame_clut;
 	int last_frame_failed;
-	int last_frame_depth_updated;
-	int last_frame_depth_render;
+	int last_frame_depth_updated = -1;
+	int last_frame_depth_render = -1;
 
 	// Convenience methods
 	inline int WidthInBytes() const { return width * BufferFormatBytesPerPixel(fb_format); }
@@ -334,7 +335,8 @@ public:
 	void RebindFramebuffer(const char *tag);
 	std::vector<const VirtualFramebuffer *> GetFramebufferList() const;
 
-	void CopyDisplayToOutput(const DisplayLayoutConfig &config, bool reallyDirty);
+	void PrepareCopyDisplayToOutput(const DisplayLayoutConfig &config, bool reallyDirty);
+	void CopyDisplayToOutput(const DisplayLayoutConfig &config);
 
 	bool NotifyFramebufferCopy(u32 src, u32 dest, int size, GPUCopyFlag flags, u32 skipDrawReason);
 	void PerformWriteFormattedFromMemory(u32 addr, int size, int width, GEBufferFormat fmt);
@@ -506,6 +508,9 @@ public:
 		return displayLayoutConfigCopy_;
 	}
 
+	// For the debugger.
+	inline int PeekBindSeqCount() const { return fbBindSeqCount_; }
+
 protected:
 	virtual void ReadbackFramebuffer(VirtualFramebuffer *vfb, int x, int y, int w, int h, RasterChannel channel, Draw::ReadbackMode mode);
 	// Used for when a shader is required, such as GLES.
@@ -563,9 +568,8 @@ protected:
 			dstBuffer->reallyDirtyAfterDisplay = true;
 	}
 
-	inline int GetBindSeqCount() {
-		return fbBindSeqCount_++;
-	}
+	// For use when binding.
+	inline int GetBindSeqCount() { return fbBindSeqCount_++; }
 
 	static SkipGPUReadbackMode GetSkipGPUReadbackMode();
 

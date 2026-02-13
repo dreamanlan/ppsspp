@@ -846,12 +846,10 @@ bool NativeInitGraphics(GraphicsContext *graphicsContext) {
 		// This is a warning, not an error.
 		auto g = GetI18NCategory(I18NCat::GRAPHICS);
 		g_OSD.Show(OSDType::MESSAGE_WARNING, ApplySafeSubstitutions(g->T("Your display is set to a low refresh rate: %1 Hz. 60 Hz or higher is recommended."), (int)displayHz), 8.0f, "low_refresh");
-		g_OSD.SetClickCallback("low_refresh", [](bool clicked, void *) {
-			if (clicked) {
-				// Open the display settings.
-				System_OpenDisplaySettings();
-			}
-		}, nullptr);
+		g_OSD.SetClickCallback("low_refresh", []() {
+			// Open the display settings.
+			System_OpenDisplaySettings();
+		});
 	}
 #endif
 
@@ -1016,14 +1014,9 @@ static void TakeScreenshot(Draw::DrawContext *draw) {
 		if (success) {
 			g_OSD.Show(OSDType::MESSAGE_FILE_LINK, filename.ToVisualString(), 0.0f, "screenshot_link");
 			if (System_GetPropertyBool(SYSPROP_CAN_SHOW_FILE)) {
-				g_OSD.SetClickCallback("screenshot_link", [](bool clicked, void *data) -> void {
-					Path *path = reinterpret_cast<Path *>(data);
-					if (clicked) {
-						System_ShowFileInFolder(*path);
-					} else {
-						delete path;
-					}
-				}, new Path(filename));
+				g_OSD.SetClickCallback("screenshot_link", [filename]() -> void {
+					System_ShowFileInFolder(filename);
+				});
 			}
 		} else {
 			auto err = GetI18NCategory(I18NCat::ERRORS);
@@ -1093,11 +1086,19 @@ void NativeFrame(GraphicsContext *graphicsContext) {
 
 	g_iconCache.FrameUpdate();
 
-	g_screenManager->update();
-
 	if (g_audioBackend) {
 		g_audioBackend->FrameUpdate(g_Config.bAutoAudioDevice);
 	}
+
+	// NOTE: We must begin the frame before update, so we can do texture size queries and stuff in Measure etc.
+	Draw::DebugFlags debugFlags = Draw::DebugFlags::NONE;
+	if ((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::GPU_PROFILE)
+		debugFlags |= Draw::DebugFlags::PROFILE_TIMESTAMPS;
+	if (g_Config.bGpuLogProfiler)
+		debugFlags |= Draw::DebugFlags::PROFILE_SCOPES;
+	g_draw->BeginFrame(debugFlags);
+
+	g_screenManager->update();
 
 	// Do this after g_screenManager.update() so we can receive setting changes before rendering.
 	{
@@ -1136,22 +1137,14 @@ void NativeFrame(GraphicsContext *graphicsContext) {
 	// Apply the UIContext bounds as a 2D transformation matrix.
 	Matrix4x4 ortho = ComputeOrthoMatrix(g_display.dp_xres, g_display.dp_yres, graphicsContext->GetDrawContext()->GetDeviceCaps().coordConvention);
 
-	Draw::DebugFlags debugFlags = Draw::DebugFlags::NONE;
-	if ((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::GPU_PROFILE)
-		debugFlags |= Draw::DebugFlags::PROFILE_TIMESTAMPS;
-	if (g_Config.bGpuLogProfiler)
-		debugFlags |= Draw::DebugFlags::PROFILE_SCOPES;
-
 	// Can be overridden by sceDisplay which may pass true for the second argument.
 	g_frameTiming.ComputePresentMode(g_draw, false);
-
-	g_draw->BeginFrame(debugFlags);
 
 	ui_draw2d.PushDrawMatrix(ortho);
 
 	g_screenManager->getUIContext()->SetTintSaturation(g_Config.fUITint, g_Config.fUISaturation);
 
-	// All actual rendering happen in here.
+	// All actual rendering (and also emulation) happens in here.
 	ScreenRenderFlags renderFlags = g_screenManager->render();
 	if (g_screenManager->getUIContext()->Text()) {
 		g_screenManager->getUIContext()->Text()->OncePerFrame();
@@ -1384,10 +1377,12 @@ bool NativeKey(const KeyInput &key) {
 
 #ifdef _DEBUG
 	// Debug hack: Randomize the language with F9!
-	if (false && (key.keyCode == NKCODE_F9 && (key.flags & KeyInputFlags::DOWN))) {
+	if ((key.keyCode == NKCODE_F9 && (key.flags & KeyInputFlags::DOWN))) {
 		std::vector<File::FileInfo> tempLangs;
 		g_VFS.GetFileListing("lang", &tempLangs, "ini");
 		int x = rand() % tempLangs.size();
+
+		g_Config.DoNotSaveSetting(&g_Config.sLanguageIni);
 		std::string_view code, part2;
 		if (SplitStringOnce(tempLangs[x].name, &code, &part2, '.')) {
 			g_Config.sLanguageIni = code;

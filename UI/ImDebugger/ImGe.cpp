@@ -33,11 +33,16 @@ void DrawFramebuffersWindow(ImConfig &cfg, FramebufferManagerCommon *framebuffer
 		return;
 	}
 
-	ImGui::BeginTable("framebuffers", 4);
+	ImGui::Text("Cur frame: %d seq: %d", gpuStats.numFlips, framebufferManager->PeekBindSeqCount());
+
+	ImGui::BeginTable("framebuffers", 7);
 	ImGui::TableSetupColumn("Tag", ImGuiTableColumnFlags_WidthFixed);
 	ImGui::TableSetupColumn("Color Addr", ImGuiTableColumnFlags_WidthFixed);
 	ImGui::TableSetupColumn("Depth Addr", ImGuiTableColumnFlags_WidthFixed);
 	ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed);
+	ImGui::TableSetupColumn("BindSeq", ImGuiTableColumnFlags_WidthFixed);
+	ImGui::TableSetupColumn("LastRender", ImGuiTableColumnFlags_WidthFixed);
+	ImGui::TableSetupColumn("LastUse", ImGuiTableColumnFlags_WidthFixed);
 
 	ImGui::TableHeadersRow();
 
@@ -69,6 +74,12 @@ void DrawFramebuffersWindow(ImConfig &cfg, FramebufferManagerCommon *framebuffer
 			ImGui::Text("Framebuffer: %s", tag);
 			ImGui::EndPopup();
 		}
+		ImGui::TableNextColumn();
+		ImGui::Text("%d/%d", vfb->colorBindSeq, vfb->depthBindSeq);
+		ImGui::TableNextColumn();
+		ImGui::Text("%d/%d", vfb->last_frame_render, vfb->last_frame_depth_updated);
+		ImGui::TableNextColumn();
+		ImGui::Text("%d/%d", vfb->last_frame_used, vfb->last_frame_depth_render);
 		ImGui::PopID();
 	}
 	ImGui::EndTable();
@@ -570,6 +581,10 @@ ImGeReadbackViewer::~ImGeReadbackViewer() {
 	delete[] data_;
 }
 
+VirtualFramebuffer *ImGeReadbackViewer::GetVFB(FramebufferManagerCommon *fbMan) const {
+	return fbMan->GetExactVFB(gstate.getFrameBufAddress(), gstate.FrameBufStride(), gstate.FrameBufFormat());
+}
+
 void ImGeReadbackViewer::DeviceLost() {
 	if (texture_) {
 		texture_->Release();
@@ -578,8 +593,10 @@ void ImGeReadbackViewer::DeviceLost() {
 }
 
 bool ImGeReadbackViewer::Draw(GPUDebugInterface *gpuDebug, Draw::DrawContext *draw, float zoom) {
-	FramebufferManagerCommon *fbmanager = gpuDebug->GetFramebufferManagerCommon();
-	if (!vfb || !vfb->fbo || !fbmanager) {
+	FramebufferManagerCommon *fbMan = gpuDebug->GetFramebufferManagerCommon();
+	VirtualFramebuffer *vfb = GetVFB(fbMan);
+
+	if (!vfb || !vfb->fbo || !fbMan) {
 		ImGui::TextUnformatted("(N/A)");
 		return false;
 	}
@@ -661,6 +678,8 @@ bool ImGeReadbackViewer::Draw(GPUDebugInterface *gpuDebug, Draw::DrawContext *dr
 }
 
 bool ImGeReadbackViewer::FormatValueAt(char *buf, size_t bufSize, int x, int y) const {
+	FramebufferManagerCommon *fbMan = gpuDebug->GetFramebufferManagerCommon();
+	VirtualFramebuffer *vfb = GetVFB(fbMan);
 	if (!vfb || !vfb->fbo || !data_) {
 		snprintf(buf, bufSize, "N/A");
 		return true;
@@ -990,7 +1009,9 @@ void ImGeDebuggerWindow::NotifyStep() {
 
 	FramebufferManagerCommon *fbman = gpuDebug->GetFramebufferManagerCommon();
 	if (fbman) {
-		rbViewer_.vfb = fbman->GetExactVFB(gstate.getFrameBufAddress(), gstate.FrameBufStride(), gstate.FrameBufFormat());
+		rbViewer_.fbAddr = gstate.getFrameBufAddress();
+		rbViewer_.fbStride = gstate.FrameBufStride();
+		rbViewer_.fbFormat = gstate.FrameBufFormat();
 		rbViewer_.aspect = selectedAspect_;
 	}
 	rbViewer_.Snapshot();
@@ -1199,7 +1220,7 @@ void ImGeDebuggerWindow::Draw(ImConfig &cfg, ImControl &control, GPUDebugInterfa
 			ImGui::Text("Total bytes to transfer: %d", gstate.getTransferWidth() * gstate.getTransferHeight() * gstate.getTransferBpp());
 		} else {
 			// Visualize prim by default (even if we're not directly on a prim instruction).
-			VirtualFramebuffer *vfb = rbViewer_.vfb;
+			VirtualFramebuffer *vfb = rbViewer_.GetVFB(gpuDebug->GetFramebufferManagerCommon());
 			if (vfb) {
 				if (vfb->fbo) {
 					ImGui::Text("Framebuffer: %s", vfb->fbo->Tag());

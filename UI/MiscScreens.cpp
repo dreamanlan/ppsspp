@@ -98,24 +98,18 @@ void HandleCommonMessages(UIMessage message, const char *value, ScreenManager *m
 }
 
 ScreenRenderFlags BackgroundScreen::render(ScreenRenderMode mode) {
-	if (mode & ScreenRenderMode::FIRST) {
-		SetupViewport();
-	} else {
-		_dbg_assert_(false);
-	}
-
 	UIContext *uiContext = screenManager()->getUIContext();
 
 	uiContext->PushTransform({ translation_, scale_, alpha_ });
 
 	uiContext->Begin();
-	float x, y, z;
-	screenManager()->getFocusPosition(x, y, z);
+	Lin::Vec3 focus;
+	screenManager()->getFocusPosition(focus.x, focus.y, focus.z);
 
 	if (!gamePath_.empty()) {
-		::DrawGameBackground(*uiContext, gamePath_, x, y, z);
+		::DrawGameBackground(*uiContext, gamePath_, focus, 1.0f);
 	} else {
-		::DrawBackground(*uiContext, 1.0f, x, y, z);
+		::DrawBackground(*uiContext, 1.0f, focus);
 	}
 
 	uiContext->Flush();

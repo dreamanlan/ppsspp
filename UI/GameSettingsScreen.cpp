@@ -78,6 +78,7 @@
 #include "Core/HLE/sceUsbMic.h"
 #include "Core/HLE/sceUtility.h"
 #include "GPU/Common/PostShader.h"
+#include "GPU/GPU.h"
 
 #if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
 #include "UI/DarwinFileSystemServices.h"
@@ -145,7 +146,14 @@ GameSettingsScreen::~GameSettingsScreen() {
 	Reporting::Enable(enableReports_, "report.ppsspp.org");
 	Reporting::UpdateConfig();
 	if (!g_Config.Save("GameSettingsScreen::onFinish")) {
-		System_Toast("Failed to save settings!\nCheck permissions, or try to restart the device.");
+		std::string message = "Failed to save settings!\n";
+#ifdef MOBILE_DEVICE
+		message += "Check permissions, or try to restart the device.";
+#else
+		message += "Make sure this folder isn't read-only:\n";
+		message += g_Config.memStickDirectory.ToVisualString();
+#endif
+		System_Toast(message);
 	}
 
 	if (editGameSpecificThenRestore_) {
@@ -300,6 +308,7 @@ void GameSettingsScreen::CreateTabs() {
 // Graphics
 void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings) {
 	auto gr = GetI18NCategory(I18NCat::GRAPHICS);
+	auto sy = GetI18NCategory(I18NCat::SYSTEM);
 	auto vr = GetI18NCategory(I18NCat::VR);
 	auto dev = GetI18NCategory(I18NCat::DEVELOPER);
 
@@ -413,7 +422,7 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 
 	if (deviceType != DEVICE_TYPE_VR) {
 #if !defined(MOBILE_DEVICE)
-		CheckBox *fullscreenCheckbox = graphicsSettings->Add(new CheckBox(&g_Config.bFullScreen, gr->T("FullScreen", "Full Screen")));
+		CheckBox *fullscreenCheckbox = graphicsSettings->Add(new CheckBox(&g_Config.bFullScreen, gr->T("Full screen")));
 		fullscreenCheckbox->OnClick.Add([](UI::EventParams &e) {
 			System_ApplyFullscreenState();
 		});
@@ -432,7 +441,7 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 		// Hide Immersive Mode on pre-kitkat Android
 		if (System_GetPropertyInt(SYSPROP_SYSTEMVERSION) >= 19) {
 			// Let's reuse the Fullscreen translation string from desktop.
-			graphicsSettings->Add(new CheckBox(&config.bImmersiveMode, gr->T("FullScreen", "Full Screen")))->OnClick.Handle(this, &GameSettingsScreen::OnImmersiveModeChange);
+			graphicsSettings->Add(new CheckBox(&config.bImmersiveMode, sy->T("Hide navigation bar")))->OnClick.Handle(this, &GameSettingsScreen::OnImmersiveModeChange);
 		}
 #endif
 		// Display Layout Editor: To avoid overlapping touch controls on large tablets, meet geeky demands for integer zoom/unstretched image etc.
@@ -499,6 +508,7 @@ void GameSettingsScreen::CreateGraphicsSettings(UI::ViewGroup *graphicsSettings)
 		if (g_Config.bSkipBufferEffects) {
 			g_Config.bAutoFrameSkip = false;
 		}
+
 		System_PostUIMessage(UIMessage::GPU_RENDER_RESIZED);
 	});
 	skipBufferEffects->SetDisabledPtr(&g_Config.bSoftwareRendering);
@@ -737,9 +747,16 @@ void GameSettingsScreen::CreateAudioSettings(UI::ViewGroup *audioSettings) {
 	uiVolume->SetZeroLabel(a->T("Mute"));
 	uiVolume->SetLiveUpdate(true);
 	uiVolume->OnChange.Add([](UI::EventParams &e) {
+		static double lastTimePlayed = 0.0;
+		double now = time_now_d();
+		if (now - lastTimePlayed < 0.1) {
+			return; // Don't play if we just played one, to avoid spamming when dragging.
+		}
+		lastTimePlayed = now;
 		// Audio preview
 		PlayUISound(UI::UISound::CONFIRM);
 	});
+	uiVolume->SetEnabledPtr(&g_Config.bUISound);
 
 	PopupSliderChoice *gamePreviewVolume = audioSettings->Add(new PopupSliderChoice(&g_Config.iGamePreviewVolume, VOLUME_OFF, VOLUMEHI_FULL, Config::GetDefaultValueInt(&g_Config.iGamePreviewVolume), a->T("Game preview volume"), screenManager()));
 	gamePreviewVolume->SetFormat("%d%%");
@@ -853,11 +870,13 @@ void GameSettingsScreen::CreateControlsSettings(UI::ViewGroup *controlsSettings)
 	if (System_GetPropertyBool(SYSPROP_HAS_ACCELEROMETER)) {
 		// Show the tilt type on the item.
 		Choice *customizeTilt = controlsSettings->Add(new ChoiceWithCallbackValueDisplay(co->T("Tilt control setup"), []() -> std::string {
-			auto co = GetI18NCategory(I18NCat::CONTROLS);
-			if ((u32)g_Config.iTiltInputType < (u32)g_numTiltTypes) {
+			if (g_Config.bTiltInputEnabled && (u32)g_Config.iTiltInputType < (u32)g_numTiltTypes) {
+				auto co = GetI18NCategory(I18NCat::CONTROLS);
 				return std::string(co->T(g_tiltTypes[g_Config.iTiltInputType]));
+			} else {
+				auto di = GetI18NCategory(I18NCat::DIALOG);
+				return std::string(di->T("Disabled"));
 			}
-			return "";
 		}));
 		customizeTilt->OnClick.Add([this](UI::EventParams &e) {
 			screenManager()->push(new TiltAnalogSettingsScreen(gamePath_));
@@ -993,14 +1012,14 @@ MacAddressChooser::MacAddressChooser(RequesterToken token, Path gamePath, std::s
 		std::string_view warningMessage = n->T("ChangeMacSaveWarning", "Some games verify the MAC address when loading savedata, so this may break old saves.");
 		std::string combined = g_Config.sMACAddress + "\n\n" + std::string(confirmMessage) + "\n\n" + std::string(warningMessage);
 
-		auto confirmScreen = new PromptScreen(
-			gamePath,
+		auto confirmScreen = new MessagePopupScreen(
+			title,
 			combined, di->T("Yes"), di->T("No"),
-			[&](bool success) {
+			[](bool success) {
 				if (success) {
 					g_Config.sMACAddress = CreateRandMAC();
-				}}
-		);
+				}
+			});
 		screenManager->push(confirmScreen);
 	});
 }
@@ -1019,7 +1038,7 @@ void GameSettingsScreen::CreateNetworkingSettings(UI::ViewGroup *networkingSetti
 
 	networkingSettings->Add(new CheckBox(&g_Config.bEnableWlan, n->T("Enable networking", "Enable networking/wlan (beta)")));
 	networkingSettings->Add(new MacAddressChooser(GetRequesterToken(), gamePath_, &g_Config.sMACAddress, n->T("Change Mac Address"), screenManager()));
-	static const char* wlanChannels[] = { "Auto", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11" };
+	static const char *wlanChannels[] = { "Auto", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11" };
 	auto wlanChannelChoice = networkingSettings->Add(new PopupMultiChoice(&g_Config.iWlanAdhocChannel, n->T("WLAN Channel"), wlanChannels, 0, ARRAY_SIZE(wlanChannels), I18NCat::NETWORKING, screenManager()));
 	for (int i = 0; i < 4; i++) {
 		wlanChannelChoice->HideChoice(i + 2);
@@ -1030,20 +1049,16 @@ void GameSettingsScreen::CreateNetworkingSettings(UI::ViewGroup *networkingSetti
 		networkingSettings->Add(new CheckBox(&g_Config.bDiscordRichPresence, n->T("Send Discord Presence information")));
 	}
 
-	networkingSettings->Add(new ItemHeader(n->T("AdHoc server")));
+	networkingSettings->Add(new ItemHeader(n->T("Ad Hoc multiplayer")));
+	networkingSettings->Add(new CheckBox(&g_Config.bUseServerRelay, n->T("Try to use server-provided packet relay")))->SetEnabled(!PSP_IsInited());
+	networkingSettings->Add(new SettingHint(n->T("PacketRelayHint", "Available on servers that provide 'aemu_postoffice' packet relay, like socom.cc. Disable this for LAN or VPN play. Can be more reliable, but sometimes slower.")));
+
+	networkingSettings->Add(new ItemHeader(n->T("Ad Hoc server")));
 	networkingSettings->Add(new CheckBox(&g_Config.bEnableAdhocServer, n->T("Enable built-in PRO Adhoc Server", "Enable built-in PRO Adhoc Server")));
 	networkingSettings->Add(new ChoiceWithValueDisplay(&g_Config.sProAdhocServer, n->T("Change proAdhocServer Address"), I18NCat::NONE))->OnClick.Add([=](UI::EventParams &) {
 		screenManager()->push(new HostnameSelectScreen(&g_Config.sProAdhocServer, &g_Config.proAdhocServerList, n->T("proAdhocServer Address:")));
 	});
 	networkingSettings->Add(new SettingHint(n->T("Change proAdhocServer address hint")));
-	networkingSettings->Add(new CheckBox(&g_Config.bUseServerRelay, n->T("Try to use server-provided packet relay")))->SetEnabled(!PSP_IsInited());
-	networkingSettings->Add(new SettingHint(n->T("PacketRelayHint", "Available on servers that provide 'aemu_postoffice' packet relay, like socom.cc. Disable this for LAN or VPN play. Can be more reliable, but sometimes slower.")));
-	networkingSettings->Add(new ItemHeader(n->T("UPnP (port-forwarding)")));
-	networkingSettings->Add(new CheckBox(&g_Config.bEnableUPnP, n->T("Enable UPnP", "Enable UPnP (need a few seconds to detect)")));
-	auto useOriPort = networkingSettings->Add(new CheckBox(&g_Config.bUPnPUseOriginalPort, n->T("UPnP use original port", "UPnP use original port (Enabled = PSP compatibility)")));
-	networkingSettings->Add(new SettingHint(n->T("UseOriginalPort Tip", "May not work for all devices or games, see wiki.")));
-
-	useOriPort->SetEnabledPtr(&g_Config.bEnableUPnP);
 
 	networkingSettings->Add(new ItemHeader(n->T("Infrastructure")));
 	if (g_Config.sInfrastructureUsername.empty()) {
@@ -1058,6 +1073,13 @@ void GameSettingsScreen::CreateNetworkingSettings(UI::ViewGroup *networkingSetti
 	networkingSettings->Add(new CheckBox(&g_Config.bInfrastructureAutoDNS, n->T("Autoconfigure")));
 	auto *dnsServer = networkingSettings->Add(new PopupTextInputChoice(GetRequesterToken(), &g_Config.sInfrastructureDNSServer, n->T("DNS server"), "", 32, screenManager()));
 	dnsServer->SetDisabledPtr(&g_Config.bInfrastructureAutoDNS);
+
+	networkingSettings->Add(new ItemHeader(n->T("UPnP (port-forwarding)")));
+	networkingSettings->Add(new CheckBox(&g_Config.bEnableUPnP, n->T("Enable UPnP", "Enable UPnP (need a few seconds to detect)")));
+	auto useOriPort = networkingSettings->Add(new CheckBox(&g_Config.bUPnPUseOriginalPort, n->T("UPnP use original port", "UPnP use original port (Enabled = PSP compatibility)")));
+	networkingSettings->Add(new SettingHint(n->T("UseOriginalPort Tip", "May not work for all devices or games, see wiki.")));
+
+	useOriPort->SetEnabledPtr(&g_Config.bEnableUPnP);
 
 	networkingSettings->Add(new ItemHeader(n->T("Chat")));
 	networkingSettings->Add(new CheckBox(&g_Config.bEnableNetworkChat, n->T("Enable network chat", "Enable network chat")));
@@ -1238,11 +1260,11 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 
 	if (!draw->GetBugs().Has(Draw::Bugs::RASPBERRY_SHADER_COMP_HANG)) {
 		// We use shaders without tint capability on hardware with this driver bug.
-		PopupSliderChoiceFloat *tint = new PopupSliderChoiceFloat(&g_Config.fUITint, 0.0f, 1.0f, 0.0f, sy->T("Color Tint"), 0.01f, screenManager());
+		PopupSliderChoiceFloat *tint = new PopupSliderChoiceFloat(&g_Config.fUITint, 0.0f, 1.0f, 0.0f, sy->T("Color tint"), 0.01f, screenManager());
 		tint->SetHasDropShadow(false);
 		tint->SetLiveUpdate(true);
 		systemSettings->Add(tint);
-		PopupSliderChoiceFloat *saturation = new PopupSliderChoiceFloat(&g_Config.fUISaturation, 0.0f, 2.0f, 1.0f, sy->T("Color Saturation"), 0.01f, screenManager());
+		PopupSliderChoiceFloat *saturation = new PopupSliderChoiceFloat(&g_Config.fUISaturation, 0.0f, 2.0f, 1.0f, sy->T("Color saturation"), 0.01f, screenManager());
 		saturation->SetHasDropShadow(false);
 		saturation->SetLiveUpdate(true);
 		systemSettings->Add(saturation);
@@ -1252,7 +1274,7 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 
 	if (System_GetPropertyBool(SYSPROP_HAS_OPEN_DIRECTORY)) {
 		systemSettings->Add(new Choice(sy->T("Show Memory Stick folder")))->OnClick.Add([](UI::EventParams &p) {
-			System_ShowFileInFolder(g_Config.memStickDirectory);
+			System_LaunchUrl(LaunchUrlType::LOCAL_FOLDER, g_Config.memStickDirectory.ToString());
 		});
 	}
 
@@ -1393,6 +1415,7 @@ void GameSettingsScreen::CreateSystemSettings(UI::ViewGroup *systemSettings) {
 	if (System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_MOBILE) {
 		auto co = GetI18NCategory(I18NCat::CONTROLS);
 
+		// Display rotation 
 		AddRotationPicker(screenManager(), systemSettings, true);
 
 		if (System_GetPropertyBool(SYSPROP_SUPPORTS_SUSTAINED_PERF_MODE)) {
@@ -1797,8 +1820,9 @@ void GameSettingsScreen::OnRestoreDefaultSettings(UI::EventParams &e) {
 	if (g_Config.IsGameSpecific()) {
 		auto dev = GetI18NCategory(I18NCat::DEVELOPER);
 		auto di = GetI18NCategory(I18NCat::DIALOG);
+		auto sy = GetI18NCategory(I18NCat::SYSTEM);
 		screenManager()->push(
-			new PromptScreen(gamePath_, dev->T("RestoreGameDefaultSettings", "Are you sure you want to restore the game-specific settings back to the ppsspp defaults?\n"),
+			new UI::MessagePopupScreen(sy->T("Restore Default Settings"), dev->T("RestoreGameDefaultSettings", "Are you sure you want to restore the game-specific settings back to the ppsspp defaults?\n"),
 				di->T("OK"), di->T("Cancel"), [this](bool yes) { CallbackRestoreDefaults(yes); }));
 	} else {
 		std::string_view title = sy->T("Restore Default Settings");
@@ -2010,39 +2034,46 @@ void HostnameSelectScreen::OnCompleted(DialogResult result) {
 }
 
 void GestureMappingScreen::CreateTabs() {
-	auto co = GetI18NCategory(I18NCat::CONTROLS);
-	AddTab("Gesture", co->T("Gesture"), [this](UI::LinearLayout *parent) { CreateGestureTab(parent); });
+	auto di = GetI18NCategory(I18NCat::DIALOG);
+	AddTab("Gesture", di->T("Left side"), [this](UI::LinearLayout *parent) { CreateGestureTab(parent, 0, GetDeviceOrientation() == DeviceOrientation::Portrait); });
+	AddTab("Gesture", di->T("Right side"), [this](UI::LinearLayout *parent) { CreateGestureTab(parent, 1, GetDeviceOrientation() == DeviceOrientation::Portrait); });
 }
 
-void GestureMappingScreen::CreateGestureTab(UI::LinearLayout *vert) {
+void GestureMappingScreen::CreateGestureTab(UI::LinearLayout *vert, int zoneIndex, bool portrait) {
 	using namespace UI;
-
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 	auto co = GetI18NCategory(I18NCat::CONTROLS);
 	auto mc = GetI18NCategory(I18NCat::MAPPABLECONTROLS);
 
-	static const char *gestureButton[ARRAY_SIZE(GestureKey::keyList)+1];
+	static const char *gestureButton[ARRAY_SIZE(GestureKey::keyList) + 1];
 	gestureButton[0] = "None";
 	for (int i = 1; i < ARRAY_SIZE(gestureButton); ++i) {
-		gestureButton[i] = KeyMap::GetPspButtonNameCharPointer(GestureKey::keyList[i-1]);
+		gestureButton[i] = KeyMap::GetPspButtonNameCharPointer(GestureKey::keyList[i - 1]);
 	}
 
-	vert->Add(new CheckBox(&g_Config.bGestureControlEnabled, co->T("Enable gesture control")));
+	GestureControlConfig &zone = g_Config.gestureControls[zoneIndex];
+
+	TopBarFlags flags = TopBarFlags::NoBackButton;
+	if (portrait) {
+		flags |= TopBarFlags::Portrait;
+	}
+	vert->Add(new TopBar(*screenManager()->getUIContext(), flags, ApplySafeSubstitutions("%1: %2", co->T("Gesture"), di->T(zoneIndex == 0 ? "Left side" : "Right side"))));
+	vert->Add(new CheckBox(&zone.bGestureControlEnabled, co->T("Enable gesture control")));
 
 	vert->Add(new ItemHeader(co->T("Swipe")));
-	vert->Add(new PopupMultiChoice(&g_Config.iSwipeUp, mc->T("Swipe Up"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&g_Config.bGestureControlEnabled);
-	vert->Add(new PopupMultiChoice(&g_Config.iSwipeDown, mc->T("Swipe Down"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&g_Config.bGestureControlEnabled);
-	vert->Add(new PopupMultiChoice(&g_Config.iSwipeLeft, mc->T("Swipe Left"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&g_Config.bGestureControlEnabled);
-	vert->Add(new PopupMultiChoice(&g_Config.iSwipeRight, mc->T("Swipe Right"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&g_Config.bGestureControlEnabled);
-	vert->Add(new PopupSliderChoiceFloat(&g_Config.fSwipeSensitivity, 0.01f, 1.0f, 1.0f, co->T("Swipe sensitivity"), 0.01f, screenManager(), "x"))->SetEnabledPtr(&g_Config.bGestureControlEnabled);
-	vert->Add(new PopupSliderChoiceFloat(&g_Config.fSwipeSmoothing, 0.0f, 0.95f, 0.3f, co->T("Swipe smoothing"), 0.05f, screenManager(), "x"))->SetEnabledPtr(&g_Config.bGestureControlEnabled);
+	vert->Add(new PopupMultiChoice(&zone.iSwipeUp, mc->T("Swipe Up"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&zone.bGestureControlEnabled);
+	vert->Add(new PopupMultiChoice(&zone.iSwipeDown, mc->T("Swipe Down"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&zone.bGestureControlEnabled);
+	vert->Add(new PopupMultiChoice(&zone.iSwipeLeft, mc->T("Swipe Left"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&zone.bGestureControlEnabled);
+	vert->Add(new PopupMultiChoice(&zone.iSwipeRight, mc->T("Swipe Right"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&zone.bGestureControlEnabled);
+	vert->Add(new PopupSliderChoiceFloat(&zone.fSwipeSensitivity, 0.01f, 2.0f, 1.0f, co->T("Swipe sensitivity"), 0.01f, screenManager(), "x"))->SetEnabledPtr(&zone.bGestureControlEnabled);
+	vert->Add(new PopupSliderChoiceFloat(&zone.fSwipeSmoothing, 0.0f, 0.95f, 0.3f, co->T("Swipe smoothing"), 0.05f, screenManager(), "x"))->SetEnabledPtr(&zone.bGestureControlEnabled);
 
 	vert->Add(new ItemHeader(co->T("Double tap")));
-	vert->Add(new PopupMultiChoice(&g_Config.iDoubleTapGesture, mc->T("Double tap button"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&g_Config.bGestureControlEnabled);
+	vert->Add(new PopupMultiChoice(&zone.iDoubleTapGesture, mc->T("Double tap button"), gestureButton, 0, ARRAY_SIZE(gestureButton), I18NCat::MAPPABLECONTROLS, screenManager()))->SetEnabledPtr(&zone.bGestureControlEnabled);
 
 	vert->Add(new ItemHeader(co->T("Analog Stick")));
-	vert->Add(new CheckBox(&g_Config.bAnalogGesture, co->T("Enable analog stick gesture")));
-	vert->Add(new PopupSliderChoiceFloat(&g_Config.fAnalogGestureSensibility, 0.01f, 5.0f, 1.0f, co->T("Sensitivity"), 0.01f, screenManager(), "x"))->SetEnabledPtr(&g_Config.bAnalogGesture);
+	vert->Add(new CheckBox(&zone.bAnalogGesture, co->T("Enable analog stick gesture")));
+	vert->Add(new PopupSliderChoiceFloat(&zone.fAnalogGestureSensitivity, 0.01f, 5.0f, 1.0f, co->T("Sensitivity"), 0.01f, screenManager(), "x"))->SetEnabledPtr(&zone.bAnalogGesture);
 }
 
 RestoreSettingsScreen::RestoreSettingsScreen(std::string_view title)

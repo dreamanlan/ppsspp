@@ -36,7 +36,7 @@ struct AxisInput;
 class AsyncImageFileView;
 class ChatMenu;
 
-class EmuScreen : public UIScreen {
+class EmuScreen : public UIScreen, public ControlListener {
 public:
 	EmuScreen(const Path &filename);
 	~EmuScreen();
@@ -70,9 +70,18 @@ public:
 protected:
 	void darken();
 	void focusChanged(ScreenFocusChange focusChange) override;
+	ScreenRenderFlags PreRender(ScreenRenderMode mode) override;
+
+	// ControlListener implementations
+	void OnVKey(VirtKey virtualKeyCode, bool down);
+	void OnVKeyAnalog(VirtKey virtualKeyCode, float value);
+	void UpdatePSPButtons(uint32_t buttonMask, uint32_t changedMask) override;
+	void SetPSPAnalog(int rotation, int stick, float x, float y);
+	void SetRawAnalog(int deviceId, float x, float y) {}
 
 private:
 	void CreateViews() override;
+	ScreenRenderFlags RunEmulation(bool skipBufferEffects);
 	void OnDevTools(UI::EventParams &params);
 	void OnChat(UI::EventParams &params);
 
@@ -85,14 +94,14 @@ private:
 	void runImDebugger();
 	void renderImDebugger();
 
-	void onVKey(VirtKey virtualKeyCode, bool down);
-	void onVKeyAnalog(VirtKey virtualKeyCode, float value);
 
 	void AutoLoadSaveState();
 	bool checkPowerDown();
 
 	void ProcessQueuedVKeys();
 	void ProcessVKey(VirtKey vkey);
+
+	bool ShouldRunEmulation(ScreenRenderMode mode) const;
 
 	UI::Event OnDevMenu;
 	UI::Event OnChatMenu;
@@ -132,8 +141,6 @@ private:
 
 	std::string extraAssertInfoStr_;
 
-	ControlMapper controlMapper_;
-
 	std::unique_ptr<ImDebugger> imDebugger_ = nullptr;
 	ImCommand imCmd_{};  // needed to buffer commands in case imgui wasn't created yet.
 
@@ -158,6 +165,9 @@ private:
 #endif
 	bool autoLoadFailed_ = false;  // to prevent repeat reloads
 	bool readyToFinishBoot_ = false;
+	bool skipBufferEffects_ = false;  // cached state, fetched once per frame.
+
+	bool isOnTop_ = true;
 };
 
 bool MustRunBehind();

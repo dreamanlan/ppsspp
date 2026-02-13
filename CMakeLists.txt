@@ -256,9 +256,7 @@ if(LIBRETRO)
 	if(NOT MSVC)
 		add_compile_options(-fPIC)
 	endif()
-	if(ANDROID)
-		add_compile_definitions(HAVE_LIBRETRO_VFS)
-	endif()
+	add_compile_definitions(HAVE_LIBRETRO_VFS)
 endif()
 
 if(ANDROID)
@@ -314,7 +312,7 @@ if(USING_EGL)
 	if(NOT EGL_LIBRARIES)
 		set(EGL_LIBRARIES EGL)
 	endif()
-	set(OPENGL_LIBRARIES ${OPENGL_LIBRARIES} ${EGL_LIBRARIES})
+	list(APPEND OPENGL_LIBRARIES ${EGL_LIBRARIES})
 endif()
 
 if(NOT LIBRETRO AND NOT IOS AND NOT MACOSX)
@@ -410,7 +408,7 @@ if(NOT MSVC)
 	# NEON optimizations in libpng17 seem to cause PNG load errors, see #14485.
 	add_compile_definitions(PNG_ARM_NEON_OPT=0)
 
-	add_compile_options(-Wall -Werror=return-type -Wno-unused-function -Wno-sign-compare -Wno-unused-but-set-variable "$<$<COMPILE_LANGUAGE:CXX>:-Wno-reorder>" -Wno-unknown-pragmas -Wno-unused-value -Wno-unused-variable)
+	add_compile_options(-Wall -Werror=return-type -Wno-unused-function -Wno-sign-compare -Wno-unused-but-set-variable "$<$<COMPILE_LANGUAGE:CXX>:-Wno-reorder>" -Wno-unknown-pragmas -Wno-unused-value -Wno-unused-variable -Wno-error=incompatible-pointer-types)
 	if(NOT CLANG)
 		# This one is very useful but has many false positives.
 		add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-Wno-class-memaccess>")
@@ -1343,17 +1341,17 @@ set(nativeExtra)
 set(nativeExtraLibs)
 
 if(OPENXR AND NOT ARMV7_DEVICE)
-	set(nativeExtraLibs ${nativeExtraLibs} openxr_loader)
+	list(APPEND nativeExtraLibs openxr_loader)
 endif()
 
 if(IOS OR MACOSX)
-	set(nativeExtra ${nativeExtra}
+	list(APPEND nativeExtra
 		Common/Render/Text/draw_text_cocoa.mm
 		Common/Render/Text/draw_text_cocoa.h)
 endif()
 
 if(ANDROID)
-	set(NativeAppSource ${NativeAppSource}
+	list(APPEND NativeAppSource
 		android/jni/app-android.cpp
 		android/jni/AndroidJavaGLContext.cpp
 		android/jni/AndroidJavaGLContext.h
@@ -1367,7 +1365,7 @@ if(ANDROID)
 	)
 	# No target
 elseif(IOS AND NOT LIBRETRO)
-	set(nativeExtra ${nativeExtra}
+	list(APPEND nativeExtra
 		ios/main.mm
 		ios/AppDelegate.mm
 		ios/AppDelegate.h
@@ -1403,35 +1401,36 @@ elseif(IOS AND NOT LIBRETRO)
 		Common/Battery/AppleBatteryClient.m
 	)
 
-	set(nativeExtraLibs ${nativeExtraLibs} "-framework Foundation -framework MediaPlayer -framework AudioToolbox -framework CoreGraphics -framework CoreMotion -framework QuartzCore -framework UIKit -framework GLKit -framework OpenAL -framework AVFoundation -framework CoreLocation -framework CoreText -framework CoreVideo -framework CoreMedia -framework CoreServices -framework Metal -framework IOSurface" )
+	list(APPEND nativeExtraLibs "-framework Foundation -framework MediaPlayer -framework AudioToolbox -framework CoreGraphics -framework CoreMotion -framework QuartzCore -framework UIKit -framework GLKit -framework OpenAL -framework AVFoundation -framework CoreLocation -framework CoreText -framework CoreVideo -framework CoreMedia -framework CoreServices -framework Metal -framework IOSurface" )
 	if(EXISTS "${CMAKE_IOS_SDK_ROOT}/System/Library/Frameworks/GameController.framework")
-		set(nativeExtraLibs ${nativeExtraLibs} "-weak_framework GameController")
+		list(APPEND nativeExtraLibs "-weak_framework GameController")
 	endif()
 
 	if(NOT ICONV_LIBRARY)
-		set(nativeExtraLibs ${nativeExtraLibs} iconv)
+		list(APPEND nativeExtraLibs iconv)
 	endif()
 
 	# TODO: Enable arc globally?
-	set_source_files_properties(ios/AppDelegate.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(ios/ViewController.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(ios/ViewControllerMetal.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(ios/iOSCoreAudio.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(ios/PPSSPPUIApplication.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(ios/iCade/iCadeReaderView.m PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(ios/main.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(ios/CameraHelper.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(ios/AudioEngine.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(ios/LocationHelper.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(ios/DisplayManager.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(ios/Controls.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(UI/DarwinFileSystemServices.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(Common/Battery/AppleBatteryClient.m PROPERTIES COMPILE_FLAGS -fobjc-arc)
-	set_source_files_properties(Common/Render/Text/draw_text_cocoa.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
+	set_source_files_properties(ios/AppDelegate.mm
+		ios/ViewController.mm
+		ios/ViewControllerMetal.mm
+		ios/iOSCoreAudio.mm
+		ios/PPSSPPUIApplication.mm
+		ios/iCade/iCadeReaderView.m
+		ios/main.mm
+		ios/CameraHelper.mm
+		ios/AudioEngine.mm
+		ios/LocationHelper.mm
+		ios/DisplayManager.mm
+		ios/Controls.mm
+		UI/DarwinFileSystemServices.mm
+		Common/Battery/AppleBatteryClient.m
+		Common/Render/Text/draw_text_cocoa.mm
+		PROPERTIES COMPILE_FLAGS -fobjc-arc)
 
 	set(TargetBin PPSSPP)
 elseif(IOS AND LIBRETRO)
-	set(nativeExtraLibs ${nativeExtraLibs} "-framework GLKit")
+	list(APPEND nativeExtraLibs "-framework GLKit")
 elseif(USING_QT_UI)
 	set(CMAKE_AUTOMOC ON)
 	find_package(Qt5 COMPONENTS OpenGL Gui Core Multimedia)
@@ -1450,24 +1449,25 @@ elseif(USING_QT_UI)
 			UI/DarwinFileSystemServices.mm
 			UI/DarwinFileSystemServices.h
 			Common/Battery/AppleBatteryClient.m)
-		set_source_files_properties(Common/Battery/AppleBatteryClient.m PROPERTIES COMPILE_FLAGS -fobjc-arc)
-		set_source_files_properties(UI/DarwinFileSystemServices.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-		set_source_files_properties(Common/Render/Text/draw_text_cocoa.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-		set(nativeExtraLibs ${nativeExtraLibs} ${COCOA_LIBRARY} ${QUARTZ_CORE_LIBRARY} ${IOKIT_LIBRARY})
+		set_source_files_properties(Common/Battery/AppleBatteryClient.m
+			UI/DarwinFileSystemServices.mm
+			Common/Render/Text/draw_text_cocoa.mm
+			PROPERTIES COMPILE_FLAGS -fobjc-arc)
+		list(APPEND nativeExtraLibs ${COCOA_LIBRARY} ${QUARTZ_CORE_LIBRARY} ${IOKIT_LIBRARY})
 	endif()
 	include_directories(Qt)
 	include_directories(${CMAKE_CURRENT_BINARY_DIR})
-	set(nativeExtraLibs ${nativeExtraLibs} Qt5::OpenGL Qt5::Gui Qt5::Core Qt5::Multimedia)
+	list(APPEND nativeExtraLibs Qt5::OpenGL Qt5::Gui Qt5::Core Qt5::Multimedia)
 	set(TargetBin PPSSPPQt)
 
 	# Enable SDL joystick if SDL is found
 	if(SDL2_FOUND)
 		add_compile_definitions(SDL)
-		set(nativeExtra ${nativeExtra}
+		list(APPEND nativeExtra
 			SDL/SDLJoystick.h
 			SDL/SDLJoystick.cpp
 		)
-		set(nativeExtraLibs ${nativeExtraLibs} SDL2::SDL2)
+		list(APPEND nativeExtraLibs SDL2::SDL2)
 	endif()
 
 elseif(WIN32)
@@ -1482,14 +1482,14 @@ else()
 	endif()
 	# Require SDL
 	add_compile_definitions(SDL)
-	set(nativeExtra ${nativeExtra}
+	list(APPEND nativeExtra
 		SDL/SDLJoystick.h
 		SDL/SDLJoystick.cpp
 		SDL/SDLMain.cpp
 		SDL/SDLGLGraphicsContext.cpp
 	)
 	if(NOT USE_LIBNX)
-		set(nativeExtra ${nativeExtra}
+		list(APPEND nativeExtra
 			SDL/SDLVulkanGraphicsContext.cpp
 		)
 	endif()
@@ -1499,18 +1499,18 @@ else()
 		add_compile_definitions(USE_SDL2_TTF)
 		if(FONTCONFIG_FOUND)
 			add_compile_definitions(USE_SDL2_TTF_FONTCONFIG)
-			set(nativeExtraLibs ${nativeExtraLibs} Fontconfig::Fontconfig)
+			list(APPEND nativeExtraLibs Fontconfig::Fontconfig)
 		endif()
 	elseif(SDL2_ttf_PKGCONFIG_FOUND)
 		message(WARNING "Found SDL2_ttf <2.0.18 - this is too old, falling back to atlas")
 	endif()
 	if(SDL2_ttf_FOUND)
-		set(nativeExtraLibs ${nativeExtraLibs} SDL2_ttf::SDL2_ttf)
+		list(APPEND nativeExtraLibs SDL2_ttf::SDL2_ttf)
 	elseif(SDL2_ttf_PKGCONFIG_FOUND)
-		set(nativeExtraLibs ${nativeExtraLibs} PkgConfig::SDL2_ttf_PKGCONFIG)
+		list(APPEND nativeExtraLibs PkgConfig::SDL2_ttf_PKGCONFIG)
 	endif()
 	if(APPLE)
-		set(nativeExtra ${nativeExtra}
+		list(APPEND nativeExtra
 		SDL/SDLMain.h
 		SDL/SDLMain.mm
 		SDL/SDLCocoaMetalLayer.h
@@ -1529,25 +1529,26 @@ else()
 		# TODO
 		# set_source_files_properties(SDL/SDLMain.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
 
-		set_source_files_properties(UI/DarwinFileSystemServices.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-		set_source_files_properties(UI/PSPNSApplicationDelegate.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-		set_source_files_properties(SDL/CocoaMetalLayer.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-		set_source_files_properties(SDL/CocoaBarItems.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-		set_source_files_properties(SDL/PPSSPPAboutViewController.m PROPERTIES COMPILE_FLAGS -fobjc-arc)
-		set_source_files_properties(SDL/MacCameraHelper.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-		set_source_files_properties(Common/Battery/AppleBatteryClient.m PROPERTIES COMPILE_FLAGS -fobjc-arc)
-		set_source_files_properties(Common/Render/Text/draw_text_cocoa.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-		set(nativeExtraLibs ${nativeExtraLibs} ${COCOA_LIBRARY} ${QUARTZ_CORE_LIBRARY} ${IOKIT_LIBRARY} "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo")
+		set_source_files_properties(UI/DarwinFileSystemServices.mm
+			UI/PSPNSApplicationDelegate.mm
+			SDL/CocoaMetalLayer.mm
+			SDL/CocoaBarItems.mm
+			SDL/PPSSPPAboutViewController.m
+			SDL/MacCameraHelper.mm
+			Common/Battery/AppleBatteryClient.m
+			Common/Render/Text/draw_text_cocoa.mm
+			PROPERTIES COMPILE_FLAGS -fobjc-arc)
+		list(APPEND nativeExtraLibs ${COCOA_LIBRARY} ${QUARTZ_CORE_LIBRARY} ${IOKIT_LIBRARY} "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo")
 
 		if(USE_SYSTEM_LIBSDL2)
-			set(nativeExtraLibs ${nativeExtraLibs} SDL2::SDL2)
+			list(APPEND nativeExtraLibs SDL2::SDL2)
 		else()
-			set(nativeExtraLibs ${nativeExtraLibs} ${SDL2Fwk})
+			list(APPEND nativeExtraLibs ${SDL2Fwk})
 		endif()
 	elseif(USING_EGL)
-		set(nativeExtraLibs ${nativeExtraLibs} pthread SDL2::SDL2)
+		list(APPEND nativeExtraLibs pthread SDL2::SDL2)
 	else()
-		set(nativeExtraLibs ${nativeExtraLibs} SDL2::SDL2)
+		list(APPEND nativeExtraLibs SDL2::SDL2)
 	endif()
 endif()
 
@@ -1669,18 +1670,18 @@ list(APPEND NativeAppSource
 
 if(ANDROID)
 	if(ARM)
-		set(NativeAppSource ${NativeAppSource} android/jni/ArmEmitterTest.cpp)
+		list(APPEND NativeAppSource android/jni/ArmEmitterTest.cpp)
 	elseif(ARM64)
-		set(NativeAppSource ${NativeAppSource} android/jni/Arm64EmitterTest.cpp)
+		list(APPEND NativeAppSource android/jni/Arm64EmitterTest.cpp)
 	endif()
 
 	if (NOT LIBRETRO)
-		set(nativeExtra ${nativeExtra} ${NativeAppSource})
+		list(APPEND nativeExtra ${NativeAppSource})
 	endif()
 endif()
 
 if (IOS AND NOT LIBRETRO)
-	set(nativeExtra ${nativeExtra} ${NativeAppSource})
+	list(APPEND nativeExtra ${NativeAppSource})
 endif()
 
 add_library(native STATIC
@@ -1759,7 +1760,7 @@ target_include_directories(xxhash PRIVATE ext/xxhash)
 set(CoreExtra)
 set(CoreExtraLibs)
 
-set(CoreExtra ${CoreExtra}
+list(APPEND CoreExtra
 	Core/MIPS/IR/IRAnalysis.cpp
 	Core/MIPS/IR/IRAnalysis.h
 	Core/MIPS/IR/IRCompALU.cpp
@@ -1862,11 +1863,6 @@ list(APPEND CoreExtra
 )
 
 list(APPEND CoreExtra
-	Core/MIPS/MIPS/MipsJit.cpp
-	Core/MIPS/MIPS/MipsJit.h
-)
-
-list(APPEND CoreExtra
 	Core/MIPS/RiscV/RiscVAsm.cpp
 	Core/MIPS/RiscV/RiscVCompALU.cpp
 	Core/MIPS/RiscV/RiscVCompBranch.cpp
@@ -1897,7 +1893,7 @@ list(APPEND CoreExtra
 )
 
 if(NOT MOBILE_DEVICE)
-	set(CoreExtra ${CoreExtra}
+	list(APPEND CoreExtra
 		Core/AVIDump.cpp
 		Core/AVIDump.h
 		Core/WaveFile.cpp
@@ -2085,21 +2081,20 @@ set(GPU_SOURCES
 
 set(aemu_postoffice
 	ext/aemu_postoffice/client/postoffice.c
+	ext/aemu_postoffice/client/postoffice_mem_stdc.c
 	ext/aemu_postoffice/client/mutex_impl_cpp.cpp
 	ext/aemu_postoffice/client/delay_impl_cpp.cpp
 	ext/aemu_postoffice/client/log_impl_ppsspp.cpp
 )
 
 if(WIN32)
-	set(aemu_postoffice
-		${aemu_postoffice}
+	list(APPEND aemu_postoffice
 		ext/aemu_postoffice/client/sock_impl_windows.c
 	)
 endif()
 
 if(LINUX OR ANDROID OR MACOSX OR IOS)
-	set(aemu_postoffice
-		${aemu_postoffice}
+	list(APPEND aemu_postoffice
 		ext/aemu_postoffice/client/sock_impl_linux.c
 	)
 endif()
@@ -2548,13 +2543,13 @@ if(LIBRETRO)
 endif()
 
 if(ANDROID)
-	set(CoreExtraLibs ${CoreExtraLibs} android)
+	list(APPEND CoreExtraLibs android)
 	if(X86_64)
 		set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-Bsymbolic")
 	endif()
 endif()
 
-set(CoreExtraLibs ${CoreExtraLibs} armips)
+list(APPEND CoreExtraLibs armips)
 
 # needed for VK_USE_PLATFORM_XCB_KHR only
 #if(VULKAN AND NOT WIN32)
@@ -2568,7 +2563,7 @@ if (ENABLE_SPVREMAPPER)
 endif()
 
 if(WIN32)
-	set(GlslangLibs ${GlslangLibs} spirv-cross-hlsl)
+	list(APPEND GlslangLibs spirv-cross-hlsl)
 endif()
 
 if(OPENGL_opengl_LIBRARY AND OpenGL_GL_PREFERENCE STREQUAL GLVND AND NOT APPLE)
@@ -2581,7 +2576,7 @@ if(USE_SYSTEM_ZSTD)
 	target_link_libraries(${CoreLibName} ${ZSTD_LIBRARY})
 else()
 	add_subdirectory(ext/zstd-build)
-	set(CoreExtraLibs ${CoreExtraLibs} libzstd_static)
+	list(APPEND CoreExtraLibs libzstd_static)
 	include_directories(ext/zstd/lib)
 endif()
 
@@ -2685,7 +2680,7 @@ if(USE_MINIUPNPC)
 		endif()
 		if (WIN32)
 			set_source_files_properties(${MINIUPNPC_SOURCES} PROPERTIES  COMPILE_DEFINITIONS "MINIUPNP_STATICLIB;MINIUPNP_EXPORTS")
-			set(LDLIBS ws2_32 iphlpapi ${LDLIBS})
+			list(PREPEND LDLIBS ws2_32 iphlpapi)
 			#elseif (CMAKE_SYSTEM_NAME STREQUAL "Solaris")
 			#  find_library (SOCKET_LIBRARY NAMES socket)
 			#  find_library (NSL_LIBRARY NAMES nsl)
@@ -2775,6 +2770,8 @@ set(WindowsFiles
 	Windows/CaptureDevice.h
 	Windows/DinputDevice.cpp
 	Windows/DinputDevice.h
+	Windows/Hid/HidCommon.h
+	Windows/Hid/HidCommon.cpp
 	Windows/Hid/HidInputDevice.h
 	Windows/Hid/HidInputDevice.cpp
 	Windows/Hid/DualSense.h
@@ -2867,7 +2864,6 @@ set(NativeAssets
 	assets/ppge_atlas.zim
 	assets/ppge_atlas.meta
 	assets/rargray.png
-	assets/unknown.png
 	assets/zip.png
 	assets/sfx_back.wav
 	assets/sfx_confirm.wav

@@ -11,6 +11,7 @@
 #include "UI/GameInfoCache.h"
 #include "Common/UI/PopupScreens.h"
 #include "Core/Config.h"
+#include "GPU/Common/PresentationCommon.h"
 
 TextWithImage::TextWithImage(ImageID imageID, std::string_view text, UI::LinearLayoutParams *layoutParams) : UI::LinearLayout(ORIENT_HORIZONTAL, layoutParams) {
 	using namespace UI;
@@ -20,7 +21,7 @@ TextWithImage::TextWithImage(ImageID imageID, std::string_view text, UI::LinearL
 		layoutParams_->height = ITEM_HEIGHT;
 	}
 	if (imageID.isValid()) {
-		Add(new ImageView(imageID, "", UI::IS_DEFAULT, new LinearLayoutParams(0.0f, UI::Gravity::G_VCENTER)));
+		Add(new ImageView(imageID, "", new LinearLayoutParams(0.0f, UI::Gravity::G_VCENTER)));
 	}
 	Add(new TextView(text, new LinearLayoutParams(1.0f, UI::Gravity::G_VCENTER)));
 }
@@ -33,7 +34,7 @@ CopyableText::CopyableText(ImageID imageID, std::string_view text, UI::LinearLay
 		layoutParams_->height = ITEM_HEIGHT;
 	}
 	if (imageID.isValid()) {
-		Add(new ImageView(imageID, "", UI::IS_DEFAULT, new LinearLayoutParams(0.0f, UI::Gravity::G_VCENTER)));
+		Add(new ImageView(imageID, "", new LinearLayoutParams(0.0f, UI::Gravity::G_VCENTER)));
 	}
 	Add(new TextView(text, new LinearLayoutParams(1.0f, UI::Gravity::G_VCENTER)))->SetBig(true);
 
@@ -43,7 +44,7 @@ CopyableText::CopyableText(ImageID imageID, std::string_view text, UI::LinearLay
 	});
 }
 
-TopBar::TopBar(const UIContext &ctx, TopBarFlags flags, std::string_view title, UI::LayoutParams *layoutParams) : UI::LinearLayout(ORIENT_HORIZONTAL, layoutParams), flags_(flags) {
+TopBar::TopBar(const UIContext &ctx, TopBarFlags flags, std::string_view title, UI::LayoutParams *layoutParams) : UI::LinearLayout(ORIENT_HORIZONTAL, layoutParams) {
 	using namespace UI;
 	SetSpacing(10.0f);
 	if (!layoutParams) {
@@ -51,11 +52,15 @@ TopBar::TopBar(const UIContext &ctx, TopBarFlags flags, std::string_view title, 
 		layoutParams_->height = 64.0f;
 	}
 
-	auto dlg = GetI18NCategory(I18NCat::DIALOG);
-	backButton_ = Add(new Choice(ImageID("I_NAVIGATE_BACK"), new LinearLayoutParams(ITEM_HEIGHT, ITEM_HEIGHT)));
-	backButton_->OnClick.Add([](UI::EventParams &e) {
-		e.bubbleResult = DR_BACK;
-	});
+	if (!(flags & TopBarFlags::NoBackButton)) {
+		auto dlg = GetI18NCategory(I18NCat::DIALOG);
+		backButton_ = Add(new Choice(ImageID("I_NAVIGATE_BACK"), new LinearLayoutParams(ITEM_HEIGHT, ITEM_HEIGHT)));
+		backButton_->OnClick.Add([](UI::EventParams &e) {
+			e.bubbleResult = DR_BACK;
+		});
+	} else {
+		Add(new Spacer(4.0f));
+	}
 
 	if (!title.empty()) {
 		TextView *titleView = Add(new TextView(title, ALIGN_VCENTER, false, new LinearLayoutParams(1.0f, Gravity::G_VCENTER)));
@@ -166,6 +171,7 @@ void GameImageView::GetContentDimensions(const UIContext &dc, float &w, float &h
 	w = 0;
 	h = 0;
 	if (!tex || !tex->texture) {
+		// Not ready yet
 		return;
 	}
 	Draw::Texture *texture = tex->texture;
@@ -241,8 +247,10 @@ void AddRotationPicker(ScreenManager *screenManager, UI::ViewGroup *parent, bool
 	auto co = GetI18NCategory(I18NCat::CONTROLS);
 
 	PopupMultiChoice *rot = parent->Add(new PopupMultiChoice(&g_Config.iScreenRotation, text ? co->T("Screen Rotation") : "", screenRotation, 0, ARRAY_SIZE(screenRotation), I18NCat::CONTROLS, screenManager, text ? nullptr : new LinearLayoutParams(ITEM_HEIGHT, ITEM_HEIGHT)));
-	rot->SetHideTitle(true);
-	rot->SetIconOnly(true);
+	if (!text) {
+		rot->SetHideTitle(true);
+		rot->SetIconOnly(true);
+	}
 	rot->SetChoiceIcons(screenRotationIcons);
 
 	// Portrait Reversed is not recommended on iPhone (and we also ban it in the plist).
@@ -252,4 +260,33 @@ void AddRotationPicker(ScreenManager *screenManager, UI::ViewGroup *parent, bool
 		INFO_LOG(Log::System, "New display rotation: %d", g_Config.iScreenRotation);
 		System_Notify(SystemNotification::ROTATE_UPDATED);
 	});
+}
+
+void GameInfoBGView::Draw(UIContext &dc) {
+	// Should only be called when visible.
+	std::shared_ptr<GameInfo> ginfo = g_gameInfoCache->GetInfo(dc.GetDrawContext(), gamePath_, GameInfoFlags::PIC1);
+	dc.Flush();
+
+	// PIC1 is the loading image, so let's only draw if it's available.
+	if (ginfo->Ready(GameInfoFlags::PIC1) && ginfo->pic1.texture) {
+		Draw::Texture *texture = ginfo->pic1.texture;
+		if (texture) {
+			const DisplayLayoutConfig &config = g_Config.GetDisplayLayoutConfig(g_display.GetDeviceOrientation());
+			// Similar to presentation, we want to put the game PIC1 in the same region of the screen.
+			FRect frame = GetScreenFrame(config.bIgnoreScreenInsets, g_display.pixel_xres, g_display.pixel_yres);
+			FRect rc;
+			CalculateDisplayOutputRect(config, &rc, texture->Width(), texture->Height(), frame, config.iInternalScreenRotation);
+
+			// Need to adjust for DPI here since we're still in the UI coordinate space here, not the pixel coordinate space used for in-game presentation.
+			Bounds bounds(rc.x * g_display.dpi_scale_x, rc.y * g_display.dpi_scale_y, rc.w * g_display.dpi_scale_x, rc.h * g_display.dpi_scale_y);
+
+			dc.GetDrawContext()->BindTexture(0, texture);
+
+			double loadTime = ginfo->pic1.timeLoaded;
+			uint32_t color = alphaMul(color_, ease((time_now_d() - loadTime) * 3));
+			dc.Draw()->DrawTexRect(bounds, 0, 0, 1, 1, color);
+			dc.Flush();
+			dc.RebindTexture();
+		}
+	}
 }

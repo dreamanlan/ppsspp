@@ -64,6 +64,7 @@
 #include "UI/Store.h"
 #include "UI/UploadScreen.h"
 #include "UI/InstallZipScreen.h"
+#include "UI/Background.h"
 #include "Core/Config.h"
 #include "Core/Loaders.h"
 #include "Common/Data/Text/I18n.h"
@@ -291,8 +292,10 @@ void GameButton::Draw(UIContext &dc) {
 
 	// Some types we just draw a default icon for.
 	ImageID imageIcon = ImageID::invalid();
+	bool drawBackground = true;
 	switch (ginfo->fileType) {
-	case IdentifiedFileType::UNKNOWN_ELF: imageIcon = ImageID("I_DEBUGGER"); break;
+	case IdentifiedFileType::PSP_ELF: imageIcon = ImageID("I_APP"); drawBackground = false; break;
+	case IdentifiedFileType::UNKNOWN_ELF: imageIcon = ImageID("I_APP"); drawBackground = false; break;
 	case IdentifiedFileType::PPSSPP_GE_DUMP: imageIcon = ImageID("I_DISPLAY"); break;
 	case IdentifiedFileType::PSX_ISO:
 	case IdentifiedFileType::PSP_PS1_PBP: imageIcon = ImageID("I_PSX_ISO"); break;
@@ -304,6 +307,15 @@ void GameButton::Draw(UIContext &dc) {
 	case IdentifiedFileType::ERROR_IDENTIFYING:
 	case IdentifiedFileType::UNKNOWN_BIN: imageIcon = ImageID("I_FILE"); break;
 	default: break;
+	}
+
+	if (ginfo->Ready(GameInfoFlags::ICON)) {
+		if (ginfo->icon.texture && drawBackground) {
+			texture = ginfo->icon.texture;
+		} else if (drawBackground) {
+			// No icon, but drawBackground is set. Let's show a plain icon depending on type.
+			imageIcon = (ginfo->fileType == IdentifiedFileType::PSP_ISO || ginfo->fileType == IdentifiedFileType::PSP_ISO_NP) ? ImageID("I_UMD") : ImageID("I_APP");
+		}
 	}
 
 	Bounds overlayBounds = bounds_;
@@ -320,10 +332,6 @@ void GameButton::Draw(UIContext &dc) {
 					overlayColor = 0x0;
 			}
 		}
-	}
-
-	if (ginfo->Ready(GameInfoFlags::ICON) && ginfo->icon.texture) {
-		texture = ginfo->icon.texture;
 	}
 
 	int x = bounds_.x;
@@ -389,6 +397,13 @@ void GameButton::Draw(UIContext &dc) {
 		dc.Draw()->Flush();
 	}
 
+	if (gridStyle_ && g_Config.bShowIDOnGameIcon && ginfo->fileType != IdentifiedFileType::PSP_ELF && !ginfo->id_version.empty()) {
+		dc.SetFontScale(0.5f * g_Config.fGameGridScale, 0.5f * g_Config.fGameGridScale);
+		dc.DrawText(ginfo->id_version, bounds_.x + 5, y + 1, 0xFF000000, ALIGN_TOPLEFT);
+		dc.DrawText(ginfo->id_version, bounds_.x + 4, y, dc.GetTheme().infoStyle.fgColor, ALIGN_TOPLEFT);
+		dc.SetFontScale(1.0f, 1.0f);
+	}
+
 	if (imageIcon.isValid()) {
 		Style style = dc.GetTheme().itemStyle;
 
@@ -401,7 +416,6 @@ void GameButton::Draw(UIContext &dc) {
 		if (overlayColor) {
 			dc.FillRect(Drawable(overlayColor), overlayBounds);
 		}
-		return;
 	}
 
 	char discNumInfo[8];
@@ -413,17 +427,7 @@ void GameButton::Draw(UIContext &dc) {
 	dc.Draw()->Flush();
 	dc.RebindTexture();
 	dc.SetFontStyle(dc.GetTheme().uiFont);
-	if (gridStyle_ && ginfo->fileType == IdentifiedFileType::PPSSPP_GE_DUMP) {
-		// Super simple drawing for GE dumps (no icon, just the filename).
-		dc.PushScissor(bounds_);
-		const std::string currentTitle = ginfo->GetTitle();
-		dc.SetFontStyle(*GetTextStyle(dc, UI::TextSize::Small));
-		dc.DrawText(title_, bounds_.x + 4.0f, bounds_.centerY(), style.fgColor, ALIGN_VCENTER | ALIGN_LEFT);
-		dc.SetFontStyle(dc.GetTheme().uiFont);
-		title_ = currentTitle;
-		dc.Draw()->Flush();
-		dc.PopScissor();
-	} else if (!gridStyle_) {
+	if (!gridStyle_) {
 		float tw, th;
 		dc.Draw()->Flush();
 		dc.PushScissor(bounds_);
@@ -499,13 +503,6 @@ void GameButton::Draw(UIContext &dc) {
 				dc.Draw()->DrawImage(regionIcons[regionIndex], bounds_.x + 4, y + h - image->h - 5, 1.0f);
 			}
 		}
-	}
-
-	if (gridStyle_ && g_Config.bShowIDOnGameIcon) {
-		dc.SetFontScale(0.5f*g_Config.fGameGridScale, 0.5f*g_Config.fGameGridScale);
-		dc.DrawText(ginfo->id_version, bounds_.x+5, y+1, 0xFF000000, ALIGN_TOPLEFT);
-		dc.DrawText(ginfo->id_version, bounds_.x+4, y, dc.GetTheme().infoStyle.fgColor, ALIGN_TOPLEFT);
-		dc.SetFontScale(1.0f, 1.0f);
 	}
 
 	if (overlayColor) {
@@ -1435,7 +1432,7 @@ void MainScreen::CreateViews() {
 #if !defined(MOBILE_DEVICE)
 		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
 		ImageID icon(g_Config.bFullScreen ? "I_RESTORE" : "I_FULLSCREEN");
-		fullscreenButton_ = logo->Add(new Button(gr->T("FullScreen", "Full Screen"), icon, new AnchorLayoutParams(48, 48, NONE, 0, 0, NONE, Centering::None)));
+		fullscreenButton_ = logo->Add(new Button("", icon, new AnchorLayoutParams(48, 48, NONE, 0, 0, NONE, Centering::None)));
 		fullscreenButton_->SetIgnoreText(true);
 		fullscreenButton_->OnClick.Add([this](UI::EventParams &e) {
 			if (fullscreenButton_) {
@@ -1542,32 +1539,7 @@ void MainScreen::DrawBackground(UIContext &dc) {
 }
 
 bool MainScreen::DrawBackgroundFor(UIContext &dc, const Path &gamePath, float progress) {
-	dc.Flush();
-
-	std::shared_ptr<GameInfo> ginfo;
-	if (!gamePath.empty()) {
-		ginfo = g_gameInfoCache->GetInfo(dc.GetDrawContext(), gamePath, GameInfoFlags::PIC1);
-		// Loading texture data may bind a texture.
-		dc.RebindTexture();
-
-		// Let's not bother if there's no picture.
-		if (!ginfo->Ready(GameInfoFlags::PIC1) || !ginfo->pic1.texture) {
-			return false;
-		}
-	} else {
-		return false;
-	}
-
-	auto pic = ginfo->GetPIC1();
-	Draw::Texture *texture = pic ? pic->texture : nullptr;
-
-	uint32_t color = whiteAlpha(ease(progress)) & 0xFFc0c0c0;
-	if (texture) {
-		dc.GetDrawContext()->BindTexture(0, texture);
-		dc.Draw()->DrawTexRect(dc.GetBounds(), 0, 0, 1, 1, color);
-		dc.Flush();
-		dc.RebindTexture();
-	}
+	::DrawGameBackground(dc, gamePath, Lin::Vec3(0.f, 0.f, 0.f), progress);
 	return true;
 }
 
