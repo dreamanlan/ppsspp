@@ -57,15 +57,11 @@ using namespace std::placeholders;
 #include "Core/KeyMap.h"
 #include "Core/MemFault.h"
 #include "Core/Reporting.h"
+#include "Core/Util/PathUtil.h"
 #include "Core/System.h"
 #include "GPU/Common/PresentationCommon.h"
-#include "Core/FileSystems/VirtualDiscFileSystem.h"
 #include "GPU/GPUState.h"
 #include "GPU/GPUCommon.h"
-#include "GPU/Common/FramebufferManagerCommon.h"
-#if !PPSSPP_PLATFORM(UWP)
-#include "GPU/Vulkan/DebugVisVulkan.h"
-#endif
 #include "Core/MIPS/MIPS.h"
 #include "Core/HLE/sceCtrl.h"
 #include "Core/HLE/sceSas.h"
@@ -75,13 +71,13 @@ using namespace std::placeholders;
 #include "Core/Debugger/SymbolMap.h"
 #include "Core/RetroAchievements.h"
 #include "Core/SaveState.h"
+#include "Core/Screenshot.h"
 #include "UI/ImDebugger/ImDebugger.h"
 #include "Core/HLE/__sceAudio.h"
 // #include "Core/HLE/proAdhoc.h"
 #include "Core/HW/Display.h"
 
 #include "UI/BackgroundAudio.h"
-#include "UI/OnScreenDisplay.h"
 #include "UI/GamepadEmu.h"
 #include "UI/PauseScreen.h"
 #include "UI/MainScreen.h"
@@ -104,7 +100,6 @@ using namespace std::placeholders;
 #include "ext/imgui/imgui_impl_thin3d.h"
 #include "ext/imgui/imgui_impl_platform.h"
 
-#include "Core/Reporting.h"
 
 #if PPSSPP_PLATFORM(WINDOWS) && !PPSSPP_PLATFORM(UWP)
 #include "Windows/MainWindow.h"
@@ -862,10 +857,6 @@ void EmuScreen::OnVKey(VirtKey virtualKeyCode, bool down) {
 			System_PostUIMessage(UIMessage::SAVESTATE_DISPLAY_SLOT);
 		}
 		break;
-	case VIRTKEY_SCREENSHOT:
-		if (down)
-			g_TakeScreenshot = true;
-		break;
 	case VIRTKEY_RAPID_FIRE:
 		__CtrlSetRapidFire(down, g_Config.iRapidFireInterval);
 		break;
@@ -894,6 +885,10 @@ void EmuScreen::ProcessVKey(VirtKey virtKey) {
 		// Note: We don't check NetworkWarnUserIfOnlineAndCantSpeed, because we can keep
 		// running in the background of the menu.
 		pauseTrigger_ = true;
+		break;
+
+	case VIRTKEY_SCREENSHOT:
+		TakeUserScreenshot();
 		break;
 
 	case VIRTKEY_TOGGLE_DEBUGGER:
@@ -1460,7 +1455,7 @@ void EmuScreen::update() {
 	if (errorMessage_.size()) {
 		auto err = GetI18NCategory(I18NCat::ERRORS);
 		auto di = GetI18NCategory(I18NCat::DIALOG);
-		std::string errLoadingFile = gamePath_.ToVisualString() + "\n\n";
+		std::string errLoadingFile = GetFriendlyPath(gamePath_) + "\n\n";
 		errLoadingFile.append(err->T("Error loading file", "Could not load game"));
 		errLoadingFile.append("\n");
 		errLoadingFile.append(errorMessage_);
@@ -1615,6 +1610,8 @@ ScreenRenderFlags EmuScreen::PreRender(ScreenRenderMode mode) {
 			const DisplayLayoutConfig &displayLayoutConfig = g_Config.GetDisplayLayoutConfig(orientation);
 			// We run just the post shaders.
 			gpu->PrepareCopyDisplayToOutput(displayLayoutConfig);
+			// Screens on top like reporting might want to take screenshots of existing framebuffers.
+			ScreenshotNotifyPostGameRender(screenManager()->getDrawContext());
 		}
 	}
 	return ScreenRenderFlags::NONE;
@@ -1686,6 +1683,8 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 		// We're in run-behind mode, but we don't want to draw chat, debug UI and stuff. We do draw the imdebugger though.
 		// So, darken and bail here.
 		// Reset viewport/scissor to be sure.
+		draw->SetViewport(viewport);
+		draw->SetScissorRect(0, 0, g_display.pixel_xres, g_display.pixel_yres);
 		darken();
 		return screenRenderFlags;
 	}
@@ -1792,7 +1791,7 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
 			gpu->EndHostFrame();
 
 			// The right time to run this
-			if (SaveState::ProcessScreenshot(skipBufferEffects) && skipBufferEffects) {
+			if (ScreenshotNotifyPostGameRender(draw) && skipBufferEffects) {
 				// Need to restore the backbuffer render pass, it probably got destroyed.
 				draw->BindFramebufferAsRenderTarget(nullptr, {RPAction::CLEAR, RPAction::CLEAR, RPAction::CLEAR}, "BackBuffer");
 			}
