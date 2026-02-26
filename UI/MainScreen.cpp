@@ -85,12 +85,21 @@ static void LaunchFile(ScreenManager *screenManager, Screen *currentScreen, cons
 		// Check if we already know that this game isn't playable.
 		auto info = g_gameInfoCache->GetInfo(nullptr, path, GameInfoFlags::FILE_TYPE);
 
-		if (info->fileType == IdentifiedFileType::PSP_UMD_VIDEO_ISO) {
+		switch (info->fileType) {
+		case IdentifiedFileType::PSP_UMD_VIDEO_ISO:
 			// We show info about it.
 			screenManager->push(new GameScreen(path, false));
 			return;
+		case IdentifiedFileType::PSP_SAVEDATA_DIRECTORY:
+		{
+			// Show the savedata popup, why not?
+			std::string title = SanitizeString(info->GetTitle(), StringRestriction::NoLineBreaksOrSpecials, 0, 200);
+			screenManager->push(new SavedataPopupScreen(Path(), path, title));
+			return;
 		}
-
+		default:
+			break;
+		}
 		if (currentScreen) {
 			screenManager->cancelScreensAbove(currentScreen);
 		}
@@ -398,9 +407,14 @@ void GameButton::Draw(UIContext &dc) {
 	}
 
 	if (gridStyle_ && g_Config.bShowIDOnGameIcon && ginfo->fileType != IdentifiedFileType::PSP_ELF && !ginfo->id_version.empty()) {
+		std::string_view idStr = ginfo->id_version;
+		if (ginfo->fileType == IdentifiedFileType::PSP_SAVEDATA_DIRECTORY) {
+			auto ga = GetI18NCategory(I18NCat::GAME);
+			idStr = ga->T("SaveData");
+		}
 		dc.SetFontScale(0.5f * g_Config.fGameGridScale, 0.5f * g_Config.fGameGridScale);
-		dc.DrawText(ginfo->id_version, bounds_.x + 5, y + 1, 0xFF000000, ALIGN_TOPLEFT);
-		dc.DrawText(ginfo->id_version, bounds_.x + 4, y, dc.GetTheme().infoStyle.fgColor, ALIGN_TOPLEFT);
+		dc.DrawText(idStr, bounds_.x + 5, y + 1, 0xFF000000, ALIGN_TOPLEFT);
+		dc.DrawText(idStr, bounds_.x + 4, y, dc.GetTheme().infoStyle.fgColor, ALIGN_TOPLEFT);
 		dc.SetFontScale(1.0f, 1.0f);
 	}
 
@@ -900,7 +914,7 @@ void GameBrowser::Refresh() {
 		topBar->Add(new Choice(ImageID("I_GEAR"), new LayoutParams(64.0f, 64.0f)))->OnClick.Handle(this, &GameBrowser::GridSettingsClick);
 
 		if (*gridStyle_) {
-			gameList_ = new UI::GridLayoutList(UI::GridLayoutSettings(150*g_Config.fGameGridScale, 85*g_Config.fGameGridScale), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(10, 0, 0, 0)));
+			gameList_ = new UI::GridLayoutList(UI::GridLayoutSettings(150*g_Config.fGameGridScale, 85*g_Config.fGameGridScale), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(10, 0, 6, 0)));
 		} else {
 			UI::LinearLayout *gl = new UI::LinearLayoutList(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 			gl->SetSpacing(4.0f);
@@ -908,7 +922,7 @@ void GameBrowser::Refresh() {
 		}
 	} else {
 		if (*gridStyle_) {
-			gameList_ = new UI::GridLayoutList(UI::GridLayoutSettings(150*g_Config.fGameGridScale, 85*g_Config.fGameGridScale), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(10, 0, 0, 0)));
+			gameList_ = new UI::GridLayoutList(UI::GridLayoutSettings(150*g_Config.fGameGridScale, 85*g_Config.fGameGridScale), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(10, 0, 6, 0)));
 		} else {
 			UI::LinearLayout *gl = new UI::LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 			gl->SetSpacing(4.0f);
@@ -1239,7 +1253,7 @@ public:
 		dc.DrawText(versionString,
 			bounds_.x + iconImg->w + 8,
 			bounds_.y + logoImg->h + (tiny ? 8 : 6),
-			dc.GetTheme().itemStyle.fgColor);
+			dc.GetTheme().infoStyle.fgColor);
 		dc.SetFontStyle(dc.GetTheme().uiFont);
 	}
 
@@ -1254,7 +1268,7 @@ public:
 		if (!portrait_ && (touch.flags & TouchInputFlags::DOWN) && bounds_.Contains(touch.x, touch.y) && touch.y >= bounds_.y2() - 20) {
 			auto di = GetI18NCategory(I18NCat::DIALOG);
 			System_CopyStringToClipboard(PPSSPP_GIT_VERSION);
-			g_OSD.Show(OSDType::MESSAGE_INFO, ApplySafeSubstitutions(di->T("Copied to clipboard: %1"), PPSSPP_GIT_VERSION), 1.0f, "copyToClip");
+			g_OSD.Show(OSDType::MESSAGE_INFO, ApplySafeSubstitutions(di->T("Copied to clipboard: %1"), PPSSPP_GIT_VERSION), 0.0f, "copyToClip");
 			return true;
 		}
 		return retval;
@@ -1304,13 +1318,22 @@ void MainScreen::CreateMainButtons(UI::ViewGroup *parent, bool portrait) {
 #if PPSSPP_PLATFORM(IOS_APP_STORE)
 	showExitButton = false;
 #elif PPSSPP_PLATFORM(ANDROID)
-	// Allow it in Android TV only.
-	showExitButton = System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_TV;
+	// The exit button previously created problems on Android.
+	// However now we allow it in landscape mode.
+	showExitButton = !portrait; //  System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_TV;
 #endif
 	// Officially, iOS apps should not have exit buttons. Remove it to maximize app store review chances.
-	// Additionally, the Exit button creates problems on Android.
 	if (showExitButton) {
-		parent->Add(new Choice(mm->T("Exit")))->OnClick.Handle(this, &MainScreen::OnExit);
+		parent->Add(new Choice(mm->T("Exit")))->OnClick.Add([](UI::EventParams &e) {
+			// Let's make sure the config was saved, since it may not have been.
+			if (!g_Config.Save("MainScreen::OnExit")) {
+				System_Toast("Failed to save settings!\nCheck permissions, or try to restart the device.");
+			}
+
+			UpdateUIState(UISTATE_EXIT);
+			// Request the framework to exit cleanly.
+			System_ExitApp();
+		});
 	}
 }
 
@@ -1423,20 +1446,22 @@ void MainScreen::CreateViews() {
 		rootLayout->Add(header);
 		rootLayout->Add(leftColumn);
 		root_ = rootLayout;
+
+		// no space for a fullscreen button!
 	} else {
 		const Margins actionMenuMargins(0, 10, 10, 0);
-		ViewGroup *rightColumn = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(300, FILL_PARENT, actionMenuMargins));
+		ViewGroup *rightColumn = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(320, FILL_PARENT, actionMenuMargins));
 		LinearLayout *rightColumnItems = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 		rightColumnItems->SetSpacing(0.0f);
 		ViewGroup *logo = new LogoView(false, new LinearLayoutParams(FILL_PARENT, 80.0f));
 #if !defined(MOBILE_DEVICE)
 		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
 		ImageID icon(g_Config.bFullScreen ? "I_RESTORE" : "I_FULLSCREEN");
-		fullscreenButton_ = logo->Add(new Button("", icon, new AnchorLayoutParams(48, 48, NONE, 0, 0, NONE, Centering::None)));
-		fullscreenButton_->SetIgnoreText(true);
-		fullscreenButton_->OnClick.Add([this](UI::EventParams &e) {
-			if (fullscreenButton_) {
-				fullscreenButton_->SetImageID(ImageID(!g_Config.bFullScreen ? "I_RESTORE" : "I_FULLSCREEN"));
+		UI::Button *fullscreenButton = logo->Add(new Button("", icon, new AnchorLayoutParams(48, 48, NONE, 0, 0, NONE, Centering::None)));
+		fullscreenButton->SetIgnoreText(true);
+		fullscreenButton->OnClick.Add([fullscreenButton](UI::EventParams &e) {
+			if (fullscreenButton) {
+				fullscreenButton->SetImageID(ImageID(!g_Config.bFullScreen ? "I_RESTORE" : "I_FULLSCREEN"));
 			}
 			g_Config.bFullScreen = !g_Config.bFullScreen;
 			System_ApplyFullscreenState();
@@ -1461,29 +1486,92 @@ void MainScreen::CreateViews() {
 	}
 
 	root_->SetTag("mainroot");
+
+	if (!g_Config.sUpgradeMessage.empty()) {
+		auto di = GetI18NCategory(I18NCat::DIALOG);
+		Margins margins(0, 0);
+		if (vertical) {
+			margins.bottom = ITEM_HEIGHT;
+		}
+		UI::LinearLayout *upgradeBar = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, margins));
+
+		UI::Margins textMargins(10, 5);
+		UI::Margins buttonMargins(5, 0);
+		UI::Drawable solid(0xFFbd9939);
+		upgradeBar->SetSpacing(5.0f);
+		upgradeBar->SetBG(solid);
+		std::string upgradeMessage(di->T("New version of PPSSPP available"));
+		if (!vertical) {
+			// The version only really fits in the horizontal layout.
+			upgradeMessage += ": " + g_Config.sUpgradeVersion;
+		}
+		upgradeBar->Add(new TextView(upgradeMessage, new LinearLayoutParams(1.0f, UI::Gravity::G_VCENTER, textMargins)));
+		upgradeBar->Add(new Choice(di->T("Download"), new LinearLayoutParams(buttonMargins)))->OnClick.Handle(this, &MainScreen::OnDownloadUpgrade);
+		Choice *dismiss = upgradeBar->Add(new Choice("", ImageID("I_CROSS"), new LinearLayoutParams(buttonMargins)));
+		dismiss->OnClick.Add([this](UI::EventParams &e) {
+			g_Config.DismissUpgrade();
+			g_Config.Save("dismissupgrade");
+			RecreateViews();
+		});
+
+		// Slip in under root_
+		LinearLayout *newRoot = new LinearLayout(ORIENT_VERTICAL);
+		newRoot->Add(root_);
+		newRoot->Add(upgradeBar);
+		root_->ReplaceLayoutParams(new LinearLayoutParams(1.0));
+		root_ = newRoot;
+	}
 }
 
-bool MainScreen::key(const KeyInput &touch) {
-	if (touch.flags & KeyInputFlags::DOWN) {
-		if (touch.keyCode == NKCODE_CTRL_LEFT || touch.keyCode == NKCODE_CTRL_RIGHT)
+bool MainScreen::key(const KeyInput &key) {
+	if (key.flags & KeyInputFlags::DOWN) {
+		if (key.keyCode == NKCODE_CTRL_LEFT || key.keyCode == NKCODE_CTRL_RIGHT)
 			searchKeyModifier_ = true;
-		if (touch.keyCode == NKCODE_F && searchKeyModifier_ && System_GetPropertyBool(SYSPROP_HAS_TEXT_INPUT_DIALOG)) {
+		if (key.keyCode == NKCODE_F && searchKeyModifier_ && System_GetPropertyBool(SYSPROP_HAS_TEXT_INPUT_DIALOG)) {
 			auto se = GetI18NCategory(I18NCat::SEARCH);
 			System_InputBoxGetString(GetRequesterToken(), se->T("Search term"), searchFilter_, false, [&](const std::string &value, int) {
 				searchFilter_ = StripSpaces(value);
 				searchChanged_ = true;
 			});
 		}
-	} else if (touch.flags & KeyInputFlags::UP) {
-		if (touch.keyCode == NKCODE_CTRL_LEFT || touch.keyCode == NKCODE_CTRL_RIGHT)
+		// This is not a DialogScreen so we have to implement behavior here too.
+		// However we add a small safety hatch by checking for gamepad, and for now we only allow this behavior
+		// on Android. Might reconsider for other platforms.
+#if PPSSPP_PLATFORM(ANDROID)
+		if ((key.deviceId == DEVICE_ID_PAD_0 || key.deviceId == DEVICE_ID_XINPUT_0) && UI::IsEscapeKey(key)) {
+			System_ExitApp();
+		}
+#endif
+	} else if (key.flags & KeyInputFlags::UP) {
+		if (key.keyCode == NKCODE_CTRL_LEFT || key.keyCode == NKCODE_CTRL_RIGHT)
 			searchKeyModifier_ = false;
 	}
 
-	return UIBaseScreen::key(touch);
+	return UIBaseScreen::key(key);
 }
 
 void MainScreen::OnAllowStorage(UI::EventParams &e) {
 	System_AskForPermission(SYSTEM_PERMISSION_STORAGE);
+}
+
+// See Config::SupportsUpgradeCheck() if you add more platforms.
+void MainScreen::OnDownloadUpgrade(UI::EventParams &e) {
+#if PPSSPP_PLATFORM(ANDROID)
+	// Go to app store
+	if (System_GetPropertyBool(SYSPROP_APP_GOLD)) {
+		System_LaunchUrl(LaunchUrlType::BROWSER_URL, "market://details?id=org.ppsspp.ppssppgold");
+	} else {
+		System_LaunchUrl(LaunchUrlType::BROWSER_URL, "market://details?id=org.ppsspp.ppsspp");
+	}
+#elif PPSSPP_PLATFORM(WINDOWS)
+	System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org/download");
+#elif PPSSPP_PLATFORM(IOS_APP_STORE)
+	System_LaunchUrl(LaunchUrlType::BROWSER_URL, "itms-apps://itunes.apple.com/app/id6496972903");
+#else
+	// Go directly to ppsspp.org and let the user sort it out
+	// (for details and in case downloads doesn't have their platform.)
+	System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org/");
+#endif
 }
 
 void MainScreen::sendMessage(UIMessage message, const char *value) {
@@ -1626,18 +1714,6 @@ void MainScreen::OnForums(UI::EventParams &e) {
 	System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://forums.ppsspp.org");
 }
 
-void MainScreen::OnExit(UI::EventParams &e) {
-	// Let's make sure the config was saved, since it may not have been.
-	if (!g_Config.Save("MainScreen::OnExit")) {
-		System_Toast("Failed to save settings!\nCheck permissions, or try to restart the device.");
-	}
-
-	// Request the framework to exit cleanly.
-	System_ExitApp();
-
-	UpdateUIState(UISTATE_EXIT);
-}
-
 void MainScreen::dialogFinished(const Screen *dialog, DialogResult result) {
 	std::string tag = dialog->tag();
 	if (tag == "Store") {
@@ -1672,6 +1748,11 @@ void MainScreen::dialogFinished(const Screen *dialog, DialogResult result) {
 	} else if (tag == "Upload") {
 		// Files may have been uploaded.
 		RecreateViews();
+	} else if (tag == "SavedataPopup") {
+		// We must have come from the file browser tab.
+		if (gameBrowsers_.size() >= 2) {
+			gameBrowsers_[1]->RequestRefresh();
+		}
 	}
 }
 

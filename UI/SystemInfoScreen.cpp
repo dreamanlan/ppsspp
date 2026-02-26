@@ -68,7 +68,7 @@ static void CopySummaryToClipboard(Draw::DrawContext *draw) {
 	System_CopyStringToClipboard(summary);
 	delete[] summary;
 
-	g_OSD.Show(OSDType::MESSAGE_INFO, ApplySafeSubstitutions(di->T("Copied to clipboard: %1"), si->T("System Information")));
+	g_OSD.Show(OSDType::MESSAGE_INFO, ApplySafeSubstitutions(di->T("Copied to clipboard: %1"), si->T("System Information")), 0.0f, "copyToClip");
 }
 
 void SystemInfoScreen::CreateTabs() {
@@ -390,6 +390,10 @@ void SystemInfoScreen::CreateBuildConfigTab(UI::LinearLayout *buildConfig) {
 	if (System_GetPropertyBool(SYSPROP_APP_GOLD)) {
 		buildConfig->Add(new InfoItem("GOLD", ""));
 	}
+
+	// Not really build config, but similar.
+	std::string installerName = System_GetProperty(SYSPROP_INSTALLER_NAME);
+	buildConfig->Add(new InfoItem(si->T("Installer"), installerName));
 }
 
 void SystemInfoScreen::CreateCPUExtensionsTab(UI::LinearLayout *cpuExtensions) {

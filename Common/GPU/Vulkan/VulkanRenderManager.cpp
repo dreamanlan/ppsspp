@@ -108,7 +108,7 @@ bool VKRGraphicsPipeline::Create(VulkanContext *vulkan, VkRenderPass compatibleR
 	inputAssembly.topology = desc->topology;
 	inputAssembly.primitiveRestartEnable = VK_FALSE;
 
-#if PPSSPP_PLATFORM(MAC)
+#if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
 	if (vulkan->GetWindowSystem() == WindowSystem::WINDOWSYSTEM_METAL_EXT) {
 		if (desc->topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP ||
 		    desc->topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN ||
@@ -1603,6 +1603,11 @@ void VulkanRenderManager::Run(VKRRenderThreadTask &task) {
 				outOfDateFrames_++;
 			} else if (res == VK_SUBOPTIMAL_KHR) {
 				outOfDateFrames_++;
+			} else if (res == VK_ERROR_SURFACE_LOST_KHR) {
+				_dbg_assert_msg_(false, "vkQueuePresentKHR failed with VK_ERROR_SURFACE_LOST_KHR! result=%s", VulkanResultToString(res));
+				// Can't really do anything about this here, but let's try to continue anyway, maybe the app is in the process of being switched
+				// away from on Android or something.
+				outOfDateFrames_++;
 			} else if (res != VK_SUCCESS) {
 				_assert_msg_(false, "vkQueuePresentKHR failed! result=%s", VulkanResultToString(res));
 			} else {
@@ -1955,7 +1960,7 @@ void VKRPipelineLayout::FlushDescSets(VulkanContext *vulkan, int frame, QueuePro
 				_dbg_assert_(data[i].buffer.buffer != VK_NULL_HANDLE);
 				bufferInfo[numBuffers].buffer = data[i].buffer.buffer;
 				bufferInfo[numBuffers].range = data[i].buffer.range;
-				bufferInfo[numBuffers].offset = 0;
+				bufferInfo[numBuffers].offset = 0;  // This is supplied by the dynamic offset.
 				writes[numWrites].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 				writes[numWrites].pBufferInfo = &bufferInfo[numBuffers];
 				writes[numWrites].pImageInfo = nullptr;

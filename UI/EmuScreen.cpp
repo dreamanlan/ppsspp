@@ -460,12 +460,19 @@ EmuScreen::~EmuScreen() {
 	std::string gameID = g_paramSFO.GetValueString("DISC_ID");
 	g_Config.TimeTracker().Stop(gameID);
 
-	// Should not be able to quit during boot, as boot can't be cancelled.
-	_dbg_assert_(!bootPending_);
-	if (!bootPending_) {
-		Achievements::UnloadGame();
-		PSP_Shutdown(true);
+	if (bootPending_) {
+		// We probably quit during boot, got blocked in lostdevice, and then didn't end up in update again to call PSP_InitUpdate.
+		// So we need to finish and join the boot thread before we can exit.
+		_dbg_assert_(PollBootState() != BootState::Booting);
+		// Make sure we join the boot thread, by calling PSP_InitUpdate.
+		std::string error_string = "(unknown error)";
+		PSP_InitUpdate(&error_string);
+		ERROR_LOG(Log::G3D, "Quit during boot, not good. %s", error_string.c_str());
+		bootPending_ = false;
 	}
+
+	Achievements::UnloadGame();
+	PSP_Shutdown(true);
 
 	// If achievements are disabled in the global config, let's shut it down here.
 	if (!g_Config.bAchievementsEnable) {
@@ -743,6 +750,7 @@ static void ShowFpsLimitNotice() {
 	g_OSD.SetFlags("altspeed", OSDMessageFlags::Transparent);
 }
 
+// NOTE: This is unsynchronized! We should have as little as possible in here.
 void EmuScreen::OnVKey(VirtKey virtualKeyCode, bool down) {
 	if (!isOnTop_)
 		return;
@@ -762,21 +770,6 @@ void EmuScreen::OnVKey(VirtKey virtualKeyCode, bool down) {
 			PSP_CoreParameter().fastForward = true;
 		} else {
 			PSP_CoreParameter().fastForward = false;
-		}
-		break;
-
-	case VIRTKEY_SPEED_TOGGLE:
-		if (down && !NetworkWarnUserIfOnlineAndCantSpeed()) {
-			// Cycle through enabled speeds.
-			if (PSP_CoreParameter().fpsLimit == FPSLimit::NORMAL && g_Config.iFpsLimit1 >= 0) {
-				PSP_CoreParameter().fpsLimit = FPSLimit::CUSTOM1;
-			} else if (PSP_CoreParameter().fpsLimit == FPSLimit::CUSTOM1 && g_Config.iFpsLimit2 >= 0) {
-				PSP_CoreParameter().fpsLimit = FPSLimit::CUSTOM2;
-			} else if (PSP_CoreParameter().fpsLimit == FPSLimit::CUSTOM1 || PSP_CoreParameter().fpsLimit == FPSLimit::CUSTOM2) {
-				PSP_CoreParameter().fpsLimit = FPSLimit::NORMAL;
-			}
-
-			ShowFpsLimitNotice();
 		}
 		break;
 
@@ -807,56 +800,6 @@ void EmuScreen::OnVKey(VirtKey virtualKeyCode, bool down) {
 		}
 		break;
 
-	case VIRTKEY_RESET_EMULATION:
-		if (down) {
-			System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
-		}
-		break;
-
-#ifndef MOBILE_DEVICE
-	case VIRTKEY_RECORD:
-		if (down) {
-			if (g_Config.bDumpFrames == g_Config.bDumpAudio) {
-				g_Config.bDumpFrames = !g_Config.bDumpFrames;
-				g_Config.bDumpAudio = !g_Config.bDumpAudio;
-			} else {
-				// This hotkey should always toggle both audio and video together.
-				// So let's make sure that's the only outcome even if video OR audio was already being dumped.
-				if (g_Config.bDumpFrames) {
-					AVIDump::Stop();
-					AVIDump::Start(PSP_CoreParameter().renderWidth, PSP_CoreParameter().renderHeight);
-					g_Config.bDumpAudio = true;
-				} else {
-					WAVDump::Reset();
-					g_Config.bDumpFrames = true;
-				}
-			}
-		}
-		break;
-#endif
-
-	case VIRTKEY_SAVE_STATE:
-		if (down && !Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate() && !bootPending_) {
-			SaveState::SaveSlot(SaveState::GetGamePrefix(g_paramSFO), g_Config.iCurrentStateSlot, &AfterSaveStateAction);
-		}
-		break;
-	case VIRTKEY_LOAD_STATE:
-		if (down && !Achievements::WarnUserIfHardcoreModeActive(false) && !NetworkWarnUserIfOnlineAndCantSavestate() && !bootPending_) {
-			SaveState::LoadSlot(SaveState::GetGamePrefix(g_paramSFO), g_Config.iCurrentStateSlot, &AfterSaveStateAction);
-		}
-		break;
-	case VIRTKEY_PREVIOUS_SLOT:
-		if (down && !Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
-			SaveState::PrevSlot();
-			System_PostUIMessage(UIMessage::SAVESTATE_DISPLAY_SLOT);
-		}
-		break;
-	case VIRTKEY_NEXT_SLOT:
-		if (down && !Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
-			SaveState::NextSlot();
-			System_PostUIMessage(UIMessage::SAVESTATE_DISPLAY_SLOT);
-		}
-		break;
 	case VIRTKEY_RAPID_FIRE:
 		__CtrlSetRapidFire(down, g_Config.iRapidFireInterval);
 		break;
@@ -876,6 +819,7 @@ void EmuScreen::ProcessQueuedVKeys() {
 	queuedVirtKeys_.clear();
 }
 
+// Synchronized processing of virtkeys.
 void EmuScreen::ProcessVKey(VirtKey virtKey) {
 	auto mc = GetI18NCategory(I18NCat::MAPPABLECONTROLS);
 	auto sc = GetI18NCategory(I18NCat::SCREEN);
@@ -1076,6 +1020,67 @@ void EmuScreen::ProcessVKey(VirtKey virtKey) {
 		}
 		break;
 
+	case VIRTKEY_SPEED_TOGGLE:
+		if (!NetworkWarnUserIfOnlineAndCantSpeed()) {
+			// Cycle through enabled speeds.
+			if (PSP_CoreParameter().fpsLimit == FPSLimit::NORMAL && g_Config.iFpsLimit1 >= 0) {
+				PSP_CoreParameter().fpsLimit = FPSLimit::CUSTOM1;
+			} else if (PSP_CoreParameter().fpsLimit == FPSLimit::CUSTOM1 && g_Config.iFpsLimit2 >= 0) {
+				PSP_CoreParameter().fpsLimit = FPSLimit::CUSTOM2;
+			} else if (PSP_CoreParameter().fpsLimit == FPSLimit::CUSTOM1 || PSP_CoreParameter().fpsLimit == FPSLimit::CUSTOM2) {
+				PSP_CoreParameter().fpsLimit = FPSLimit::NORMAL;
+			}
+
+			ShowFpsLimitNotice();
+		}
+		break;
+
+	case VIRTKEY_RESET_EMULATION:
+		System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
+		break;
+
+#ifndef MOBILE_DEVICE
+	case VIRTKEY_RECORD:
+		if (g_Config.bDumpFrames == g_Config.bDumpAudio) {
+			g_Config.bDumpFrames = !g_Config.bDumpFrames;
+			g_Config.bDumpAudio = !g_Config.bDumpAudio;
+		} else {
+			// This hotkey should always toggle both audio and video together.
+			// So let's make sure that's the only outcome even if video OR audio was already being dumped.
+			if (g_Config.bDumpFrames) {
+				AVIDump::Stop();
+				AVIDump::Start(PSP_CoreParameter().renderWidth, PSP_CoreParameter().renderHeight);
+				g_Config.bDumpAudio = true;
+			} else {
+				WAVDump::Reset();
+				g_Config.bDumpFrames = true;
+			}
+		}
+		break;
+#endif
+
+	case VIRTKEY_SAVE_STATE:
+		if (!Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate() && !bootPending_) {
+			SaveState::SaveSlot(SaveState::GetGamePrefix(g_paramSFO), g_Config.iCurrentStateSlot, &AfterSaveStateAction);
+		}
+		break;
+	case VIRTKEY_LOAD_STATE:
+		if (!Achievements::WarnUserIfHardcoreModeActive(false) && !NetworkWarnUserIfOnlineAndCantSavestate() && !bootPending_) {
+			SaveState::LoadSlot(SaveState::GetGamePrefix(g_paramSFO), g_Config.iCurrentStateSlot, &AfterSaveStateAction);
+		}
+		break;
+	case VIRTKEY_PREVIOUS_SLOT:
+		if (!Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
+			SaveState::PrevSlot();
+			System_PostUIMessage(UIMessage::SAVESTATE_DISPLAY_SLOT);
+		}
+		break;
+	case VIRTKEY_NEXT_SLOT:
+		if (!Achievements::WarnUserIfHardcoreModeActive(true) && !NetworkWarnUserIfOnlineAndCantSavestate()) {
+			SaveState::NextSlot();
+			System_PostUIMessage(UIMessage::SAVESTATE_DISPLAY_SLOT);
+		}
+		break;
 	default:
 		break;
 	}
@@ -1337,7 +1342,7 @@ void EmuScreen::CreateViews() {
 		ImageID("I_TRIANGLE"),
 	};
 
-	Spinner *loadingSpinner = root_->Add(new Spinner(symbols, ARRAY_SIZE(symbols), new AnchorLayoutParams(NONE, NONE, 45, 45, Centering::Both)));
+	Spinner *loadingSpinner = root_->Add(new Spinner(symbols, ARRAY_SIZE(symbols), new AnchorLayoutParams(NONE, NONE, 70, 70, Centering::Both)));
 	loadingSpinner_ = loadingSpinner;
 
 	loadingBG->SetTag("LoadingBG");
@@ -1370,6 +1375,13 @@ void EmuScreen::CreateViews() {
 }
 
 void EmuScreen::deviceLost() {
+	// If we are currently in the middle of boot, we have to block here!
+	// Otherwise the boot thread will encounter draw_ == nullptr and weird stuff like that.
+	// We're doing this in a very ugly way for now.
+	while (PollBootState() == BootState::Booting) {
+		sleep_ms(100, "device-lost-during-boot");
+	}
+
 	UIScreen::deviceLost();
 
 	if (imguiInited_) {
@@ -1636,11 +1648,15 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 
 	const DeviceOrientation orientation = GetDeviceOrientation();
 	const DisplayLayoutConfig &displayLayoutConfig = g_Config.GetDisplayLayoutConfig(orientation);
+	// We might have a bad viewport after RunEmulation, reset.
+	Viewport viewport{0.0f, 0.0f, (float)g_display.pixel_xres, (float)g_display.pixel_yres, 0.0f, 1.0f};
 
 	if (!skipBufferEffects_ && !ShouldRunEmulation(mode)) {
 		if (gpu) {
 			gpu->CopyDisplayToOutput(displayLayoutConfig);
 		}
+		draw->SetViewport(viewport);
+		draw->SetScissorRect(0, 0, g_display.pixel_xres, g_display.pixel_yres);
 		darken();
 		return screenRenderFlags;
 	}
@@ -1651,6 +1667,8 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 		if (mode & ScreenRenderMode::TOP) {
 			checkPowerDown();
 		}
+		draw->SetViewport(viewport);
+		draw->SetScissorRect(0, 0, g_display.pixel_xres, g_display.pixel_yres);
 		renderUI();
 		return screenRenderFlags;
 	}
@@ -1660,8 +1678,6 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 		screenRenderFlags = RunEmulation(true);
 	}
 
-	// We might have a bad viewport after RunEmulation, reset.
-	Viewport viewport{0.0f, 0.0f, (float)g_display.pixel_xres, (float)g_display.pixel_yres, 0.0f, 1.0f};
 	draw->SetViewport(viewport);
 
 	ProcessQueuedVKeys();
@@ -1693,6 +1709,10 @@ ScreenRenderFlags EmuScreen::render(ScreenRenderMode mode) {
 	checkPowerDown();
 
 	if (hasVisibleUI()) {
+		if (clearColor_) {
+			// This is used on the exception bluescreen for example.
+			draw->Clear(Draw::Aspect::COLOR_BIT, clearColor_, 0.0f, 0);
+		}
 		cardboardDisableButton_->SetVisibility(displayLayoutConfig.bEnableCardboardVR ? UI::V_VISIBLE : UI::V_GONE);
 		renderUI();
 	}
@@ -1721,8 +1741,8 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
 	const Draw::Viewport viewport{0.0f, 0.0f, (float)g_display.pixel_xres, (float)g_display.pixel_yres, 0.0f, 1.0f};
 
 	PSP_UpdateDebugStats((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::DEBUG_STATS || g_Config.bLogFrameDrops);
+	clearColor_ = 0;
 	bool blockedExecution = Achievements::IsBlockingExecution();
-	uint32_t clearColor = 0;
 	if (!blockedExecution) {
 		// We process savestates before running the frame.
 		SaveState::Process();
@@ -1762,9 +1782,7 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
 			if (info.type != MIPSExceptionType::NONE) {
 				// Clear to blue background screen
 				bool dangerousSettings = !Reporting::IsSupported();
-				clearColor = dangerousSettings ? 0xFF900050 : 0xFF900000;
-				draw->Clear(Draw::Aspect::COLOR_BIT, clearColor, 0.0f, 0);
-				// The info is drawn later in renderUI
+				clearColor_ = dangerousSettings ? 0xFF900050 : 0xFF900000;
 			} else {
 				// If we're stepping, it's convenient not to clear the screen entirely, so we copy display to output.
 				// This won't work in non-buffered, but that's fine.

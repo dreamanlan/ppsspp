@@ -381,7 +381,6 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Common/MemArenaWin32.cpp \
   $(SRC)/Common/MemArenaPosix.cpp \
   $(SRC)/Common/MemoryUtil.cpp \
-  $(SRC)/Common/MipsCPUDetect.cpp \
   $(SRC)/Common/StringUtils.cpp \
   $(SRC)/Common/SysError.cpp \
   $(SRC)/Common/TimeUtil.cpp
@@ -770,6 +769,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/Util/BlockAllocator.cpp \
   $(SRC)/Core/Util/PPGeDraw.cpp \
   $(SRC)/Core/Util/RecentFiles.cpp \
+  $(SRC)/Core/Util/VideoPlayer.cpp \
   $(SRC)/git-version.cpp
 
 LOCAL_MODULE := ppsspp_core
@@ -915,6 +915,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/EmuScreen.cpp \
   $(SRC)/UI/MainScreen.cpp \
   $(SRC)/UI/TabbedDialogScreen.cpp \
+  $(SRC)/UI/AdhocServerScreen.cpp \
   $(SRC)/UI/SimpleDialogScreen.cpp \
   $(SRC)/UI/MemStickScreen.cpp \
   $(SRC)/UI/IAPScreen.cpp \

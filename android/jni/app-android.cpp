@@ -125,9 +125,8 @@ static std::atomic<int> emuThreadState((int)EmuThreadState::DISABLED);
 AndroidAudioState *g_audioState;
 
 struct FrameCommand {
-	FrameCommand() {}
-	FrameCommand(std::string cmd, std::string prm) : command(cmd), params(prm) {}
-
+	FrameCommand() = default;
+	FrameCommand(std::string_view cmd, std::string_view param) : command(cmd), params(param) {}
 	std::string command;
 	std::string params;
 };
@@ -187,6 +186,7 @@ static std::atomic<bool> renderLoopRunning;
 static bool renderer_inited = false;
 
 static bool sustainedPerfSupported = false;
+static std::string g_installerName;
 
 static std::map<SystemPermission, PermissionStatus> permissions;
 
@@ -311,7 +311,7 @@ static void EmuThreadFunc() {
 			ERROR_LOG(Log::System, "No activity, clearing commands");
 			while (!frameCommands.empty())
 				frameCommands.pop();
-			return;
+			break;
 		}
 		// Still under lock here.
 		ProcessFrameCommands(env);
@@ -353,7 +353,7 @@ static void PushCommand(std::string_view cmd, std::string_view param) {
 
 // Android implementation of callbacks to the Java part of the app
 void System_Toast(std::string_view text) {
-	PushCommand("toast", std::string(text));
+	PushCommand("toast", text);
 }
 
 void System_ShowKeyboard() {
@@ -371,6 +371,9 @@ void System_LaunchUrl(LaunchUrlType urlType, std::string_view url) {
 	case LaunchUrlType::BROWSER_URL: PushCommand("launchBrowser", url); break;
 	case LaunchUrlType::MARKET_URL: PushCommand("launchMarket", url); break;
 	case LaunchUrlType::EMAIL_ADDRESS: PushCommand("launchEmail", url); break;
+	// Can't really support the below well on Android...
+	case LaunchUrlType::LOCAL_FOLDER: break;
+	case LaunchUrlType::LOCAL_FILE: break;
 	}
 }
 
@@ -386,6 +389,8 @@ std::string System_GetProperty(SystemProperty prop) {
 		return boardName;
 	case SYSPROP_BUILD_VERSION:
 		return PPSSPP_GIT_VERSION;
+	case SYSPROP_INSTALLER_NAME:
+		return g_installerName;
 	default:
 		return "";
 	}
@@ -726,7 +731,8 @@ static bool bFirstResume = false;
 
 extern "C" void Java_org_ppsspp_ppsspp_NativeApp_init
 (JNIEnv * env, jclass, jstring jmodel, jint jdeviceType, jstring jlangRegion, jstring japkpath,
-	jstring jdataDir, jstring jexternalStorageDir, jstring jexternalFilesDir, jstring jNativeLibDir, jstring jadditionalStorageDirs, jstring jcacheDir, jstring jshortcutParam,
+	jstring jdataDir, jstring jexternalStorageDir, jstring jexternalFilesDir, jstring jNativeLibDir,
+	jstring jadditionalStorageDirs, jstring jcacheDir, jstring jshortcutParam, jstring jInstallerName,
 	jint jAndroidVersion, jstring jboard) {
 	SetCurrentThreadName("androidInit");
 
@@ -746,6 +752,8 @@ extern "C" void Java_org_ppsspp_ppsspp_NativeApp_init
 
 	systemName = GetJavaString(env, jmodel);
 	langRegion = GetJavaString(env, jlangRegion);
+
+	g_installerName = GetJavaString(env, jInstallerName);
 
 	EARLY_LOG("NativeApp.init(): device name: '%s'", systemName.c_str());
 
@@ -839,6 +847,7 @@ retry:
 			INFO_LOG(Log::System, "Failed to initialize Vulkan, switching to OpenGL");
 			g_Config.iGPUBackend = (int)GPUBackend::OPENGL;
 			SetGPUBackend(GPUBackend::OPENGL);
+			delete ctx;
 			goto retry;
 		} else {
 			graphicsContext = ctx;
@@ -1627,9 +1636,7 @@ extern "C" void JNICALL Java_org_ppsspp_ppsspp_NativeApp_pushCameraImageAndroid(
 // Call this under frameCommandLock.
 static void ProcessFrameCommands(JNIEnv *env) {
 	while (!frameCommands.empty()) {
-		FrameCommand frameCmd;
-		frameCmd = frameCommands.front();
-		frameCommands.pop();
+		const FrameCommand &frameCmd = frameCommands.front();
 
 		DEBUG_LOG(Log::System, "frameCommand '%s' '%s'", frameCmd.command.c_str(), frameCmd.params.c_str());
 
@@ -1638,6 +1645,8 @@ static void ProcessFrameCommands(JNIEnv *env) {
 		env->CallVoidMethod(ppssppActivity, postCommand, cmd, param);
 		env->DeleteLocalRef(cmd);
 		env->DeleteLocalRef(param);
+
+		frameCommands.pop();
 	}
 }
 
@@ -1685,6 +1694,7 @@ extern "C" void JNICALL Java_org_ppsspp_ppsspp_PpssppActivity_requestExitVulkanR
 }
 
 // TODO: Merge with the Win32 EmuThread and so on, and the Java EmuThread?
+// This function must release the window reference.
 static void VulkanEmuThread(ANativeWindow *wnd) {
 	SetCurrentThreadName("EmuThread");
 
@@ -1695,6 +1705,7 @@ static void VulkanEmuThread(ANativeWindow *wnd) {
 		ERROR_LOG(Log::G3D, "runVulkanRenderLoop: Tried to enter without a created graphics context.");
 		renderLoopRunning = false;
 		exitRenderLoop = false;
+		ANativeWindow_release(wnd);
 		return;
 	}
 
@@ -1702,6 +1713,7 @@ static void VulkanEmuThread(ANativeWindow *wnd) {
 		WARN_LOG(Log::G3D, "runVulkanRenderLoop: ExitRenderLoop requested at start, skipping the whole thing.");
 		renderLoopRunning = false;
 		exitRenderLoop = false;
+		ANativeWindow_release(wnd);
 		return;
 	}
 
@@ -1721,6 +1733,7 @@ static void VulkanEmuThread(ANativeWindow *wnd) {
 		delete graphicsContext;
 		graphicsContext = nullptr;
 		renderLoopRunning = false;
+		ANativeWindow_release(wnd);
 		return;
 	}
 
@@ -1756,6 +1769,7 @@ static void VulkanEmuThread(ANativeWindow *wnd) {
 	graphicsContext->ShutdownFromRenderThread();
 	renderLoopRunning = false;
 	exitRenderLoop = false;
+	ANativeWindow_release(wnd);
 
 	WARN_LOG(Log::G3D, "Render loop function exited.");
 }
@@ -1790,15 +1804,15 @@ Java_org_ppsspp_ppsspp_ShortcutActivity_queryGameInfo(JNIEnv * env, jclass, jobj
 	if (info) {
 		INFO_LOG(Log::System, "GetInfo successful, waiting");
 
-		// Wait for both name and icon
-		int attempts = 1000;
+		// Wait for both name and icon for a second.
+		int attempts = 100;
 		while ((!info->Ready(GameInfoFlags::PARAM_SFO) || !info->Ready(GameInfoFlags::ICON)) && attempts > 0) {
-			sleep_ms(1, "info-icon-poll");
+			sleep_ms(10, "info-icon-poll");
 			attempts--;
 		}
 		INFO_LOG(Log::System, "Done waiting");
 
-		if (info->fileType != IdentifiedFileType::UNKNOWN) {
+		if (attempts > 0 && info->fileType != IdentifiedFileType::UNKNOWN) {
 			// Get the game title
 			gameName = info->GetTitle();
 			if (gameName.length() > strlen("The ") && startsWithNoCase(gameName, "The ")) {

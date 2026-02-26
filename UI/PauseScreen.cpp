@@ -103,9 +103,9 @@ protected:
 		Margins contentMargins(10, 0);
 		content->Add(new AsyncImageFileView(screenshotFilename_, IS_KEEP_ASPECT, new LinearLayoutParams(480, 272, contentMargins)))->SetCanBeFocused(false);
 
-		GridLayoutSettings gridsettings(240, 64, 5);
+		GridLayoutSettings gridsettings(235, 64, 10);
 		gridsettings.fillCells = true;
-		GridLayout *grid = content->Add(new GridLayoutList(gridsettings, new LayoutParams(FILL_PARENT, WRAP_CONTENT)));
+		GridLayout *grid = content->Add(new GridLayoutList(gridsettings, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(10, 0))));
 
 		Choice *back = new Choice(di->T("Back"));
 
@@ -165,7 +165,7 @@ void ScreenshotViewScreen::OnLoadState(UI::EventParams &e) {
 void ScreenshotViewScreen::OnUndoState(UI::EventParams &e) {
 	if (!NetworkWarnUserIfOnlineAndCantSavestate()) {
 		SaveState::UndoSaveSlot(saveStatePrefix_, slot_);
-		TriggerFinish(DR_CANCEL);
+		TriggerFinish(DR_YES);  // DR_YES signals that we need a refresh, but not to close the pause menu.
 	}
 }
 
@@ -183,7 +183,7 @@ void ScreenshotViewScreen::OnDeleteState(UI::EventParams &e) {
 	screenManager()->push(new UI::MessagePopupScreen(title, message, di->T("Delete"), di->T("Cancel"), [this](bool result) {
 		if (result) {
 			SaveState::DeleteSlot(saveStatePrefix_, slot_);
-			TriggerFinish(DR_CANCEL);
+			TriggerFinish(DR_YES);  // DR_YES signals that we need a refresh, but not to close the pause menu.
 		}
 	}));
 }
@@ -380,7 +380,7 @@ void GamePauseScreen::OnVKey(VirtKey virtualKeyCode, bool down) {
 	}
 }
 
-void GamePauseScreen::CreateSavestateControls(UI::LinearLayout *leftColumnItems) {
+void GamePauseScreen::CreateSavestateControls(UI::LinearLayout *leftColumnItems, UI::LinearLayout **extraRow) {
 	auto pa = GetI18NCategory(I18NCat::PAUSE);
 
 	using namespace UI;
@@ -407,23 +407,39 @@ void GamePauseScreen::CreateSavestateControls(UI::LinearLayout *leftColumnItems)
 			RecreateViews();
 		});
 	}
-	leftColumnItems->Add(new Spacer(0.0));
 
-	LinearLayout *buttonRow = leftColumnItems->Add(new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(Margins(10, 0, 0, 0))));
+	*extraRow = nullptr;
+
+	LinearLayout *buttonRow = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(Margins(10, 0, 0, 0)));
 	if (g_Config.bEnableStateUndo && !Achievements::HardcoreModeActive() && NetworkAllowSaveState()) {
-		UI::Choice *loadUndoButton = buttonRow->Add(new Choice(pa->T("Undo last load"), ImageID("I_NAVIGATE_BACK")));
+		UI::Choice *loadUndoButton = buttonRow->Add(new Choice(pa->T("Undo last load"), ImageID("I_NAVIGATE_BACK"), new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT)));
 		loadUndoButton->SetEnabled(SaveState::HasUndoLoad(saveStatePrefix_));
-		loadUndoButton->OnClick.Handle(this, &GamePauseScreen::OnLoadUndo);
+		loadUndoButton->OnClick.Add([this](UI::EventParams &e) {
+			SaveState::UndoLoad(saveStatePrefix_, &AfterSaveStateAction);
+			TriggerFinish(DR_CANCEL);
+		});
 
-		UI::Choice *saveUndoButton = buttonRow->Add(new Choice(pa->T("Undo last save"), ImageID("I_NAVIGATE_BACK")));
+		UI::Choice *saveUndoButton = buttonRow->Add(new Choice(pa->T("Undo last save"), ImageID("I_NAVIGATE_BACK"), new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT)));
 		saveUndoButton->SetEnabled(SaveState::HasUndoLastSave(saveStatePrefix_));
-		saveUndoButton->OnClick.Handle(this, &GamePauseScreen::OnLastSaveUndo);
+		saveUndoButton->OnClick.Add([this](UI::EventParams &e) {
+			SaveState::UndoLastSave(saveStatePrefix_);
+			RecreateViews();
+		});
 	}
 
 	if (g_Config.iRewindSnapshotInterval > 0 && !Achievements::HardcoreModeActive() && NetworkAllowSaveState()) {
-		UI::Choice *rewindButton = buttonRow->Add(new Choice(pa->T("Rewind"), ImageID("I_REWIND")));
+		UI::Choice *rewindButton = buttonRow->Add(new Choice(pa->T("Rewind"), ImageID("I_REWIND"), new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT)));
 		rewindButton->SetEnabled(SaveState::CanRewind());
-		rewindButton->OnClick.Handle(this, &GamePauseScreen::OnRewind);
+		rewindButton->OnClick.Add([this](UI::EventParams &e) {
+			SaveState::Rewind(&AfterSaveStateAction);
+			TriggerFinish(DR_CANCEL);
+		});
+	}
+
+	if (buttonRow->GetNumSubviews() == 0) {
+		delete buttonRow;
+	} else {
+		*extraRow = buttonRow;
 	}
 }
 
@@ -476,8 +492,11 @@ void GamePauseScreen::CreateViews() {
 		});
 	}
 
-	ViewGroup *saveStateScroll = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(1.0f, scrollMargins));
-	root_->Add(saveStateScroll);
+	ViewGroup *saveScrollContainer = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(1.0f, scrollMargins));
+	root_->Add(saveScrollContainer);
+
+	ScrollView *saveStateScroll = saveScrollContainer->Add(new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT, 1.0f)));
+	saveStateScroll->SetShadows(false);
 
 	LinearLayout *saveDataScrollItems = new LinearLayoutList(ORIENT_VERTICAL, new LayoutParams(FILL_PARENT, WRAP_CONTENT));
 	saveStateScroll->Add(saveDataScrollItems);
@@ -547,7 +566,11 @@ void GamePauseScreen::CreateViews() {
 				System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org/docs/troubleshooting/save-state-time-warps");
 			});
 		}
-		CreateSavestateControls(saveDataScrollItems);
+		LinearLayout *extraRow = nullptr;
+		CreateSavestateControls(saveDataScrollItems, &extraRow);
+		if (extraRow) {
+			saveScrollContainer->Add(extraRow);
+		}
 	} else {
 		// Let's show the active challenges.
 		std::set<uint32_t> ids = Achievements::GetActiveChallengeIDs();
@@ -607,7 +630,7 @@ void GamePauseScreen::CreateViews() {
 		rightColumnItems->Add(new Choice(pa->T("Game Settings"), ImageID("I_GEAR")))->OnClick.Handle(this, &GamePauseScreen::OnGameSettings);
 		auto pa = GetI18NCategory(I18NCat::PAUSE);
 		if (g_Config.HasGameConfig(g_paramSFO.GetValueString("DISC_ID"))) {
-			Choice *delGameConfig = rightColumnItems->Add(new Choice(pa->T("Delete Game Config")));
+			Choice *delGameConfig = rightColumnItems->Add(new Choice(pa->T("Delete Game Config"), ImageID("I_TRASHCAN")));
 			delGameConfig->OnClick.Handle(this, &GamePauseScreen::OnDeleteConfig);
 			delGameConfig->SetEnabled(!bootPending_);
 		}
@@ -709,7 +732,7 @@ void GamePauseScreen::ShowContextMenu(UI::View *menuButton, bool portrait) {
 	using namespace UI;
 	PopupCallbackScreen *contextMenu = new UI::PopupCallbackScreen([this, portrait](UI::ViewGroup *parent) {
 		auto di = GetI18NCategory(I18NCat::DIALOG);
-		parent->Add(new Choice(di->T("Reset")))->OnClick.Add([this](UI::EventParams &e) {
+		parent->Add(new Choice(di->T("Reset"), ImageID("I_WARNING")))->OnClick.Add([this](UI::EventParams &e) {
 			std::string confirmMessage = GetConfirmExitMessage();
 			if (!confirmMessage.empty()) {
 				auto di = GetI18NCategory(I18NCat::DIALOG);
@@ -753,12 +776,18 @@ void GamePauseScreen::OnState(UI::EventParams &e) {
 
 void GamePauseScreen::dialogFinished(const Screen *dialog, DialogResult dr) {
 	std::string tag = dialog->tag();
-	if (tag == "ScreenshotView" && dr == DR_OK) {
-		finishNextFrame_ = true;
+	if (tag == "ScreenshotView") {
+		if (dr == DR_OK) {
+			finishNextFrame_ = true;
+		} else if (dr != DR_CANCEL && dr != DR_BACK) {
+			// Just go back to the pause menu, but refresh the savestate thumbnails in case something changed.
+			RecreateViews();
+		}
 	} else {
 		if (tag == "Game") {
 			g_BackgroundAudio.SetGame(Path());
-		} else if (tag != "Prompt" && tag != "ContextMenuPopup") {
+		} else if (tag != "MessagePopupScreen" && tag != "Prompt" && tag != "ContextMenuPopup" && tag != "ContextMenuCallbackPopup" && tag != "Report" && tag != "listpopup") {
+			// Maybe should invert the logic here, so many cases..
 			// There may have been changes to our savestates, so let's recreate.
 			RecreateViews();
 		}
@@ -775,6 +804,10 @@ int GetUnsavedProgressSeconds() {
 // If empty, no confirmation dialog should be shown.
 std::string GetConfirmExitMessage() {
 	std::string confirmMessage;
+
+	if (!PSP_IsInited()) {
+		return std::string();
+	}
 
 	int unsavedSeconds = GetUnsavedProgressSeconds();
 
@@ -800,7 +833,7 @@ std::string GetConfirmExitMessage() {
 			return confirmMessage;
 		}
 		auto di = GetI18NCategory(I18NCat::DIALOG);
-		confirmMessage = ApplySafeSubstitutions(di->T("You haven't saved your progress for %1."), NiceTimeFormat((int)unsavedSeconds));
+		confirmMessage += ApplySafeSubstitutions(di->T("You haven't saved your progress for %1."), NiceTimeFormat((int)unsavedSeconds));
 		confirmMessage += '\n';
 	}
 
@@ -834,24 +867,6 @@ void GamePauseScreen::OnExit(UI::EventParams &e) {
 
 void GamePauseScreen::OnReportFeedback(UI::EventParams &e) {
 	screenManager()->push(new ReportScreen(gamePath_));
-}
-
-void GamePauseScreen::OnRewind(UI::EventParams &e) {
-	SaveState::Rewind(&AfterSaveStateAction);
-
-	TriggerFinish(DR_CANCEL);
-}
-
-void GamePauseScreen::OnLoadUndo(UI::EventParams &e) {
-	SaveState::UndoLoad(saveStatePrefix_, &AfterSaveStateAction);
-
-	TriggerFinish(DR_CANCEL);
-}
-
-void GamePauseScreen::OnLastSaveUndo(UI::EventParams &e) {
-	SaveState::UndoLastSave(saveStatePrefix_);
-
-	RecreateViews();
 }
 
 void GamePauseScreen::OnCreateConfig(UI::EventParams &e) {

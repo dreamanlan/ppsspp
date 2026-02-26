@@ -32,6 +32,7 @@
 #include "Common/Log.h"
 #include "Common/TimeUtil.h"
 #include "Common/Thread/ThreadUtil.h"
+#include "Common/Data/Format/JSONReader.h"
 #include "Common/Data/Format/IniFile.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/Data/Text/Parsers.h"
@@ -71,9 +72,54 @@ static const std::string_view logSectionName = "LogDebug";
 static const std::string_view logSectionName = "Log";
 #endif
 
-const std::vector<std::string_view> defaultProAdhocServerList = {
-	"socom.cc", "psp.gameplayer.club",
+const std::vector<AdhocServerListEntry> defaultProAdhocServerList = {
+	{"Socom Adhoc Server", "socom.cc", "https://discord.com/invite/XtVYDr7", "France", "For players looking to play any games", AdhocDataMode::AemuPostoffice},
+	{"Sony PSP & PSVita Fans", "psp.gameplayer.club", "https://psp.gameplayer.club/", "Unknown", "For players looking to play any games", AdhocDataMode::P2P},
+	{"Madness Gaming Network", "psp.mgn.pub", "https://discord.com/invite/kaPScVrPes", "Alaska USA", "For players looking to play any games, has a good amount of Monster Hunter players, also provides VPN to work around connection issues as well as P2P mode", AdhocDataMode::AemuPostoffice},
+	{"EA Nation Hub", "eahub.eu", "https://discord.com/invite/fwrQHHxrQQ", "France", "Mostly for Medal of Honor Heros 2 & Need For Speed Most Wanted players, but can be used for other games", AdhocDataMode::AemuPostoffice},
+	{"Psi-Hate", "psi-hate.com", "https://discord.com/invite/wxeGVkM", "Minnesota USA", "For players looking to play any games", AdhocDataMode::AemuPostoffice},
+	{"AlexGHD", "jpa36a7.glddns.com", "https://discord.com/invite/gp45nhdjQJ", "São Paulo Brazil", "For players looking to play any games", AdhocDataMode::AemuPostoffice},
+	{"ArenaAnywhere SA", "relay-sa.arenaanywhere.site", "https://discord.gg/MxZrDHmrN", "South Africa", "For players looking to play any games", AdhocDataMode::AemuPostoffice},
+	{"ArenaAnywhere EU", "relay.arenaanywhere.site", "https://discord.gg/MxZrDHmrN", "Europe", "For players looking to play any games", AdhocDataMode::AemuPostoffice},
+	{"Retroverze Relay Beta", "psp.retroverze.my.id", "https://retroverze.my.id/beta", "Unknown", "For players looking to play any games", AdhocDataMode::AemuPostoffice},
+	{"Games Nexus", "adhoc.gamesnexus.ovh", "https://adhoc.gamesnexus.ovh", "Milan Italy", "For players looking to play any games", AdhocDataMode::AemuPostoffice},
 };
+
+// TODO download the list from somewhere and probably cache it on disk
+// should also make the url configurable and support file:/ local list besides https:// online lists
+std::mutex downloadedProAdhocServerListMutex;
+std::vector<AdhocServerListEntry> downloadedProAdhocServerList;
+
+static const char *get_data_mode_string(AdhocDataMode mode) {
+	switch (mode) {
+	case AdhocDataMode::P2P:
+		return "AdhocDataMode::P2P";
+	case AdhocDataMode::AemuPostoffice:
+		return "AdhocDataMode::AemuPostoffice";
+	}
+	return "unknown";
+}
+
+AdhocDataMode getAdhocServerDataMode(const std::string &server) {
+	auto list = defaultProAdhocServerList;
+
+	downloadedProAdhocServerListMutex.lock();
+	if (downloadedProAdhocServerList.size() != 0) {
+		INFO_LOG(Log::sceNet, "Using downloaded adhoc server list");
+		list = downloadedProAdhocServerList;
+	}
+	downloadedProAdhocServerListMutex.unlock();
+
+	for (const auto &item : list) {
+		if (equals(server, item.hostname)) {
+			INFO_LOG(Log::sceNet, "server %s is in known list, using data mode %s", server.c_str(), get_data_mode_string(item.mode));
+			return item.mode;
+		}
+	}
+
+	INFO_LOG(Log::sceNet, "server %s is not in known list, using data mode %s", server.c_str(), get_data_mode_string(AdhocDataMode::P2P));
+	return AdhocDataMode::P2P;
+}
 
 std::string GPUBackendToString(GPUBackend backend) {
 	switch (backend) {
@@ -128,7 +174,7 @@ std::string DefaultLangRegion() {
 	return defaultLangRegion;
 }
 
-static int DefaultDepthRaster() {
+int DefaultDepthRaster() {
 #ifdef CROSSSIMD_SLOW
 	// No SIMD acceleration for the depth rasterizer.
 	// Default to off.
@@ -1033,8 +1079,7 @@ static const ConfigSetting networkSettings[] = {
 	ConfigSetting("EnableWlan", SETTING(g_Config, bEnableWlan), false, CfgFlag::PER_GAME),
 	ConfigSetting("EnableAdhocServer", SETTING(g_Config, bEnableAdhocServer), false, CfgFlag::PER_GAME),
 	ConfigSetting("proAdhocServer", SETTING(g_Config, sProAdhocServer), "socom.cc", CfgFlag::PER_GAME),
-	ConfigSetting("UseServerRelay", SETTING(g_Config, bUseServerRelay), false, CfgFlag::PER_GAME),
-	ConfigSetting("proAdhocServerList", SETTING(g_Config, proAdhocServerList), &defaultProAdhocServerList, CfgFlag::DEFAULT),
+	ConfigSetting("AdhocServerRelayMode", SETTING(g_Config, iAdhocServerRelayMode), (int)AdhocServerRelayMode::Auto, CfgFlag::PER_GAME),
 	ConfigSetting("PortOffset", SETTING(g_Config, iPortOffset), 10000, CfgFlag::PER_GAME),
 	ConfigSetting("PrimaryDNSServer", SETTING(g_Config, sInfrastructureDNSServer), "67.222.156.250", CfgFlag::PER_GAME),
 	ConfigSetting("MinTimeout", SETTING(g_Config, iMinTimeout), 0, CfgFlag::PER_GAME),
@@ -1108,10 +1153,15 @@ static const ConfigSetting jitSettings[] = {
 	ConfigSetting("DiscardRegsOnJRRA", SETTING(g_Config, bDiscardRegsOnJRRA), false, CfgFlag::DONT_SAVE | CfgFlag::REPORT),
 };
 
+static const ConfigSetting upgradeSettings[] = {
+	ConfigSetting("UpgradeMessage", SETTING(g_Config, sUpgradeMessage), "", CfgFlag::DEFAULT),
+	ConfigSetting("UpgradeVersion", SETTING(g_Config, sUpgradeVersion), "", CfgFlag::DEFAULT),
+	ConfigSetting("DismissedVersion", SETTING(g_Config, sDismissedVersion), "", CfgFlag::DEFAULT),
+};
+
 static const ConfigSetting themeSettings[] = {
 	ConfigSetting("ThemeName", SETTING(g_Config, sThemeName), "Default", CfgFlag::DEFAULT),
 };
-
 
 static const ConfigSetting vrSettings[] = {
 	ConfigSetting("VREnable", SETTING(g_Config, bEnableVR), true, CfgFlag::PER_GAME),
@@ -1147,6 +1197,7 @@ static const ConfigSectionMeta g_sectionMeta[] = {
 	{ &g_Config, themeSettings, ARRAY_SIZE(themeSettings), "Theme" },
 	{ &g_Config, vrSettings, ARRAY_SIZE(vrSettings), "VR" },
 	{ &g_Config, achievementSettings, ARRAY_SIZE(achievementSettings), "Achievements" },
+	{ &g_Config, upgradeSettings, ARRAY_SIZE(upgradeSettings), "Upgrade" },
 	{ &g_Config.displayLayoutLandscape, displayLayoutSettings, ARRAY_SIZE(displayLayoutSettings), "DisplayLayout.Landscape", "Graphics" },  // We read the old settings from [Graphics], since most people played in landscape before.
 	{ &g_Config.displayLayoutPortrait, displayLayoutSettings, ARRAY_SIZE(displayLayoutSettings), "DisplayLayout.Portrait"},  // These we don't want to read from the old settings, since for most people, those settings will be bad.
 	{ &g_Config.touchControlsLandscape, touchControlSettings, ARRAY_SIZE(touchControlSettings), "TouchControls.Landscape", "Control" },  // We read the old settings from [Control], since most people played in landscape before.
@@ -1277,6 +1328,15 @@ void Config::ReadAllSettings(const IniFile &iniFile) {
 	}
 }
 
+std::string Config::GetConfigAsString() {
+	Config::Save("beforecopy");
+	std::string temp;
+	if (File::ReadTextFileToString(iniFilename_, &temp)) {
+		return temp;
+	}
+	return "";
+}
+
 void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
 	double startTime = time_now_d();
 
@@ -1380,6 +1440,8 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
 			g_Config.iCpuCore = (int)CPUCore::IR_INTERPRETER;
 		}
 	}
+
+	CheckForUpdate();
 
 	INFO_LOG(Log::Loader, "Loading controller config: %s", controllerIniFilename_.c_str());
 	bSaveSettings = true;
@@ -1600,6 +1662,117 @@ void Config::NotifyUpdatedCpuCore() {
 		// No longer forced off, the user set it to IR jit.
 		jitForcedOff = false;
 	}
+}
+
+bool Config::SupportsUpgradeCheck() const {
+#if PPSSPP_PLATFORM(WINDOWS) || PPSSPP_PLATFORM(LINUX) || PPSSPP_PLATFORM(MACOS) || PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS_APP_STORE)
+	return true;
+#else
+	return false;
+#endif
+}
+
+#if 0
+// Use for debugging the version check without messing with the server
+#define NEW_VERSION_OVERRIDE "v1.100.3-gaaaaaaaaa"
+constexpr int UPDATE_CHECK_FREQ = 1;
+#else
+constexpr int UPDATE_CHECK_FREQ = 5;
+#endif
+
+void Config::CheckForUpdate() {
+	if (!bCheckForNewVersion || !SupportsUpgradeCheck()) {
+		return;
+	}
+
+	const char *gitVer = PPSSPP_GIT_VERSION;
+	Version installed(gitVer);
+	Version upgrade(sUpgradeVersion);
+	const bool versionsValid = installed.IsValid() && upgrade.IsValid();
+
+	// Do this regardless of iRunCount to prevent a silly bug where one might use an older
+	// build of PPSSPP, receive an upgrade notice, then start a newer version, and still receive the upgrade notice,
+	// even if said newer version is >= the upgrade found online.
+	if ((sDismissedVersion == sUpgradeVersion) || (versionsValid && (installed >= upgrade))) {
+		sUpgradeMessage.clear();
+	}
+
+	// Check for new version on every 10 runs.
+	// Sometimes the download may not be finished when the main screen shows (if the user dismisses the
+	// splash screen quickly), but then we'll just show the notification next time instead, we store the
+	// upgrade number in the ini.
+
+	const bool checkThisTime = iRunCount % UPDATE_CHECK_FREQ == 0;
+	if (checkThisTime) {
+		const char *versionUrl = "http://www.ppsspp.org/version.json";
+		const char *acceptMime = "application/json, text/*; q=0.9, */*; q=0.8";
+		g_DownloadManager.StartDownloadWithCallback(versionUrl, Path(), http::RequestFlags::Default, [this](http::Request &download) { VersionJsonDownloadCompleted(download); }, "version", acceptMime);
+	}
+}
+
+void Config::VersionJsonDownloadCompleted(http::Request &download) {
+	if (download.ResultCode() != 200) {
+		ERROR_LOG(Log::Loader, "Failed to download %s: %d", download.url().c_str(), download.ResultCode());
+		return;
+	}
+	std::string data;
+	download.buffer().TakeAll(&data);
+	if (data.empty()) {
+		ERROR_LOG(Log::Loader, "Version check: Empty data from server!");
+		return;
+	}
+
+	json::JsonReader reader(data.c_str(), data.size());
+	const json::JsonGet root = reader.root();
+	if (!root) {
+		ERROR_LOG(Log::Loader, "Failed to parse json");
+		return;
+	}
+
+	std::string version;
+	root.getString("version", &version);
+
+	#ifdef NEW_VERSION_OVERRIDE
+	version = NEW_VERSION_OVERRIDE;
+	#endif
+
+	const char *gitVer = PPSSPP_GIT_VERSION;
+	Version installed(gitVer);
+	Version upgrade(version);
+	Version dismissed(g_Config.sDismissedVersion);
+
+	if (!installed.IsValid()) {
+		ERROR_LOG(Log::Loader, "Version check: Local version string invalid. Build problems? %s", PPSSPP_GIT_VERSION);
+		return;
+	}
+	if (!upgrade.IsValid()) {
+		ERROR_LOG(Log::Loader, "Version check: Invalid server version: %s", version.c_str());
+		return;
+	}
+
+	if (installed >= upgrade) {
+		INFO_LOG(Log::Loader, "Version check: Already up to date, erasing any upgrade message");
+		g_Config.sUpgradeMessage.clear();
+		g_Config.sUpgradeVersion = upgrade.ToString();
+		g_Config.sDismissedVersion.clear();
+		return;
+	}
+
+	if (installed < upgrade && dismissed != upgrade) {
+		g_Config.sUpgradeMessage = "New version of PPSSPP available!";
+		g_Config.sUpgradeVersion = upgrade.ToString();
+		g_Config.sDismissedVersion.clear();
+	}
+}
+
+bool Config::ShowUpgradeReminder() {
+	return !sUpgradeMessage.empty() && !sUpgradeVersion.empty() && sUpgradeVersion != sDismissedVersion;
+}
+
+void Config::DismissUpgrade() {
+	INFO_LOG(Log::Loader, "Upgrade dismissed for version %s", sUpgradeVersion.c_str());
+	sDismissedVersion = sUpgradeVersion;
+	sUpgradeMessage.clear();
 }
 
 void Config::SetSearchPath(const Path &searchPath) {

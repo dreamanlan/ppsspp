@@ -206,6 +206,17 @@ void DeveloperToolsScreen::CreateGeneralTab(UI::LinearLayout *list) {
 #if PPSSPP_PLATFORM(IOS)
 	list->Add(new Choice(dev->T("Copy savestates to memstick root")))->OnClick.Handle(this, &DeveloperToolsScreen::OnCopyStatesToRoot);
 #endif
+
+	auto di = GetI18NCategory(I18NCat::DIALOG);
+	// Reuse strings to the max, heh.
+	list->Add(new Choice(ApplySafeSubstitutions("%1: ppsspp.ini", di->T("Copy to clipboard"))))->OnClick.Add([=](UI::EventParams &) {
+		auto di = GetI18NCategory(I18NCat::DIALOG);
+		std::string configStr = g_Config.GetConfigAsString();
+		if (!configStr.empty()) {
+			System_CopyStringToClipboard(configStr);
+			g_OSD.Show(OSDType::MESSAGE_INFO, ApplySafeSubstitutions(di->T("Copied to clipboard: %1"), "ppsspp.ini"), 0.0f, "copyToClip");
+		}
+	});
 }
 
 void DeveloperToolsScreen::CreateTestsTab(UI::LinearLayout *list) {
@@ -429,11 +440,11 @@ void DeveloperToolsScreen::CreateUITab(UI::LinearLayout *list) {
 	});
 
 	list->Add(new ItemHeader(ac->T("Notifications")));
-	list->Add(new PopupMultiChoice(&g_Config.iNotificationPos, "General notifications", positions, 0, ARRAY_SIZE(positions), I18NCat::DIALOG, screenManager()));
+	list->Add(new PopupMultiChoice(&g_Config.iNotificationPos, sy->T("Notification screen position"), positions, 0, ARRAY_SIZE(positions), I18NCat::DIALOG, screenManager()));
 	list->Add(new PopupMultiChoice(&g_Config.iAchievementsLeaderboardTrackerPos, ac->T("Leaderboard tracker"), positions, 0, ARRAY_SIZE(positions), I18NCat::DIALOG, screenManager()));
-	list->Add(new CheckBox(&pretendIngame_, ac->T("Pretend to be in-game (for testing)")));
 
 #ifdef _DEBUG
+	list->Add(new CheckBox(&pretendIngame_, ac->T("Pretend to be in-game (for testing)")));
 	// Untranslated string because this is debug mode only, only for PPSSPP developers.
 	list->Add(new ItemHeader(ac->T("Assert")));
 	list->Add(new Choice("Assert"))->OnClick.Add([=](UI::EventParams &) {
@@ -459,6 +470,9 @@ void DeveloperToolsScreen::CreateNetworkTab(UI::LinearLayout *list) {
 	PopupSliderChoice *portChoice = new PopupSliderChoice(&g_Config.iRemoteISOPort, 0, 65535, 0, ri->T("Local Server Port", "Local Server Port"), 100, screenManager());
 	list->Add(portChoice);
 }
+
+// TODO: Make this generic
+extern int DefaultDepthRaster();
 
 void DeveloperToolsScreen::CreateGraphicsTab(UI::LinearLayout *list) {
 	using namespace UI;
@@ -494,10 +508,11 @@ void DeveloperToolsScreen::CreateGraphicsTab(UI::LinearLayout *list) {
 		});
 	}
 
-	static const char *depthRasterModes[] = { "Auto (default)", "Low", "Off", "Always on" };
+	static const char *depthRasterModes[] = { "Auto", "Low", "Off", "Always on" };
 
 	PopupMultiChoice *depthRasterMode = list->Add(new PopupMultiChoice(&g_Config.iDepthRasterMode, gr->T("Lens flare occlusion"), depthRasterModes, 0, ARRAY_SIZE(depthRasterModes), I18NCat::GRAPHICS, screenManager()));
 	depthRasterMode->SetDisabledPtr(&g_Config.bSoftwareRendering);
+	depthRasterMode->SetDefault(DefaultDepthRaster());
 	depthRasterMode->SetChoiceIcon(3, ImageID("I_WARNING"));  // It's a performance trap.
 
 	list->Add(new ItemHeader(dev->T("Ubershaders")));

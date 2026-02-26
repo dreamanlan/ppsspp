@@ -103,6 +103,9 @@ public:
 	void SetChoiceIcons(const std::map<int, ImageID> &icons) {
 		icons_ = icons;
 	}
+	void SetDefault(int defaultChoice) {
+		adaptor_.SetDefault(defaultChoice);
+	}
 	const char *tag() const override { return "listpopup"; }
 
 	UI::Event OnChoice;
@@ -146,7 +149,7 @@ private:
 class SliderPopupScreen : public PopupScreen {
 public:
 	SliderPopupScreen(int *value, int minValue, int maxValue, int defaultValue, std::string_view title, int step, std::string_view units, bool liveUpdate)
-		: PopupScreen(title, "OK", "Cancel"), units_(units), value_(value), minValue_(minValue), maxValue_(maxValue), defaultValue_(defaultValue), step_(step), liveUpdate_(liveUpdate) {}
+		: PopupScreen(title, T(I18NCat::DIALOG, "OK"), T(I18NCat::DIALOG, "Cancel")), units_(units), value_(value), minValue_(minValue), maxValue_(maxValue), defaultValue_(defaultValue), step_(step), liveUpdate_(liveUpdate) {}
 	void CreatePopupContents(ViewGroup *parent) override;
 
 	void SetNegativeDisable(const std::string &str) {
@@ -189,7 +192,7 @@ private:
 class SliderFloatPopupScreen : public PopupScreen {
 public:
 	SliderFloatPopupScreen(float *value, float minValue, float maxValue, float defaultValue, std::string_view title, float step = 1.0f, std::string_view units = "", bool liveUpdate = false)
-		: PopupScreen(title, "OK", "Cancel"), units_(units), value_(value), originalValue_(*value), minValue_(minValue), maxValue_(maxValue), defaultValue_(defaultValue), step_(step), liveUpdate_(liveUpdate) {}
+		: PopupScreen(title, T(I18NCat::DIALOG, "OK"), T(I18NCat::DIALOG, "Cancel")), units_(units), value_(value), originalValue_(*value), minValue_(minValue), maxValue_(maxValue), defaultValue_(defaultValue), step_(step), liveUpdate_(liveUpdate) {}
 	void CreatePopupContents(UI::ViewGroup *parent) override;
 
 	const char *tag() const override { return "SliderFloatPopup"; }
@@ -217,10 +220,12 @@ private:
 	bool liveUpdate_;
 };
 
+LinearLayout *CreateSoftKeyboard(TextEdit *edit, bool *upperCase);
+
 class TextEditPopupScreen : public PopupScreen {
 public:
 	TextEditPopupScreen(std::string *value, std::string_view placeholder, std::string_view title, int maxLen)
-		: PopupScreen(title, "OK", "Cancel"), value_(value), placeholder_(placeholder), maxLen_(maxLen) {}
+		: PopupScreen(title, T(I18NCat::DIALOG, "OK"), T(I18NCat::DIALOG, "Cancel")), value_(value), placeholder_(placeholder), maxLen_(maxLen) {}
 	void CreatePopupContents(ViewGroup *parent) override;
 
 	const char *tag() const override { return "TextEditPopup"; }
@@ -232,12 +237,17 @@ public:
 	Event OnChange;
 
 private:
+	virtual UI::Size PopupWidth() const override { return 600; }
+
 	void OnCompleted(DialogResult result) override;
 	TextEdit *edit_ = nullptr;
+	LinearLayout *keyboard_ = nullptr;
+	Choice *showKeyboardChoice_ = nullptr;
 	std::string *value_;
 	std::string textEditValue_;
 	std::string placeholder_;
 	int maxLen_;
+	bool upperCase_ = false;
 	bool passwordMasking_ = false;
 };
 
@@ -311,6 +321,9 @@ public:
 	void SetChoiceIcons(std::map<int, ImageID> icons) {
 		icons_ = icons;
 	}
+	void SetDefault(int defaultChoice) {
+		default_ = defaultChoice;
+	}
 
 	UI::Event OnChoice;
 
@@ -345,6 +358,7 @@ private:
 
 	std::function<void(PopupMultiChoice *)> preOpenCallback_;
 	bool callbackExecuted_ = false;
+	int default_ = -99;
 };
 
 // Allows passing in a dynamic vector of strings. Saves the string.

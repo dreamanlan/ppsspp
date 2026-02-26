@@ -21,6 +21,7 @@
 #include <string_view>
 #include <map>
 #include <vector>
+#include <mutex>
 
 #include "ppsspp_config.h"
 
@@ -552,8 +553,7 @@ public:
 	// Networking
 	bool bEnableAdhocServer;
 	std::string sProAdhocServer;
-	bool bUseServerRelay;
-	std::vector<std::string> proAdhocServerList;
+	int iAdhocServerRelayMode;
 	std::string sInfrastructureDNSServer;
 	std::string sInfrastructureUsername;  // Username used for Infrastructure play. Different restrictions.
 	bool bInfrastructureAutoDNS;
@@ -658,7 +658,7 @@ public:
 	std::string sAchievementsUnlockAudioFile;
 	std::string sAchievementsLeaderboardSubmitAudioFile;
 
-	// Achievements login info. Note that password is NOT stored, only a login token.
+	// Achivements login info. Note that password is NOT stored, only a login token.
 	// Still, we may wanna store it more securely than in PPSSPP.ini, especially on Android.
 	std::string sAchievementsUserName;
 	std::string sAchievementsToken;  // Not saved, to be used if you want to manually make your RA login persistent. See Native_SaveSecret for the normal case.
@@ -675,10 +675,18 @@ public:
 
 	Path mountRoot;  // Actually, mount as host0. keeping consistent with headless args.
 
+	// Data for upgrade prompt
+	std::string sUpgradeMessage;  // The actual message from the server is currently not used, need a translation mechanism. So this just acts as a flag.
+	std::string sUpgradeVersion;
+	std::string sDismissedVersion;
+
 	void Load(const char *iniFileName = nullptr, const char *controllerIniFilename = nullptr);
 	bool Save(const char *saveReason);
 	void Reload();
 	void RestoreDefaults(RestoreSettingsBits whatToRestore, bool log = false);
+
+	// For bug reporting
+	std::string GetConfigAsString();
 
 	// Note: This doesn't switch to the config, just creates it.
 	bool CreateGameConfig(std::string_view gameId);
@@ -693,6 +701,12 @@ public:
 	void SetSearchPath(const Path &path);
 
 	void UpdateIniLocation(const char *iniFileName = nullptr, const char *controllerIniFilename = nullptr);
+
+	bool SupportsUpgradeCheck() const;
+	void CheckForUpdate();
+	void VersionJsonDownloadCompleted(http::Request &download);
+	void DismissUpgrade();
+	bool ShowUpgradeReminder();
 
 	void GetReportingInfo(UrlEncoder &data) const;
 
@@ -765,3 +779,23 @@ std::string CreateRandMAC();
 extern http::RequestManager g_DownloadManager;
 extern Config g_Config;
 
+enum class AdhocDataMode {
+	P2P = 0,
+	AemuPostoffice,
+};
+
+struct AdhocServerListEntry{
+	std::string name;
+	std::string hostname;
+	std::string community_link;
+	std::string location;
+	std::string note;
+	AdhocDataMode mode = AdhocDataMode::P2P;
+};
+
+extern const std::vector<AdhocServerListEntry> defaultProAdhocServerList;
+
+extern std::mutex downloadedProAdhocServerListMutex;
+extern std::vector<AdhocServerListEntry> downloadedProAdhocServerList;
+
+AdhocDataMode getAdhocServerDataMode(const std::string &server);

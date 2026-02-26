@@ -158,11 +158,10 @@ protected:
 	void OnCredits(UI::EventParams &e);
 	void OnPPSSPPOrg(UI::EventParams &e);
 	void OnForums(UI::EventParams &e);
-	void OnExit(UI::EventParams &e);
+	void OnDownloadUpgrade(UI::EventParams &e);
 	void OnAllowStorage(UI::EventParams &e);
 
 	UI::TabHolder *tabHolder_ = nullptr;
-	UI::Button *fullscreenButton_ = nullptr;
 
 	Path restoreFocusGamePath_;
 	std::vector<GameBrowser *> gameBrowsers_;
