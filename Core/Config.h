@@ -410,7 +410,7 @@ public:
 
 	bool bExtraAudioBuffering;  // For bluetooth
 	std::string sAudioDevice;
-	bool bAutoAudioDevice;
+	bool bAutoSwitchAudioDevice;
 	bool bUseOldAtrac;
 
 	// iOS only for now
@@ -515,8 +515,9 @@ public:
 	// Sets up how much the analog limiter button restricts digital->analog input.
 	float fAnalogLimiterDeadzone;
 
-	// Trigger configuration
+	// Thresholds for triggers and stick when mapped to digital button inputs.
 	float fAnalogTriggerThreshold;
+	float fAnalogStickThreshold;
 
 	// Sets whether combo mapping is enabled.
 	bool bAllowMappingCombos;
@@ -559,6 +560,10 @@ public:
 	bool bInfrastructureAutoDNS;
 	bool bAllowSavestateWhileConnected;  // Developer option, ini-only. No normal users need this, it's always wrong to save/load state when online.
 	bool bAllowSpeedControlWhileConnected;  // Useful in some games but not recommended.
+
+	std::string sAdhocServerListUrl;
+	std::vector<std::string> vCustomAdhocServerList;
+	std::vector<std::string> vCustomAdhocServerListWithRelay;
 
 	bool bEnableWlan;
 	std::map<std::string, std::string> mHostToAlias;  // Local DNS database stored in ini file
@@ -617,7 +622,6 @@ public:
 	int iConsoleWindowY;
 	int iFontWidth;
 	int iFontHeight;
-	bool bDisplayStatusBar;
 	bool bShowBottomTabTitles;
 	bool bShowDeveloperMenu;
 
@@ -774,28 +778,8 @@ private:
 };
 
 std::string CreateRandMAC();
+std::string DefaultProAdhocServer();
 
 // TODO: Find a better place for this.
 extern http::RequestManager g_DownloadManager;
 extern Config g_Config;
-
-enum class AdhocDataMode {
-	P2P = 0,
-	AemuPostoffice,
-};
-
-struct AdhocServerListEntry{
-	std::string name;
-	std::string hostname;
-	std::string community_link;
-	std::string location;
-	std::string note;
-	AdhocDataMode mode = AdhocDataMode::P2P;
-};
-
-extern const std::vector<AdhocServerListEntry> defaultProAdhocServerList;
-
-extern std::mutex downloadedProAdhocServerListMutex;
-extern std::vector<AdhocServerListEntry> downloadedProAdhocServerList;
-
-AdhocDataMode getAdhocServerDataMode(const std::string &server);

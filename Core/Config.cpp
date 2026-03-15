@@ -72,55 +72,6 @@ static const std::string_view logSectionName = "LogDebug";
 static const std::string_view logSectionName = "Log";
 #endif
 
-const std::vector<AdhocServerListEntry> defaultProAdhocServerList = {
-	{"Socom Adhoc Server", "socom.cc", "https://discord.com/invite/XtVYDr7", "France", "For players looking to play any games", AdhocDataMode::AemuPostoffice},
-	{"Sony PSP & PSVita Fans", "psp.gameplayer.club", "https://psp.gameplayer.club/", "Unknown", "For players looking to play any games", AdhocDataMode::P2P},
-	{"Madness Gaming Network", "psp.mgn.pub", "https://discord.com/invite/kaPScVrPes", "Alaska USA", "For players looking to play any games, has a good amount of Monster Hunter players, also provides VPN to work around connection issues as well as P2P mode", AdhocDataMode::AemuPostoffice},
-	{"EA Nation Hub", "eahub.eu", "https://discord.com/invite/fwrQHHxrQQ", "France", "Mostly for Medal of Honor Heros 2 & Need For Speed Most Wanted players, but can be used for other games", AdhocDataMode::AemuPostoffice},
-	{"Psi-Hate", "psi-hate.com", "https://discord.com/invite/wxeGVkM", "Minnesota USA", "For players looking to play any games", AdhocDataMode::AemuPostoffice},
-	{"AlexGHD", "jpa36a7.glddns.com", "https://discord.com/invite/gp45nhdjQJ", "São Paulo Brazil", "For players looking to play any games", AdhocDataMode::AemuPostoffice},
-	{"ArenaAnywhere SA", "relay-sa.arenaanywhere.site", "https://discord.gg/MxZrDHmrN", "South Africa", "For players looking to play any games", AdhocDataMode::AemuPostoffice},
-	{"ArenaAnywhere EU", "relay.arenaanywhere.site", "https://discord.gg/MxZrDHmrN", "Europe", "For players looking to play any games", AdhocDataMode::AemuPostoffice},
-	{"Retroverze Relay Beta", "psp.retroverze.my.id", "https://retroverze.my.id/beta", "Unknown", "For players looking to play any games", AdhocDataMode::AemuPostoffice},
-	{"Games Nexus", "adhoc.gamesnexus.ovh", "https://adhoc.gamesnexus.ovh", "Milan Italy", "For players looking to play any games", AdhocDataMode::AemuPostoffice},
-};
-
-// TODO download the list from somewhere and probably cache it on disk
-// should also make the url configurable and support file:/ local list besides https:// online lists
-std::mutex downloadedProAdhocServerListMutex;
-std::vector<AdhocServerListEntry> downloadedProAdhocServerList;
-
-static const char *get_data_mode_string(AdhocDataMode mode) {
-	switch (mode) {
-	case AdhocDataMode::P2P:
-		return "AdhocDataMode::P2P";
-	case AdhocDataMode::AemuPostoffice:
-		return "AdhocDataMode::AemuPostoffice";
-	}
-	return "unknown";
-}
-
-AdhocDataMode getAdhocServerDataMode(const std::string &server) {
-	auto list = defaultProAdhocServerList;
-
-	downloadedProAdhocServerListMutex.lock();
-	if (downloadedProAdhocServerList.size() != 0) {
-		INFO_LOG(Log::sceNet, "Using downloaded adhoc server list");
-		list = downloadedProAdhocServerList;
-	}
-	downloadedProAdhocServerListMutex.unlock();
-
-	for (const auto &item : list) {
-		if (equals(server, item.hostname)) {
-			INFO_LOG(Log::sceNet, "server %s is in known list, using data mode %s", server.c_str(), get_data_mode_string(item.mode));
-			return item.mode;
-		}
-	}
-
-	INFO_LOG(Log::sceNet, "server %s is not in known list, using data mode %s", server.c_str(), get_data_mode_string(AdhocDataMode::P2P));
-	return AdhocDataMode::P2P;
-}
-
 std::string GPUBackendToString(GPUBackend backend) {
 	switch (backend) {
 	case GPUBackend::OPENGL:
@@ -861,6 +812,10 @@ static int DefaultGamePreviewVolume() {
 	return g_Config.iUIVolume;
 }
 
+std::string DefaultProAdhocServer() {
+	return "socom.cc";
+}
+
 static const ConfigSetting soundSettings[] = {
 	ConfigSetting("Enable", SETTING(g_Config, bEnableSound), true, CfgFlag::PER_GAME),
 	ConfigSetting("ExtraAudioBuffering", SETTING(g_Config, bExtraAudioBuffering), false, CfgFlag::DEFAULT),
@@ -885,7 +840,7 @@ static const ConfigSetting soundSettings[] = {
 	ConfigSetting("GamePreviewVolume", SETTING(g_Config, iGamePreviewVolume), &DefaultGamePreviewVolume, CfgFlag::DEFAULT),
 
 	ConfigSetting("AudioDevice", SETTING(g_Config, sAudioDevice), "", CfgFlag::DEFAULT),
-	ConfigSetting("AutoAudioDevice", SETTING(g_Config, bAutoAudioDevice), true, CfgFlag::DEFAULT),
+	ConfigSetting("AutoAudioDevice", SETTING(g_Config, bAutoSwitchAudioDevice), true, CfgFlag::DEFAULT),
 	ConfigSetting("AudioMixWithOthers", SETTING(g_Config, bAudioMixWithOthers), true, CfgFlag::DEFAULT),
 	ConfigSetting("AudioRespectSilentMode", SETTING(g_Config, bAudioRespectSilentMode), false, CfgFlag::DEFAULT),
 	ConfigSetting("UseOldAtrac", SETTING(g_Config, bUseOldAtrac), false, CfgFlag::DEFAULT),
@@ -1045,7 +1000,7 @@ static const ConfigSetting controlSettings[] = {
 	ConfigSetting("GamepadOnlyFocused", SETTING(g_Config, bGamepadOnlyFocused), false, CfgFlag::PER_GAME),
 	ConfigSetting("TouchButtonStyle", SETTING(g_Config, iTouchButtonStyle), 1, CfgFlag::PER_GAME),
 	ConfigSetting("TouchButtonOpacity", SETTING(g_Config, iTouchButtonOpacity), 65, CfgFlag::PER_GAME),
-	ConfigSetting("TouchButtonHideSeconds", SETTING(g_Config, iTouchButtonHideSeconds), 20, CfgFlag::PER_GAME),
+	ConfigSetting("TouchButtonHideSeconds", SETTING(g_Config, iTouchButtonHideSeconds), 8, CfgFlag::PER_GAME),
 	ConfigSetting("AutoCenterTouchAnalog", SETTING(g_Config, bAutoCenterTouchAnalog), false, CfgFlag::PER_GAME),
 	ConfigSetting("StickyTouchDPad", SETTING(g_Config, bStickyTouchDPad), false, CfgFlag::PER_GAME),
 
@@ -1061,6 +1016,7 @@ static const ConfigSetting controlSettings[] = {
 
 	ConfigSetting("AnalogLimiterDeadzone", SETTING(g_Config, fAnalogLimiterDeadzone), 0.6f, CfgFlag::DEFAULT),
 	ConfigSetting("AnalogTriggerThreshold", SETTING(g_Config, fAnalogTriggerThreshold), 0.75f, CfgFlag::DEFAULT),
+	ConfigSetting("AnalogStickThreshold", SETTING(g_Config, fAnalogStickThreshold), 0.75f, CfgFlag::DEFAULT),
 
 	ConfigSetting("AllowMappingCombos", SETTING(g_Config, bAllowMappingCombos), false, CfgFlag::DEFAULT),
 	ConfigSetting("StrictComboOrder", SETTING(g_Config, bStrictComboOrder), false, CfgFlag::DEFAULT),
@@ -1075,10 +1031,12 @@ static const ConfigSetting controlSettings[] = {
 	ConfigSetting("RapidFileInterval", SETTING(g_Config, iRapidFireInterval), 5, CfgFlag::DEFAULT),
 };
 
+static const std::vector<std::string_view> emptyList;
+
 static const ConfigSetting networkSettings[] = {
 	ConfigSetting("EnableWlan", SETTING(g_Config, bEnableWlan), false, CfgFlag::PER_GAME),
 	ConfigSetting("EnableAdhocServer", SETTING(g_Config, bEnableAdhocServer), false, CfgFlag::PER_GAME),
-	ConfigSetting("proAdhocServer", SETTING(g_Config, sProAdhocServer), "socom.cc", CfgFlag::PER_GAME),
+	ConfigSetting("proAdhocServer", SETTING(g_Config, sProAdhocServer), &DefaultProAdhocServer, CfgFlag::PER_GAME),
 	ConfigSetting("AdhocServerRelayMode", SETTING(g_Config, iAdhocServerRelayMode), (int)AdhocServerRelayMode::Auto, CfgFlag::PER_GAME),
 	ConfigSetting("PortOffset", SETTING(g_Config, iPortOffset), 10000, CfgFlag::PER_GAME),
 	ConfigSetting("PrimaryDNSServer", SETTING(g_Config, sInfrastructureDNSServer), "67.222.156.250", CfgFlag::PER_GAME),
@@ -1091,7 +1049,9 @@ static const ConfigSetting networkSettings[] = {
 	ConfigSetting("AllowSavestateWhileConnected", SETTING(g_Config, bAllowSavestateWhileConnected), false, CfgFlag::DONT_SAVE),
 	ConfigSetting("AllowSpeedControlWhileConnected", SETTING(g_Config, bAllowSpeedControlWhileConnected), false, CfgFlag::PER_GAME),
 	ConfigSetting("DontDownloadInfraJson", SETTING(g_Config, bDontDownloadInfraJson), false, CfgFlag::DONT_SAVE),
-
+	ConfigSetting("proAdhocServerList", SETTING(g_Config, vCustomAdhocServerList), &emptyList, CfgFlag::DEFAULT),  // Customizable server list.
+	ConfigSetting("RelayAdhocServerList", SETTING(g_Config, vCustomAdhocServerListWithRelay), &emptyList, CfgFlag::DEFAULT),  // Customizable server list.
+	ConfigSetting("AdhocServerListUrl", SETTING(g_Config, sAdhocServerListUrl), "http://metadata.ppsspp.org/adhoc-servers.json", CfgFlag::DEFAULT),  // URL for the server list. Can be set to a local path too.
 	ConfigSetting("EnableNetworkChat", SETTING(g_Config, bEnableNetworkChat), false, CfgFlag::PER_GAME),
 	ConfigSetting("ChatButtonPosition", SETTING(g_Config, iChatButtonPosition), (int)ScreenEdgePosition::BOTTOM_LEFT, CfgFlag::PER_GAME),
 	ConfigSetting("ChatScreenPosition", SETTING(g_Config, iChatScreenPosition), (int)ScreenEdgePosition::BOTTOM_LEFT, CfgFlag::PER_GAME),
@@ -1140,7 +1100,6 @@ static const ConfigSetting debuggerSettings[] = {
 	ConfigSetting("ConsoleWindowY", SETTING(g_Config, iConsoleWindowY), -1, CfgFlag::DEFAULT),
 	ConfigSetting("FontWidth", SETTING(g_Config, iFontWidth), 8, CfgFlag::DEFAULT),
 	ConfigSetting("FontHeight", SETTING(g_Config, iFontHeight), 12, CfgFlag::DEFAULT),
-	ConfigSetting("DisplayStatusBar", SETTING(g_Config, bDisplayStatusBar), true, CfgFlag::DEFAULT),
 	ConfigSetting("ShowBottomTabTitles",SETTING(g_Config, bShowBottomTabTitles), true, CfgFlag::DEFAULT),
 	ConfigSetting("ShowDeveloperMenu", SETTING(g_Config, bShowDeveloperMenu), false, CfgFlag::DEFAULT),
 	ConfigSetting("SkipDeadbeefFilling", SETTING(g_Config, bSkipDeadbeefFilling), false, CfgFlag::DEFAULT),
@@ -1706,7 +1665,7 @@ void Config::CheckForUpdate() {
 	if (checkThisTime) {
 		const char *versionUrl = "http://www.ppsspp.org/version.json";
 		const char *acceptMime = "application/json, text/*; q=0.9, */*; q=0.8";
-		g_DownloadManager.StartDownloadWithCallback(versionUrl, Path(), http::RequestFlags::Default, [this](http::Request &download) { VersionJsonDownloadCompleted(download); }, "version", acceptMime);
+		g_DownloadManager.StartDownload(versionUrl, Path(), http::RequestFlags::Default, acceptMime, "version", [this](http::Request &download) { VersionJsonDownloadCompleted(download); });
 	}
 }
 

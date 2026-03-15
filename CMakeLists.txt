@@ -1386,14 +1386,15 @@ elseif(IOS AND NOT LIBRETRO)
 		ios/iCade/iCadeReaderView.h
 		ios/iCade/iCadeReaderView.m
 		ios/iCade/iCadeState.h
-		UI/DarwinFileSystemServices.mm
-		UI/DarwinFileSystemServices.h
 		Common/Battery/AppleBatteryClient.m
 	)
 
-	list(APPEND nativeExtraLibs "-framework Foundation -framework MediaPlayer -framework AudioToolbox -framework CoreGraphics -framework CoreMotion -framework QuartzCore -framework UIKit -framework GLKit -framework OpenAL -framework AVFoundation -framework CoreLocation -framework CoreText -framework CoreVideo -framework CoreMedia -framework CoreServices -framework Metal -framework IOSurface" )
+	list(APPEND nativeExtraLibs "-framework Foundation -framework MediaPlayer -framework AudioToolbox -framework CoreGraphics -framework CoreMotion -framework QuartzCore -framework UIKit -framework GLKit -framework OpenAL -framework AVFoundation -framework CoreLocation -framework CoreText -framework CoreVideo -framework CoreMedia -framework CoreServices -framework Metal -framework IOSurface -framework Photos" )
 	if(EXISTS "${CMAKE_IOS_SDK_ROOT}/System/Library/Frameworks/GameController.framework")
 		list(APPEND nativeExtraLibs "-weak_framework GameController")
+	endif()
+	if(EXISTS "${CMAKE_IOS_SDK_ROOT}/System/Library/Frameworks/PhotosUI.framework")
+		list(APPEND nativeExtraLibs "-weak_framework PhotosUI")
 	endif()
 
 	if(NOT ICONV_LIBRARY)
@@ -1412,7 +1413,7 @@ elseif(IOS AND NOT LIBRETRO)
 		ios/AudioEngine.mm
 		ios/LocationHelper.mm
 		ios/Controls.mm
-		UI/DarwinFileSystemServices.mm
+		Core/Util/DarwinFileSystemServices.mm
 		Common/Battery/AppleBatteryClient.m
 		Common/Render/Text/draw_text_cocoa.mm
 		PROPERTIES COMPILE_FLAGS -fobjc-arc)
@@ -1435,11 +1436,8 @@ elseif(USING_QT_UI)
 	endif()
 	if(APPLE)
 		list(APPEND NativeAppSource
-			UI/DarwinFileSystemServices.mm
-			UI/DarwinFileSystemServices.h
 			Common/Battery/AppleBatteryClient.m)
 		set_source_files_properties(Common/Battery/AppleBatteryClient.m
-			UI/DarwinFileSystemServices.mm
 			Common/Render/Text/draw_text_cocoa.mm
 			PROPERTIES COMPILE_FLAGS -fobjc-arc)
 		list(APPEND nativeExtraLibs ${COCOA_LIBRARY} ${QUARTZ_CORE_LIBRARY} ${IOKIT_LIBRARY})
@@ -1509,8 +1507,6 @@ else()
 		SDL/PPSSPPAboutViewController.m
 		SDL/PPSSPPAboutViewController.h
 		SDL/MacCameraHelper.mm
-		UI/DarwinFileSystemServices.mm
-		UI/DarwinFileSystemServices.h
 		Common/Battery/AppleBatteryClient.m
 		UI/PSPNSApplicationDelegate.mm
 		UI/PSPNSApplicationDelegate.h)
@@ -1518,7 +1514,7 @@ else()
 		# TODO
 		# set_source_files_properties(SDL/SDLMain.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
 
-		set_source_files_properties(UI/DarwinFileSystemServices.mm
+		set_source_files_properties(Core/Util/DarwinFileSystemServices.mm
 			UI/PSPNSApplicationDelegate.mm
 			SDL/CocoaMetalLayer.mm
 			SDL/CocoaBarItems.mm
@@ -2090,6 +2086,12 @@ if(LINUX OR ANDROID OR MACOSX OR IOS)
 	)
 endif()
 
+if((MACOSX OR IOS) AND NOT LIBRETRO)
+	list(APPEND CoreExtra
+		Core/Util/DarwinFileSystemServices.mm
+		Core/Util/DarwinFileSystemServices.h)
+endif()
+
 # 'ppsspp_jni' on ANDROID, 'Core' everywhere else
 # SHARED on ANDROID, STATIC everywhere else
 add_library(${CoreLibName} ${CoreLinkType}
@@ -2531,6 +2533,11 @@ add_library(${CoreLibName} ${CoreLinkType}
 	${CMAKE_CURRENT_BINARY_DIR}/git-version.cpp
 )
 
+if((MACOSX OR IOS) AND NOT LIBRETRO)
+	set_source_files_properties(Core/Util/DarwinFileSystemServices.mm
+		PROPERTIES COMPILE_FLAGS -fobjc-arc)
+endif()
+
 if(LIBRETRO)
 	target_include_directories(${CoreLibName} PRIVATE libretro/libretro-common/include)
 endif()
@@ -2851,6 +2858,7 @@ set(NativeAssets
 	assets/Inconsolata-Regular.ttf
 	assets/7z.png
 	assets/compat.ini
+	assets/adhoc-servers.json
 	assets/infra-dns.json
 	assets/gamecontrollerdb.txt
 	assets/langregion.ini

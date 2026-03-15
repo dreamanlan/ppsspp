@@ -146,6 +146,11 @@ const float friction = 0.92f;
 const float stop_threshold = 0.1f;
 
 bool ScrollView::Touch(const TouchInput &input) {
+	if (input.flags & TouchInputFlags::MOUSE) {
+		// Kinda hacky, we should make a proper hover mechanism.
+		mouseHover_ = bounds_.Contains(input.x, input.y);
+	}
+
 	// Ignore buttons other than the left one.
 	if ((input.flags & TouchInputFlags::MOUSE) && (input.buttons & 1) == 0) {
 		return false;
@@ -175,11 +180,6 @@ bool ScrollView::Touch(const TouchInput &input) {
 		}
 		scrollTouchId_ = -1;
 		draggingBob_ = false;
-	}
-
-	if (input.flags & TouchInputFlags::MOUSE) {
-		// Kinda hacky, we should make a proper hover mechanism.
-		mouseHover_ = bounds_.Contains(input.x, input.y);
 	}
 
 	// We modify the input2 we send to children, so we can cancel drags if we start scrolling, and stuff like that.
@@ -294,8 +294,8 @@ void ScrollView::Draw(UIContext &dc) {
 		dc.DrawRectDropShadow(shadowBounds, radius, fade);
 	}
 
-	// Same at the bottom.
-	const float y2 = dc.GetLayoutBounds().y2();
+	// Same at the bottom. (we check against the common UI layout mode)
+	const float y2 = dc.GetLayoutBounds(ViewLayoutMode::IgnoreBottomInset, false).y2();
 	if (shadows_ && bounds_.y2() < y2 && orientation_ == ORIENT_VERTICAL) {
 		float radius = 20.0f;
 

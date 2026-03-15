@@ -122,7 +122,7 @@ static void AssertCancelCallback(const char *message, void *userdata) {
 
 // Handles control rotation due to internal screen rotation.
 void EmuScreen::UpdatePSPButtons(uint32_t bitsToSet, uint32_t bitsToClear) {
-	if (!isOnTop_) {
+	if (!IsOnTop()) {
 		// Auto-release inputs
 		bitsToSet = 0;
 	}
@@ -130,7 +130,7 @@ void EmuScreen::UpdatePSPButtons(uint32_t bitsToSet, uint32_t bitsToClear) {
 }
 
 void EmuScreen::SetPSPAnalog(int iInternalScreenRotation, int stick, float x, float y) {
-	if (!isOnTop_) {
+	if (!IsOnTop()) {
 		x = 0.0f;
 		y = 0.0f;
 	}
@@ -503,6 +503,9 @@ EmuScreen::~EmuScreen() {
 		g_Discord.ClearPresence();
 	else
 		g_Discord.SetPresenceMenu();
+
+	// This makes sure that the recents list is updated, among other things.
+	g_Config.Save("exitGame");
 }
 
 void EmuScreen::dialogFinished(const Screen *dialog, DialogResult result) {
@@ -513,9 +516,7 @@ void EmuScreen::dialogFinished(const Screen *dialog, DialogResult result) {
 	}
 
 	// Returning to the PauseScreen, unless we're stepping, means we should go back to controls.
-	if (Core_IsActive()) {
-		UI::EnableFocusMovement(false);
-	}
+	UI::EnableFocusMovement(false);
 
 	// TODO: improve the way with which we got commands from PauseMenu.
 	// DR_CANCEL/DR_BACK means clicked on "continue", DR_OK means clicked on "back to menu",
@@ -550,11 +551,9 @@ void EmuScreen::focusChanged(ScreenFocusChange focusChange) {
 	switch (focusChange) {
 	case ScreenFocusChange::FOCUS_LOST_TOP:
 		g_Config.TimeTracker().Stop(gameID);
-		isOnTop_ = false;
 		break;
 	case ScreenFocusChange::FOCUS_BECAME_TOP:
 		g_Config.TimeTracker().Start(gameID);
-		isOnTop_ = true;
 		break;
 	}
 }
@@ -753,7 +752,7 @@ static void ShowFpsLimitNotice() {
 
 // NOTE: This is unsynchronized! We should have as little as possible in here.
 void EmuScreen::OnVKey(VirtKey virtualKeyCode, bool down) {
-	if (!isOnTop_)
+	if (!IsOnTop())
 		return;
 
 	auto sc = GetI18NCategory(I18NCat::SCREEN);
@@ -867,7 +866,7 @@ void EmuScreen::ProcessVKey(VirtKey virtKey) {
 		}
 		break;
 
-	case VIRTKEY_AXIS_SWAP:
+	case VIRTKEY_AXIS_SWAP_TOGGLE:
 		g_controlMapper.ToggleSwapAxes();
 		g_OSD.Show(OSDType::MESSAGE_INFO, mc->T("AxisSwap"));  // best string we have.
 		break;
@@ -1088,7 +1087,7 @@ void EmuScreen::ProcessVKey(VirtKey virtKey) {
 }
 
 void EmuScreen::OnVKeyAnalog(VirtKey virtualKeyCode, float value) {
-	if (!isOnTop_)
+	if (!IsOnTop())
 		return;
 
 	if (virtualKeyCode != VIRTKEY_SPEED_ANALOG) {
@@ -1268,7 +1267,8 @@ void EmuScreen::CreateViews() {
 
 	TouchControlConfig &touch = g_Config.GetTouchControlsConfig(deviceOrientation);
 
-	const Bounds &bounds = screenManager()->getUIContext()->GetLayoutBounds();
+	const Bounds &bounds = GetLayoutBounds(*screenManager()->getUIContext());
+
 	InitPadLayout(&touch, deviceOrientation, bounds.w, bounds.h);
 
 	root_ = CreatePadLayout(touch, bounds.w, bounds.h, &pauseTrigger_, &g_controlMapper);
@@ -1429,6 +1429,10 @@ void EmuScreen::OnChat(UI::EventParams &params) {
 
 // To avoid including proAdhoc.h, which includes a lot of stuff.
 int GetChatMessageCount();
+
+ViewLayoutMode EmuScreen::LayoutMode() const {
+	return ViewLayoutMode::ApplyInsets;
+}
 
 void EmuScreen::update() {
 	using namespace UI;
@@ -1964,16 +1968,16 @@ void EmuScreen::renderUI() {
 	ctx->Begin();
 
 	if (root_) {
-		UI::LayoutViewHierarchy(*ctx, RootMargins(), root_, false, false);
+		UI::LayoutViewHierarchy(*ctx, RootMargins(), root_, LayoutMode(), UseImmersiveMode());
 		root_->Draw(*ctx);
 	}
 
 	if (PSP_IsInited()) {
 		if ((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::CONTROL) {
-			DrawControlMapperOverlay(ctx, ctx->GetLayoutBounds(), g_controlMapper);
+			DrawControlMapperOverlay(ctx, GetLayoutBounds(*ctx), g_controlMapper);
 		}
 		if (g_Config.iShowStatusFlags) {
-			DrawFPS(ctx, ctx->GetLayoutBounds());
+			DrawFPS(ctx, GetLayoutBounds(*ctx));
 		}
 	}
 

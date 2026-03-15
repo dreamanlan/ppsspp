@@ -76,7 +76,7 @@ SDLJoystick *joystick = NULL;
 #endif
 
 #if PPSSPP_PLATFORM(MAC) || PPSSPP_PLATFORM(IOS)
-#include "UI/DarwinFileSystemServices.h"
+#include "Core/Util/DarwinFileSystemServices.h"
 #endif
 
 #if PPSSPP_PLATFORM(MAC)
@@ -555,6 +555,9 @@ void System_LaunchUrl(LaunchUrlType urlType, std::string_view url) {
 		OSXShowInFinder(std::string(url).c_str());
 #endif
 		// INFO_LOG(Log::System, "LaunchUrlType::LOCAL_FILE not implemented on this platform");
+		break;
+	default:
+		INFO_LOG(Log::System, "Unhandled LaunchUrlType %d", (int)urlType);
 		break;
 	}
 }
@@ -1290,7 +1293,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 				break;
 			}
 			// Don't start auto switching for a couple of seconds, because some devices init on start.
-			bool doAutoSwitch = g_Config.bAutoAudioDevice;
+			bool doAutoSwitch = g_Config.bAutoSwitchAudioDevice;
 			if ((time_now_d() - g_audioStartTime) < 3.0) {
 				INFO_LOG(Log::Audio, "Ignoring new audio device: %s (current: %s)", name, g_Config.sAudioDevice.c_str());
 				doAutoSwitch = false;

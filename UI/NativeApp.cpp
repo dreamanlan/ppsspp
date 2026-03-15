@@ -155,9 +155,7 @@
 #include <mach-o/dyld.h>
 #endif
 
-#if PPSSPP_PLATFORM(IOS) || PPSSPP_PLATFORM(MAC)
-#include "UI/DarwinFileSystemServices.h"
-#endif
+#include "Core/Util/DarwinFileSystemServices.h"
 
 #if !defined(__LIBRETRO__)
 #include "Core/Util/GameDB.h"
@@ -652,6 +650,7 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 	}
 
 	if (fileToLog) {
+		// Start logging immediately.
 		g_logManager.EnableOutput(LogOutput::File);
 		g_logManager.SetFileLogPath(Path(fileToLog));
 	} else {
@@ -932,6 +931,10 @@ void NativeShutdownGraphics() {
 	}
 #endif
 
+#if PPSSPP_PLATFORM(IOS)
+	DarwinFileSystemServices::terminate();
+#endif
+
 	if (g_audioBackend) {
 		delete g_audioBackend;
 		g_audioBackend = nullptr;
@@ -1017,7 +1020,7 @@ void NativeFrame(GraphicsContext *graphicsContext) {
 	g_iconCache.FrameUpdate();
 
 	if (g_audioBackend) {
-		g_audioBackend->FrameUpdate(g_Config.bAutoAudioDevice);
+		g_audioBackend->FrameUpdate(g_Config.bAutoSwitchAudioDevice);
 	}
 
 	// NOTE: We must begin the frame before update, so we can do texture size queries and stuff in Measure etc.

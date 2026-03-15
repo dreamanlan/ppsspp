@@ -98,7 +98,7 @@ static const char *g_debugOverlayList[] = {
 	"Audio Debug",
 	"GPU Profile",
 	"GPU Allocator Viewer",
-	"Framebuffer List",
+	"Framebuffer list",
 };
 
 void AddOverlayList(UI::ViewGroup *items, ScreenManager *screenManager) {
@@ -736,7 +736,7 @@ void TouchTestScreen::axis(const AxisInput &axis) {
 }
 
 void TouchTestScreen::DrawForeground(UIContext &dc) {
-	Bounds bounds = dc.GetLayoutBounds();
+	Bounds bounds = GetLayoutBounds(dc);
 
 	double now = dc.FrameStartTime();
 	double delta = now - lastFrameTime_;

@@ -19,10 +19,20 @@ public:
 
 	const char *tag() const override { return "AdhocServer"; }
 
+	bool RecreateParent() const {
+		return recreateParent_;
+	}
+
 protected:
 	void OnCompleted(DialogResult result) override;
 	bool CanComplete(DialogResult result) override;
+	virtual UI::Size PopupWidth() const override { return 650; }
 
+	void sendMessage(UIMessage message, const char *value) override;
+
+	void dialogFinished(const Screen *screen, DialogResult result) override {
+		RecreateViews();
+	}
 private:
 	void ResolverThread();
 
@@ -36,7 +46,6 @@ private:
 
 	std::string *value_;
 	std::string editValue_;
-	std::vector<AdhocServerListEntry> listItems_;
 	NoticeView *progressView_ = nullptr;
 
 	std::thread resolver_;
@@ -47,5 +56,8 @@ private:
 	bool toResolveResult_ = false;
 	std::string lastResolved_ = "";
 	bool lastResolvedResult_ = false;
+	bool recreateParent_ = false;
 };
 
+void AskToEditCurrentServer(int requestToken, ScreenManager *screenManager);
+bool AdhocServerNameIsCustom();

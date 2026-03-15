@@ -386,7 +386,7 @@ void StickyChoice::FocusChanged(int focusFlags) {
 Item::Item(LayoutParams *layoutParams) : InertView(layoutParams) {
 	if (!layoutParams) {
 		layoutParams_->width = FILL_PARENT;
-		layoutParams_->height = ITEM_HEIGHT;
+		layoutParams_->height = WRAP_CONTENT;
 	}
 }
 
@@ -451,6 +451,7 @@ void Choice::GetContentDimensionsBySpec(const UIContext &dc, MeasureSpec horiz, 
 		float scale = dc.CalculateTextScale(text_, availWidth);
 		float textW = 0.0f, textH = 0.0f;
 		dc.MeasureTextRect(dc.GetTheme().uiFont, scale, scale, text_, availWidth, &textW, &textH, FLAG_WRAP_TEXT);
+		textW += 2;  // We need a small fudge factor here, not sure why yet.
 		totalH = std::max(totalH, textH);
 		totalW += textW;
 		if (image_.isValid()) {
@@ -545,6 +546,22 @@ InfoItem::InfoItem(std::string_view text, std::string_view rightText, LayoutPara
 	// We set the colors later once we have a UIContext.
 }
 
+void InfoItem::GetContentDimensionsBySpec(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert, float &w, float &h) const {
+	float w1, h1, w2, h2;
+	dc.MeasureText(dc.GetTheme().uiFont, 1.0f, 1.0f, text_, &w1, &h1, 0);
+
+	if (horiz.type == MeasureSpecType::AT_MOST) {
+		float availableWidth = horiz.size - w1 - 24;
+		dc.MeasureTextRect(dc.GetTheme().uiFont, 1.0f, 1.0f, rightText_, availableWidth, &w2, &h2, FLAG_WRAP_TEXT);
+	} else {
+		dc.MeasureText(dc.GetTheme().uiFont, 1.0f, 1.0f, rightText_, &w2, &h2, 0);
+	}
+
+	// TODO: Make this more exact.
+	w = 24 + w1 + w2;
+	h = std::max(std::max(h1, h2), ITEM_HEIGHT);
+}
+
 void InfoItem::Draw(UIContext &dc) {
 	Item::Draw(dc);
 
@@ -573,7 +590,7 @@ std::string InfoItem::DescribeText() const {
 ItemHeader::ItemHeader(std::string_view text, LayoutParams *layoutParams)
 	: Item(layoutParams), text_(text) {
 	layoutParams_->width = FILL_PARENT;
-	layoutParams_->height = 40;
+	layoutParams_->height = 44;
 }
 
 void ItemHeader::Draw(UIContext &dc) {
@@ -851,8 +868,15 @@ bool BitCheckBox::Toggled() const {
 }
 
 void Button::GetContentDimensions(const UIContext &dc, float &w, float &h) const {
-	if (imageID_.isValid()) {
-		dc.Draw()->GetAtlas()->measureImage(imageID_, &w, &h);
+	ImageID imageId;
+	if (imageFunc_) {
+		imageId = imageFunc_();
+	} else {
+		imageId = imageID_;
+	}
+
+	if (imageId.isValid()) {
+		dc.Draw()->GetAtlas()->measureImage(imageId, &w, &h);
 	} else {
 		w = 0.0f;
 		h = 0.0f;
@@ -864,7 +888,7 @@ void Button::GetContentDimensions(const UIContext &dc, float &w, float &h) const
 		dc.MeasureText(dc.GetTheme().uiFont, 1.0f, 1.0f, text_, &width, &height);
 
 		w += width;
-		if (imageID_.isValid()) {
+		if (imageId.isValid()) {
 			w += paddingW_;
 		}
 		h = std::max(h, height);
@@ -902,19 +926,26 @@ void Button::Draw(UIContext &dc) {
 	tw *= scale_;
 	th *= scale_;
 
-	if (tw > bounds_.w || imageID_.isValid()) {
+	ImageID imageId;
+	if (imageFunc_) {
+		imageId = imageFunc_();
+	} else {
+		imageId = imageID_;
+	}
+
+	if (tw > bounds_.w || imageId.isValid()) {
 		dc.PushScissor(bounds_);
 	}
 	dc.SetFontStyle(dc.GetTheme().uiFont);
 	dc.SetFontScale(scale_, scale_);
-	if (imageID_.isValid() && (ignoreText_ || text_.empty())) {
-		dc.Draw()->DrawImage(imageID_, bounds_.centerX(), bounds_.centerY(), scale_, style.fgColor, ALIGN_CENTER);
+	if (imageId.isValid() && (ignoreText_ || text_.empty())) {
+		dc.Draw()->DrawImage(imageId, bounds_.centerX(), bounds_.centerY(), scale_, style.fgColor, ALIGN_CENTER);
 	} else if (!text_.empty()) {
 		float textX = bounds_.centerX();
-		if (imageID_.isValid()) {
-			const AtlasImage *img = dc.Draw()->GetAtlas()->getImage(imageID_);
+		if (imageId.isValid()) {
+			const AtlasImage *img = dc.Draw()->GetAtlas()->getImage(imageId);
 			if (img) {
-				dc.Draw()->DrawImage(imageID_, bounds_.centerX() - tw / 2 - 5, bounds_.centerY(), 1.0f, style.fgColor, ALIGN_CENTER);
+				dc.Draw()->DrawImage(imageId, bounds_.centerX() - tw / 2 - 5, bounds_.centerY(), 1.0f, style.fgColor, ALIGN_CENTER);
 				textX += img->w / 2.0f;
 			}
 		}
@@ -922,7 +953,7 @@ void Button::Draw(UIContext &dc) {
 	}
 	dc.SetFontScale(1.0f, 1.0f);
 
-	if (tw > bounds_.w || imageID_.isValid()) {
+	if (tw > bounds_.w || imageId.isValid()) {
 		dc.PopScissor();
 	}
 }
@@ -993,19 +1024,24 @@ void RadioButton::Draw(UIContext &dc) {
 ImageView::ImageView(ImageID atlasImage, const std::string &text, LayoutParams *layoutParams)
 	: InertView(layoutParams), text_(text), atlasImage_(atlasImage) {}
 
+ImageView::ImageView(std::function<ImageID()> func, LayoutParams *layoutParams)
+	: InertView(layoutParams), func_(func) {}
+
 void ImageView::GetContentDimensions(const UIContext &dc, float &w, float &h) const {
-	dc.Draw()->GetAtlas()->measureImage(atlasImage_, &w, &h);
+	ImageID id = func_ ? func_() : atlasImage_;
+	dc.Draw()->GetAtlas()->measureImage(id, &w, &h);
 	w *= scale_;
 	h *= scale_;
 	// TODO: involve sizemode
 }
 
 void ImageView::Draw(UIContext &dc) {
-	const AtlasImage *img = dc.Draw()->GetAtlas()->getImage(atlasImage_);
+	ImageID id = func_ ? func_() : atlasImage_;
+	const AtlasImage *img = dc.Draw()->GetAtlas()->getImage(id);
 	if (img) {
 		// TODO: involve sizemode
 		float scale = bounds_.w / img->w;
-		dc.Draw()->DrawImage(atlasImage_, bounds_.x, bounds_.y, scale, 0xFFFFFFFF, ALIGN_TOPLEFT);
+		dc.Draw()->DrawImage(id, bounds_.x, bounds_.y, scale, 0xFFFFFFFF, ALIGN_TOPLEFT);
 	}
 }
 
@@ -1069,6 +1105,10 @@ void TextView::GetContentDimensionsBySpec(const UIContext &dc, MeasureSpec horiz
 	if (bullet_) {
 		w += bulletOffset;
 	}
+}
+
+TextView *TextView::SetWordWrap() {
+	textAlign_ |= FLAG_WRAP_TEXT; return this;
 }
 
 void TextView::Draw(UIContext &dc) {
@@ -1159,6 +1199,36 @@ bool ClickableTextView::Touch(const TouchInput &input) {
 		dragging_ = false;
 	}
 	return contains;
+}
+
+bool ClickableTextView::Key(const KeyInput &key) {
+	if (!HasFocus() && key.deviceId != DEVICE_ID_MOUSE) {
+		down_ = false;
+		return false;
+	}
+	// TODO: Replace most of Update with this.
+
+	bool ret = false;
+	if (key.flags & KeyInputFlags::DOWN) {
+		if (IsAcceptKey(key)) {
+			down_ = true;
+			ret = true;
+		}
+	}
+	if (key.flags & KeyInputFlags::UP) {
+		if (IsAcceptKey(key)) {
+			if (down_) {
+				EventParams e{};
+				e.v = this;
+				OnClick.Trigger(e);
+				down_ = false;
+				ret = true;
+			}
+		} else if (down_ && IsEscapeKey(key)) {
+			down_ = false;
+		}
+	}
+	return ret;
 }
 
 TextEdit::TextEdit(std::string_view text, std::string_view title, std::string_view placeholderText, LayoutParams *layoutParams)
