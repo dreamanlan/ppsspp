@@ -2296,7 +2296,7 @@ bool FramebufferManagerCommon::FindTransferFramebuffer(u32 basePtr, int stride_p
 		// Use bufferHeight in case of buffers that resize up and down often per frame (Valkyrie Profile.)
 
 		// If it's outside the vfb by a single pixel, we currently disregard it.
-		if (memYOffset > vfb->bufferHeight - h) {
+		if (memYOffset + y + h > vfb->bufferHeight) {
 			continue;
 		}
 
@@ -2642,14 +2642,14 @@ bool FramebufferManagerCommon::NotifyBlockTransferBefore(u32 dstBasePtr, int dst
 					// No info left - just fall back to something. But this is definitely split pixel tricks.
 					ramFormat = GE_FORMAT_5551;
 				}
-				dstRect.vfb = CreateRAMFramebuffer(dstBasePtr, width, height, dstStride, ramFormat);
+				dstRect.vfb = CreateRAMFramebuffer(dstBasePtr, dstX + width, dstY + height, dstStride, ramFormat);
 				dstRect.x_bytes = bpp * dstX;
 				dstRect.y = dstY;
 				dstRect.w_bytes = bpp * width;
 				dstRect.h = height;
 				dstRect.channel = RASTER_COLOR;
 			} else {
-				dstRect.vfb = CreateRAMFramebuffer(dstBasePtr, width, height, dstStride, GE_FORMAT_DEPTH16);
+				dstRect.vfb = CreateRAMFramebuffer(dstBasePtr, dstX + width, dstY + height, dstStride, GE_FORMAT_DEPTH16);
 				dstRect.x_bytes = 0;
 				dstRect.w_bytes = 2 * width;  // 2 = depth bpp
 				dstRect.y = 0;
@@ -2701,6 +2701,16 @@ bool FramebufferManagerCommon::NotifyBlockTransferBefore(u32 dstBasePtr, int dst
 			return true;  // Skip the memory copy.
 		}
 
+		// If the formats mismatch badly, we need a resolve.
+		if (srcRect.vfb && dstRect.vfb && srcRect.channel == RASTER_COLOR && dstRect.channel == RASTER_COLOR && srcRect.vfb->fb_format != dstRect.vfb->fb_format) {
+			WARN_LOG_N_TIMES(dstnotsrc, 5, Log::G3D, "Mismatched color format requiring reinterpret during block transfer %dx%d %dbpp from %08x (x:%d y:%d stride:%d %s) -> %08x (x:%d y:%d stride:%d %s)",
+				width, height, bpp,
+				srcBasePtr, srcRect.x_bytes / bpp, srcRect.y, srcStride, GeBufferFormatToString(srcRect.vfb->fb_format),
+				dstBasePtr, dstRect.x_bytes / bpp, dstRect.y, dstStride, GeBufferFormatToString(dstRect.vfb->fb_format));
+			// Seen in Silent Hill: Shattered Memories.
+			srcRect.vfb = ResolveFramebufferColorToFormat(srcRect.vfb, dstRect.vfb->fb_format);
+		}
+
 		// Straightforward blit between two same-format framebuffers.
 		if (srcRect.vfb && srcRect.channel == dstRect.channel && srcRect.vfb->Format(srcRect.channel) == dstRect.vfb->Format(dstRect.channel)) {
 			WARN_LOG_N_TIMES(dstnotsrc, 5, Log::G3D, "Inter-buffer %s block transfer %dx%d %dbpp from %08x (x:%d y:%d stride:%d %s) -> %08x (x:%d y:%d stride:%d %s)",
@@ -2728,6 +2738,40 @@ bool FramebufferManagerCommon::NotifyBlockTransferBefore(u32 dstBasePtr, int dst
 			WARN_LOG_N_TIMES(blockformat, 5, Log::G3D, "Mismatched buffer formats in block transfer: %s->%s (%dx%d)",
 				GeBufferFormatToString(srcRect.vfb->Format(srcRect.channel)), GeBufferFormatToString(dstRect.vfb->Format(dstRect.channel)),
 				width, height);
+
+			VirtualFramebuffer *src = srcRect.vfb, *dst = dstRect.vfb;
+			float scaleFactorX = 1.0f;
+			Draw2DPipeline *pipeline = GetReinterpretPipeline(src->fb_format, dst->fb_format, &scaleFactorX);
+
+			if (pipeline) {
+				const char *pass_name = reinterpretStrings[(int)src->fb_format][(int)dst->fb_format];
+
+				int srcWidth = width * src->renderScaleFactor;
+				int srcHeight = height * src->renderScaleFactor;
+				int dstWidth = width * dst->renderScaleFactor;
+				int dstHeight = height * dst->renderScaleFactor;
+
+				int srcX1 = srcX * src->renderScaleFactor;
+				int srcY1 = srcY * src->renderScaleFactor;
+				int srcX2 = srcX1 + srcWidth;
+				int srcY2 = srcY1 + srcHeight;
+
+				int dstX1 = dstX * dst->renderScaleFactor;
+				int dstY1 = dstY * dst->renderScaleFactor;
+				int dstX2 = dstX1 + dstWidth;
+				int dstY2 = dstY1 + dstHeight;
+
+				srcX1 /= scaleFactorX;
+				srcX2 /= scaleFactorX;
+
+				gpuStats.numReinterpretCopies++;
+				FlushBeforeCopy();
+				BlitUsingRaster(src->fbo, srcX1, srcY1, srcX2, srcY2,
+					dst->fbo, dstX1, dstY1, dstX2, dstY2, false, dst->renderScaleFactor, pipeline, pass_name);
+				RebindFramebuffer("RebindFramebuffer - Inter-buffer block transfer with mismatched formats");
+				SetColorUpdated(dst, skipDrawReason);
+				return true;
+			}
 		}
 
 		// TODO
