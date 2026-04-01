@@ -75,7 +75,8 @@
 bool MainScreen::showHomebrewTab = false;
 
 static void LaunchFile(ScreenManager *screenManager, Screen *currentScreen, const Path &path) {
-	if (path.GetFileExtension() == ".zip") {
+	std::string extension = path.GetFileExtension();
+	if (extension == ".zip" || extension == ".7z") {
 		// If is a zip file, we have a screen for that.
 		screenManager->push(new InstallZipScreen(path));
 	} else {
@@ -299,9 +300,6 @@ void GameButton::Draw(UIContext &dc) {
 	UI::Style style = dc.GetTheme().itemStyle;
 	if (down_) {
 		style = dc.GetTheme().itemDownStyle;
-	}
-	if (startsWith(ginfo->GetTitle(), "Nddemo")) {
-		style = style;
 	}
 
 	// Some types we just draw a default icon for.

@@ -658,6 +658,14 @@ add_library(Common STATIC
 	${CommonLOONGARCH64}
 	${CommonD3D}
 	${CommonVR}
+	ext/lzma-sdk/7zArcIn.c  # TODO: Move.
+	ext/lzma-sdk/7zBuf.c
+	ext/lzma-sdk/7zCrc.c
+	ext/lzma-sdk/7zDec.c
+	ext/lzma-sdk/7zFile.c
+	ext/lzma-sdk/7zStream.c
+	ext/lzma-sdk/Bcj2.c
+	ext/lzma-sdk/Lzma2Dec.c
 	Common/Serialize/Serializer.cpp
 	Common/Serialize/Serializer.h
 	Common/Serialize/SerializeDeque.h
@@ -722,6 +730,8 @@ add_library(Common STATIC
 	Common/File/VFS/VFS.cpp
 	Common/File/VFS/ZipFileReader.cpp
 	Common/File/VFS/ZipFileReader.h
+	Common/File/VFS/SevenZipFileReader.cpp
+	Common/File/VFS/SevenZipFileReader.h
 	Common/File/VFS/DirectoryReader.cpp
 	Common/File/VFS/DirectoryReader.h
 	Common/File/AndroidStorage.h
@@ -771,6 +781,8 @@ add_library(Common STATIC
 	Common/GPU/OpenGL/GLRenderManager.h
 	Common/GPU/OpenGL/GLQueueRunner.cpp
 	Common/GPU/OpenGL/GLQueueRunner.h
+	Common/GPU/OpenGL/GLProfiler.cpp
+	Common/GPU/OpenGL/GLProfiler.h
 	Common/GPU/OpenGL/DataFormatGL.cpp
 	Common/GPU/OpenGL/DataFormatGL.h
 	Common/GPU/Vulkan/VulkanBarrier.cpp
@@ -967,6 +979,8 @@ if(ARM64)
 		target_link_libraries(Common adrenotools)
 	endif()
 endif()
+
+target_compile_definitions(Common PRIVATE Z7_CRC_NUM_TABLES=1)
 
 if(TARGET Ext::GLEW)
 	target_link_libraries(Common Ext::GLEW)
