@@ -1,8 +1,15 @@
 #include <algorithm>
+#include <limits>
+
 #include "ppsspp_config.h"
 
 #undef new
+#ifdef SYSTEM_RAPIDJSON
+#include <rapidjson/document.h>
+#else
 #include "ext/rapidjson/include/rapidjson/document.h"
+#endif
+#include "ext/pugixml/pugixml.hpp"
 #include "Common/DbgNew.h"
 
 #include "AdhocServerScreen.h"
@@ -11,6 +18,7 @@
 #include "Common/Net/Resolve.h"
 #include "Common/UI/Root.h"
 #include "Common/UI/PopupScreens.h"
+#include "Common/Data/Text/Parsers.h"
 #include "Common/StringUtils.h"
 #include "Common/Net/HTTPClient.h"
 #include "Core/HLE/sceNetAdhoc.h"
@@ -26,39 +34,134 @@ static void UpgradeGameName(std::string *str) {
 	}
 }
 
+static int ParseUserCountValue(const rapidjson::Value &v) {
+	if (v.IsInt())
+		return v.GetInt();
+	else if (v.IsString()) {
+		int value = 0;
+		if (TryParse(v.GetString(), &value))
+			return value;
+	}
+	return 0;
+}
+
+static int ParsePortValue(const rapidjson::Value &v) {
+	if (v.IsInt())
+		return v.GetInt();
+	return -1;
+}
+
+static std::string RemoveHttpsIfNeeded(std::string_view url) {
+	if (!System_GetPropertyBool(SYSPROP_SUPPORTS_HTTPS)) {
+		// Try with http. Needed on Linux installs currently.
+		if (startsWith(url, "https://")) {
+			return "http://" + std::string(url.substr(8));
+		}
+	}
+	return std::string(url);
+}
+
+std::vector<AdhocGame> ParseStatusXML(const std::string& xmlInput) {
+	pugi::xml_document doc;
+	pugi::xml_parse_result result = doc.load_string(xmlInput.c_str());
+
+	std::vector<AdhocGame> gameList;
+	if (!result) {
+		ERROR_LOG(Log::sceNet, "XML Parsing Error: %s", result.description());
+		return gameList;
+	}
+
+	// Root is <prometheus>
+	pugi::xml_node prometheus = doc.child("prometheus");
+
+	for (pugi::xml_node xmlGame : prometheus.children("game")) {
+		AdhocGame game;
+		game.name = xmlGame.attribute("name").as_string();
+		game.usercount = xmlGame.attribute("usercount").as_int();
+
+		for (pugi::xml_node xmlGroup : xmlGame.children("group")) {
+			AdhocGroup group;
+			group.name = xmlGroup.attribute("name").as_string();
+			group.usercount = xmlGroup.attribute("usercount").as_int();
+
+			for (pugi::xml_node xmlUser : xmlGroup.children("user")) {
+				AdhocUser user;
+				// In XML, the username is the text inside the <user> tag
+				user.name = xmlUser.child_value();
+				group.users.push_back(user);
+			}
+			game.groups.push_back(group);
+		}
+		gameList.push_back(game);
+	}
+
+	return gameList;
+}
+
 std::vector<AdhocGame> ParseDataJson(std::string_view json) {
 	rapidjson::Document d;
 	d.Parse(json.data(), json.size());
 
 	std::vector<AdhocGame> gameList;
 
-	if (d.HasParseError() || !d.HasMember("games")) return gameList;
+	if (d.HasParseError() || !d.IsObject() || !d.HasMember("games") || !d["games"].IsArray())
+		return gameList;
 
 	const auto& gamesArray = d["games"];
 	for (auto& g : gamesArray.GetArray()) {
+		if (!g.IsObject())
+			continue;
+
 		AdhocGame game;
+		if (!g.HasMember("name") || !g["name"].IsString())
+			continue;
 		game.name = g["name"].GetString();
 		UpgradeGameName(&game.name);
 
-		// Handle string-to-int conversion for usercount
-		game.usercount = std::stoi(g["usercount"].GetString());
+		game.usercount = g.HasMember("usercount") ? ParseUserCountValue(g["usercount"]) : 0;
 
-		if (g.HasMember("groups")) {
+		if (g.HasMember("game_ids") && g["game_ids"].IsArray()) {
+			for (auto& id : g["game_ids"].GetArray()) {
+				if (!id.IsString())
+					continue;
+				game.game_ids.push_back(id.GetString());
+			}
+		}
+
+		if (g.HasMember("groups") && g["groups"].IsArray()) {
 			for (auto& grp : g["groups"].GetArray()) {
-				AdhocGroup group;
-				group.name = grp["name"].GetString();
-				group.usercount = std::stoi(grp["usercount"].GetString());
+				if (!grp.IsObject())
+					continue;
 
-				if (grp.HasMember("users")) {
+				AdhocGroup group;
+				if (!grp.HasMember("name") || !grp["name"].IsString())
+					continue;
+				group.name = grp["name"].GetString();
+				group.usercount = grp.HasMember("usercount") ? ParseUserCountValue(grp["usercount"]) : 0;
+
+				if (grp.HasMember("users") && grp["users"].IsArray()) {
 					for (auto& u : grp["users"].GetArray()) {
+						if (!u.IsObject() || !u.HasMember("name") || !u["name"].IsString())
+							continue;
+
 						AdhocUser user;
 						user.name = u["name"].GetString();
 
-						for (auto& p : u["pdp_ports"].GetArray())
-							user.pdp_ports.push_back(p.GetInt());
+						if (u.HasMember("pdp_ports") && u["pdp_ports"].IsArray()) {
+							for (auto& p : u["pdp_ports"].GetArray()) {
+								int port = ParsePortValue(p);
+								if (port >= 0)
+									user.pdp_ports.push_back(port);
+							}
+						}
 
-						for (auto& p : u["ptp_ports"].GetArray())
-							user.ptp_ports.push_back(p.GetInt());
+						if (u.HasMember("ptp_ports") && u["ptp_ports"].IsArray()) {
+							for (auto& p : u["ptp_ports"].GetArray()) {
+								int port = ParsePortValue(p);
+								if (port >= 0)
+									user.ptp_ports.push_back(port);
+							}
+						}
 
 						group.users.push_back(user);
 					}
@@ -122,21 +225,6 @@ private:
 	bool hasRelay_ = false;
 };
 
-class AdhocServerCompactInfo : public UI::LinearLayout {
-public:
-	AdhocServerCompactInfo(const AdhocServerListEntry &entry, UI::LayoutParams *layoutParams = nullptr);
-	void Draw(UIContext &dc) override {
-		UI::LinearLayout::Draw(dc);
-		// Underline
-		dc.Draw()->DrawImageCenterTexel(dc.GetTheme().whiteImage, bounds_.x, bounds_.y2() - 2, bounds_.x2(), bounds_.y2(), dc.GetTheme().popupTitleStyle.fgColor);
-	}
-	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override {
-		w = 500; h = 100;
-	}
-private:
-	AdhocServerListEntry entry_;
-};
-
 AdhocServerCompactInfo::AdhocServerCompactInfo(const AdhocServerListEntry &entry, UI::LayoutParams *layoutParams)
 	: UI::LinearLayout(ORIENT_HORIZONTAL, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::WRAP_CONTENT, UI::Margins(5.0f, 0.0f))), entry_(entry) {
 	using namespace UI;
@@ -164,6 +252,12 @@ AdhocServerCompactInfo::AdhocServerCompactInfo(const AdhocServerListEntry &entry
 	Add(new Choice(ImageID("I_FILE_COPY"), new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT)))->OnClick.Add([host = entry_.host](UI::EventParams &) {
 		System_CopyStringToClipboard(host);
 	});
+}
+
+void AdhocServerCompactInfo::Draw(UIContext &dc) {
+	UI::LinearLayout::Draw(dc);
+	// Underline
+	dc.Draw()->DrawImageCenterTexel(dc.GetTheme().whiteImage, bounds_.x, bounds_.y2() - 2, bounds_.x2(), bounds_.y2(), dc.GetTheme().popupTitleStyle.fgColor);
 }
 
 static UI::View *CreateInfoItemWithButton(std::string_view text, ImageID buttonImage, std::function<void(UI::EventParams &)> onClick) {
@@ -205,8 +299,73 @@ static UI::View *CreateLinkButton(std::string url, std::string_view title = "") 
 AdhocServerInfoScreen::AdhocServerInfoScreen(const AdhocServerListEntry &entry)
 	: UI::PopupScreen("", T(I18NCat::DIALOG, "Back")), entry_(entry) {
 
+	std::string dataUrl;
 	if (!entry.dataJsonUrl.empty()) {
-		statusRequest_ = g_DownloadManager.StartDownload(entry.dataJsonUrl, Path(), http::RequestFlags::KeepInMemory, nullptr, "status");
+		dataUrl = RemoveHttpsIfNeeded(entry.dataJsonUrl);
+	} else if (!entry.statusXmlUrl.empty()) {
+		dataUrl = RemoveHttpsIfNeeded(entry.statusXmlUrl);
+	}
+
+	if (!dataUrl.empty()) {
+		statusRequest_ = g_DownloadManager.StartDownload(dataUrl, Path(), http::RequestFlags::KeepInMemory, nullptr, "status");
+	}
+}
+
+void CreateAdhocServerGameList(UI::ViewGroup *content, const std::vector<AdhocGame> &games, bool requestInProgress) {
+	using namespace UI;
+	auto ni = GetI18NCategory(I18NCat::NETWORKING);
+	if (games.empty()) {
+		if (requestInProgress) {
+			// Still loading. Show a spinner.
+			content->Add(new Spinner(nullptr, 0, new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT, Margins(8))));
+		} else {
+			content->Add(new TextView(ni->T("No games in progress on this server")));
+		}
+		return;
+	}
+	for (const AdhocGame &game : games) {
+		std::string title = game.name + " - " + ApplySafeSubstitutions(ni->T("players: %1"), game.usercount) + " " + ApplySafeSubstitutions(ni->T("groups: %1"), (int)game.groups.size());
+		CollapsibleSection *gameSection = content->Add(new CollapsibleSection(title));
+		gameSection->Header()->SetUnderline(false);
+		for (const AdhocGroup &group : game.groups) {
+			std::string groupName = group.name;
+			if (groupName.empty()) {
+				groupName = "???";
+			}
+			if (group.usercount >= 1 && groupName == "Groupless") {
+				gameSection->Add(new TextView("  " + ApplySafeSubstitutions(ni->T("Players waiting: %1"), group.usercount)))->SetTextSize(TextSize::Small);
+				continue;
+			}
+			if (g_Config.bAdhocServerShowPlayerPorts) {
+				// Show detailed info, each player on their own line.
+				gameSection->Add(new TextView("  " + groupName + " - " + ApplySafeSubstitutions(ni->T("players: %1"), group.usercount)))->SetTextSize(TextSize::Small);
+				for (const AdhocUser &user : group.users) {
+					std::string portInfo;
+					if (!user.pdp_ports.empty()) {
+						portInfo += "PDP: ";
+						for (int port : user.pdp_ports) {
+							portInfo += std::to_string(port) + " ";
+						}
+					}
+					if (!user.ptp_ports.empty()) {
+						portInfo += "PTP: ";
+						for (int port : user.ptp_ports) {
+							portInfo += std::to_string(port) + " ";
+						}
+					}
+					gameSection->Add(new TextView("    " + user.name + " " + portInfo))->SetTextSize(TextSize::Tiny);
+				}
+			} else {
+				// Show each group on a single line.
+				std::string groupString = "  " + group.name + ApplySafeSubstitutions("(%1):", group.usercount);
+				for (const AdhocUser &user : group.users) {
+					groupString.push_back(' ');
+					groupString += user.name;
+				}
+				gameSection->Add(new TextView(groupString))->SetTextSize(TextSize::Small)->SetWordWrap();
+			}
+		}
+		gameSection->SetOpen(false);  // NOTE: Must be last!
 	}
 }
 
@@ -242,7 +401,7 @@ void AdhocServerInfoScreen::CreatePopupContents(UI::ViewGroup *parent) {
 		}
 	}
 
-	if (entry_.dataJsonUrl.empty()) {
+	if (entry_.dataJsonUrl.empty() && entry_.statusXmlUrl.empty()) {
 		content->Add(CreateInfoItemWithButton(ni->T("This server has no data.json status page"), ImageID("I_LINK_OUT_QUESTION"), [](UI::EventParams &e) {
 			System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org/docs/multiplayer/adhoc-server-status/");
 		}));
@@ -253,42 +412,7 @@ void AdhocServerInfoScreen::CreatePopupContents(UI::ViewGroup *parent) {
 			buttonStrip->Add(CreateLinkButton(entry_.statusXmlUrl, ni->T("Status")));
 		}
 	} else {
-		if (games_.empty()) {
-			if (statusRequest_) {
-				// Still loading. TODO: Show a spinner or something.
-			} else {
-				content->Add(new TextView(ni->T("No games in progress on this server")));
-			}
-		} else {
-			for (const AdhocGame &game : games_) {
-				std::string title = game.name + " - " + ApplySafeSubstitutions(ni->T("players: %1"), game.usercount) + " " + ApplySafeSubstitutions(ni->T("groups: %1"), (int)game.groups.size());
-				CollapsibleSection *gameSection = content->Add(new CollapsibleSection(title));
-				for (const AdhocGroup &group : game.groups) {
-					if (group.usercount == 1 && group.name == "Groupless") {
-						gameSection->Add(new TextView("  " + ApplySafeSubstitutions(ni->T("Players waiting: %1"), group.usercount)))->SetTextSize(TextSize::Small);
-						continue;
-					}
-					gameSection->Add(new TextView("  " + group.name + " - " + ApplySafeSubstitutions(ni->T("players: %1"), group.usercount)))->SetTextSize(TextSize::Small);
-					for (const AdhocUser &user : group.users) {
-						std::string portInfo;
-						if (!user.pdp_ports.empty()) {
-							portInfo += "PDP: ";
-							for (int port : user.pdp_ports) {
-								portInfo += std::to_string(port) + " ";
-							}
-						}
-						if (!user.ptp_ports.empty()) {
-							portInfo += "PTP: ";
-							for (int port : user.ptp_ports) {
-								portInfo += std::to_string(port) + " ";
-							}
-						}
-						gameSection->Add(new TextView("    " + user.name + " " + portInfo))->SetTextSize(TextSize::Tiny);
-					}
-				}
-				gameSection->SetOpen(false);  // NOTE: Must be last!
-			}
-		}
+		CreateAdhocServerGameList(content, games_, statusRequest_.get() ? true : false);
 	}
 
 	scroll->Add(content);
@@ -298,9 +422,13 @@ void AdhocServerInfoScreen::CreatePopupContents(UI::ViewGroup *parent) {
 void AdhocServerInfoScreen::update() {
 	UI::PopupScreen::update();
 	if (statusRequest_ && statusRequest_->Done()) {
-		std::string json;
-		statusRequest_->buffer().TakeAll(&json);
-		games_ = ParseDataJson(json);
+		std::string data;
+		statusRequest_->buffer().TakeAll(&data);
+		if (endsWith(statusRequest_->url(), ".xml")) {
+			games_ = ParseStatusXML(data);
+		} else {
+			games_ = ParseDataJson(data);
+		}
 		statusRequest_.reset();
 		RecreateViews();
 	}

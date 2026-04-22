@@ -160,25 +160,25 @@ void View::PersistData(PersistStatus status, std::string anonId, PersistMap &sto
 	}
 }
 
-Point2D View::GetFocusPosition(FocusDirection dir) const {
+Point2D View::GetFocusPosition(FocusMove dir) const {
 	// The +2/-2 is some extra fudge factor to cover for views sitting right next to each other.
 	// Distance zero yields strange results otherwise.
 	switch (dir) {
-	case FOCUS_LEFT: return Point2D(bounds_.x + 2, bounds_.centerY());
-	case FOCUS_RIGHT: return Point2D(bounds_.x2() - 2, bounds_.centerY());
-	case FOCUS_UP: return Point2D(bounds_.centerX(), bounds_.y + 2);
-	case FOCUS_DOWN: return Point2D(bounds_.centerX(), bounds_.y2() - 2);
+	case FocusMove::LEFT: return Point2D(bounds_.x + 2, bounds_.centerY());
+	case FocusMove::RIGHT: return Point2D(bounds_.x2() - 2, bounds_.centerY());
+	case FocusMove::UP: return Point2D(bounds_.centerX(), bounds_.y + 2);
+	case FocusMove::DOWN: return Point2D(bounds_.centerX(), bounds_.y2() - 2);
 
 	default:
 		return bounds_.Center();
 	}
 }
 
-Point2D CollapsibleHeader::GetFocusPosition(FocusDirection dir) const {
+Point2D CollapsibleHeader::GetFocusPosition(FocusMove dir) const {
 	// Bias the focus position to the left.
 	switch (dir) {
-	case FOCUS_UP: return Point2D(bounds_.x + 50, bounds_.y + 2);
-	case FOCUS_DOWN: return Point2D(bounds_.x + 50, bounds_.y2() - 2);
+	case FocusMove::UP: return Point2D(bounds_.x + 50, bounds_.y + 2);
+	case FocusMove::DOWN: return Point2D(bounds_.x + 50, bounds_.y2() - 2);
 	default:
 		return View::GetFocusPosition(dir);
 	}
@@ -635,7 +635,9 @@ void CollapsibleHeader::Draw(UIContext &dc) {
 
 	dc.SetFontStyle(dc.GetTheme().uiFontSmall);
 	dc.DrawText(text_, bounds_.x + 6 + xoff, bounds_.centerY(), style.fgColor, ALIGN_LEFT | ALIGN_VCENTER);
-	dc.Draw()->DrawImageCenterTexel(dc.GetTheme().whiteImage, bounds_.x, bounds_.y2() - 2, bounds_.x2(), bounds_.y2(), style.fgColor);
+	if (underline_) {
+		dc.Draw()->DrawImageCenterTexel(dc.GetTheme().whiteImage, bounds_.x, bounds_.y2() - 2, bounds_.x2(), bounds_.y2(), style.fgColor);
+	}
 	if (hasSubItems_) {
 		dc.Draw()->DrawImageRotated(ImageID("I_ARROW"), bounds_.x + 20.0f, bounds_.y + 20.0f, 1.0f, *toggle_ ? -M_PI / 2 : M_PI, style.fgColor);
 	}
@@ -1542,21 +1544,25 @@ void Spinner::GetContentDimensions(const UIContext &dc, float &w, float &h) cons
 void Spinner::Draw(UIContext &dc) {
 	if (!(color_ & 0xFF000000))
 		return;
-	double t = time_now_d() * 1.3f;
-	double angle = fmod(t, M_PI * 2.0);
+	double t = time_now_d() * 1.3;
+	float angle = (float)fmod(t, M_PI * 2.0);
 
 	if (!images_) {
 		// Simple.
-		dc.Draw()->CircleSegment(bounds_.centerX(), bounds_.centerY(), bounds_.radius(), 3.0f, 20.0f, angle, angle + PI * 3.0 / 2.0, dc.GetTheme().itemStyle.fgColor, 0.0f);
+		dc.BeginNoTex();
+		dc.Draw()->CircleSegment(bounds_.centerX(), bounds_.centerY(), bounds_.radius(), 3.0f, 20.0f, angle, angle + PI * 3.0f / 2.0f, dc.GetTheme().itemStyle.fgColor, 0.0f);
+		dc.Flush();
+		dc.Begin();
+		dc.RebindTexture();
 		return;
 	}
 
 	float r = bounds_.w * 0.5f;
-	double da = M_PI * 2.0 / numImages_;
+	float da = (M_PI * 2.0f) / numImages_;
 	for (int i = 0; i < numImages_; i++) {
-		double a = angle + i * da;
-		float x = (float)cos(a) * r;
-		float y = (float)sin(a) * r;
+		float a = angle + i * da;
+		float x = cosf(a) * r;
+		float y = sinf(a) * r;
 		dc.Draw()->DrawImage(images_[i], bounds_.centerX() + x, bounds_.centerY() + y, 1.0f, color_, ALIGN_CENTER);
 	}
 }
