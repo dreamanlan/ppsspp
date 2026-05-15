@@ -390,6 +390,13 @@ void NativeInit(int argc, const char *argv[], const char *savegame_dir, const ch
 #endif
 
 #if PPSSPP_PLATFORM(ANDROID)
+#ifdef _DEBUG
+	g_logManager.SetAllLogLevels(LogLevel::LINFO);
+	g_logManager.SetAllLogEnable(true);
+	g_logManager.SetOutputsEnabled(LogOutput::Stdio);
+	INFO_LOG(Log::System, "Logging test");
+#endif
+
 	// In Android 12 with scoped storage, due to the above, the external directory
 	// is no longer the plain root of external storage, but it's an app specific directory
 	// on external storage (g_extFilesDir).
@@ -825,10 +832,8 @@ bool NativeInitGraphics(GraphicsContext *graphicsContext) {
 
 #if defined(_WIN32) && !PPSSPP_PLATFORM(UWP)
 	if (IsWin7OrHigher()) {
-		winCamera = new WindowsCaptureDevice(CAPTUREDEVIDE_TYPE::VIDEO);
-		winCamera->sendMessage({ CAPTUREDEVIDE_COMMAND::INITIALIZE, nullptr });
-		winMic = new WindowsCaptureDevice(CAPTUREDEVIDE_TYPE::Audio);
-		winMic->sendMessage({ CAPTUREDEVIDE_COMMAND::INITIALIZE, nullptr });
+		winCamera = new WindowsCaptureDevice(CAPTUREDEVICE_TYPE::VIDEO);
+		winMic = new WindowsCaptureDevice(CAPTUREDEVICE_TYPE::AUDIO);
 	}
 #endif
 
@@ -1292,7 +1297,7 @@ bool NativeKey(const KeyInput &key) {
 #if PPSSPP_PLATFORM(UWP)
 	// Ignore if key sent from OnKeyDown/OnKeyUp/XInput while text edit active
 	// it's already handled by `OnCharacterReceived`
-	if (IgnoreInput(key.keyCode) && !(key.flags & KeyInputFlags::CHAR)) {
+	if (key.deviceId == DEVICE_ID_KEYBOARD && IgnoreInput(key.keyCode) && !(key.flags & KeyInputFlags::CHAR)) {
 		return false;
 	}
 #endif

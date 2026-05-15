@@ -992,7 +992,7 @@ void EmuScreen::ProcessVKey(VirtKey virtKey) {
 				auto mm = GetI18NCategory(I18NCat::MAINMENU);
 				confirmExitMessage += '\n';
 				confirmExitMessage += di->T("Are you sure you want to exit?");
-				screenManager()->push(new UI::MessagePopupScreen(mm->T("Exit"), confirmExitMessage, di->T("Yes"), di->T("No"), [=](bool result) {
+				screenManager()->push(new UI::MessagePopupScreen(di->T("Exit"), confirmExitMessage, di->T("Yes"), di->T("No"), [](bool result) {
 					if (result) {
 						System_ExitApp();
 					}
@@ -1418,7 +1418,7 @@ void EmuScreen::OpenChat(bool focus) {
 			UI::EnableFocusMovement(true);
 			root_->SetDefaultFocusView(chatMenu_);
 
-			chatMenu_->SetFocus();
+			chatMenu_->SetFocus(UI::FocusFlags::CAUSE_FORCED);
 			UI::View *focused = UI::GetFocusedView();
 			if (focused) {
 				root_->SubviewFocused(focused);
@@ -1469,7 +1469,7 @@ void EmuScreen::update() {
 		UpdateUIState(coreState != CORE_RUNTIME_ERROR ? UISTATE_INGAME : UISTATE_EXCEPTION);
 	}
 
-	if (errorMessage_.size()) {
+	if (!errorMessage_.empty()) {
 		auto err = GetI18NCategory(I18NCat::ERRORS);
 		auto di = GetI18NCategory(I18NCat::DIALOG);
 		std::string errLoadingFile = GetFriendlyPath(gamePath_) + "\n\n";
@@ -1542,7 +1542,7 @@ bool EmuScreen::checkPowerDown() {
 }
 
 ScreenRenderRole EmuScreen::renderRole(bool isTop) const {
-	auto CanBeBackground = [&]() -> bool {
+	auto CanBeBackground = [this, isTop]() -> bool {
 		if (skipBufferEffects_) {
 			return isTop || (g_Config.bTransparentBackground && ShouldRunBehind());
 		}
@@ -1568,14 +1568,16 @@ ScreenRenderRole EmuScreen::renderRole(bool isTop) const {
 }
 
 void EmuScreen::darken() {
-	if (!screenManager()->topScreen()->wantBrightBackground()) {
-		UIContext &dc = *screenManager()->getUIContext();
-		uint32_t color = GetBackgroundColorWithAlpha(dc);
-		dc.Begin();
-		dc.RebindTexture();
-		dc.FillRect(UI::Drawable(color), dc.GetBounds());
-		dc.Flush();
+	if (screenManager()->topScreen()->wantBrightBackground()) {
+		return;
 	}
+
+	UIContext &dc = *screenManager()->getUIContext();
+	uint32_t color = GetBackgroundColorWithAlpha(dc);
+	dc.Begin();
+	dc.RebindTexture();
+	dc.FillRect(UI::Drawable(color), dc.GetBounds());
+	dc.Flush();
 }
 
 void EmuScreen::HandleFlip() {

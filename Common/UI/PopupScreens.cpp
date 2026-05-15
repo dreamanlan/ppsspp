@@ -31,6 +31,10 @@ static void TextToImage(std::string_view buttonText, ImageID *image) {
 		*image = ImageID("I_NAVIGATE_BACK");
 	} else if (buttonText == di->T("Exit")) {
 		*image = ImageID("I_EXIT");
+	} else if (buttonText == di->T("More info")) {
+		*image = ImageID("I_LINK_OUT_QUESTION");
+	} else {
+		*image = ImageID();
 	}
 }
 
@@ -332,12 +336,12 @@ void PopupCallbackScreen::CreatePopupContents(ViewGroup *parent) {
 	AlignPopup(parent);
 }
 
-std::string ChopTitle(const std::string &title) {
+static std::string ChopTitle(std::string_view title) {
 	size_t pos = title.find('\n');
 	if (pos != title.npos) {
-		return title.substr(0, pos);
+		return std::string(title.substr(0, pos));
 	}
-	return title;
+	return std::string(title);
 }
 
 PopupMultiChoice::PopupMultiChoice(int *value, std::string_view text, const char **choices, int minVal, int numChoices,
@@ -416,7 +420,7 @@ void PopupMultiChoice::ChoiceCallback(int num) {
 		OnChoice.Trigger(e);
 
 		if (restoreFocus_) {
-			SetFocusedView(this);
+			SetFocusedView(this, FocusFlags::CAUSE_SCREEN_CHANGE);
 		}
 	}
 }
@@ -489,7 +493,7 @@ void PopupSliderChoice::HandleChange(EventParams &e) {
 	OnChange.Trigger(e);
 
 	if (restoreFocus_) {
-		SetFocusedView(this);
+		SetFocusedView(this, FocusFlags::CAUSE_SCREEN_CHANGE);
 	}
 }
 
@@ -552,7 +556,7 @@ void PopupSliderChoiceFloat::HandleChange(EventParams &e) {
 	OnChange.Trigger(e);
 
 	if (restoreFocus_) {
-		SetFocusedView(this);
+		SetFocusedView(this, FocusFlags::CAUSE_SCREEN_CHANGE);
 	}
 }
 
@@ -665,7 +669,7 @@ void SliderPopupScreen::CreatePopupContents(UI::ViewGroup *parent) {
 		vert->Add(new CheckBox(&disabled_, negativeLabel_));
 
 	if (IsFocusMovementEnabled())
-		UI::SetFocusedView(slider_);
+		UI::SetFocusedView(slider_, FocusFlags::CAUSE_SCREEN_CHANGE);
 }
 
 void SliderFloatPopupScreen::CreatePopupContents(UI::ViewGroup *parent) {
@@ -706,7 +710,7 @@ void SliderFloatPopupScreen::CreatePopupContents(UI::ViewGroup *parent) {
 
 	// slider_ = parent->Add(new SliderFloat(&sliderValue_, minValue_, maxValue_, new LinearLayoutParams(UI::Margins(10, 5))));
 	if (IsFocusMovementEnabled())
-		UI::SetFocusedView(slider_);
+		UI::SetFocusedView(slider_, FocusFlags::CAUSE_SCREEN_CHANGE);
 }
 
 void SliderFloatPopupScreen::OnDecrease(EventParams &params) {
@@ -785,6 +789,31 @@ void SliderFloatPopupScreen::OnCompleted(DialogResult result) {
 	}
 }
 
+// General utility, if you don't want to use a choice with a string.
+void AskForInput(ScreenManager *screenManager, RequesterToken token, UI::View *sourceView, std::string_view title, std::function<void(const std::string &, bool)> callback) {
+	// Choose method depending on platform capabilities.
+	if (System_GetPropertyBool(SYSPROP_HAS_TEXT_INPUT_DIALOG)) {
+		System_InputBoxGetString(token, title, "", false, [callback](const std::string &enteredValue, int) {
+			callback(SanitizeString(StripSpaces(enteredValue), StringRestriction::None, 0, 0), true);
+		});
+		return;
+	}
+
+	TextEditPopupScreen *popupScreen = new TextEditPopupScreen(nullptr, "", ChopTitle(title), -1);
+	if (System_GetPropertyBool(SYSPROP_KEYBOARD_IS_SOFT)) {
+		popupScreen->SetAlignTop(true);
+	}
+	popupScreen->OnChange.Add([callback, sourceView](EventParams &e) {
+		callback(SanitizeString(StripSpaces(e.s), StringRestriction::None, 0, 0), true);
+		if (sourceView) {
+			SetFocusedView(sourceView, FocusFlags::CAUSE_SCREEN_CHANGE);
+		}
+	});
+	if (sourceView)
+		popupScreen->SetPopupOrigin(sourceView);
+	screenManager->push(popupScreen);
+}
+
 PopupTextInputChoice::PopupTextInputChoice(RequesterToken token, std::string *value, std::string_view title, std::string_view placeholder, int maxLen, ScreenManager *screenManager, LayoutParams *layoutParams)
 	: AbstractChoiceWithValueDisplay(title, layoutParams), screenManager_(screenManager), value_(value), placeHolder_(placeholder), maxLen_(maxLen), token_(token), restriction_(StringRestriction::None) {
 	OnClick.Handle(this, &PopupTextInputChoice::HandleClick);
@@ -813,9 +842,10 @@ void PopupTextInputChoice::HandleClick(EventParams &e) {
 		*value_ = StripSpaces(SanitizeString(*value_, restriction_, minLen_, maxLen_));
 		EventParams params{};
 		params.v = this;
+		params.s = *value_;
 		OnChange.Trigger(params);
 		if (restoreFocus_) {
-			SetFocusedView(this);
+			SetFocusedView(this, FocusFlags::CAUSE_SCREEN_CHANGE);
 		}
 	});
 	if (e.v)
@@ -924,6 +954,15 @@ ViewGroup *CreateSoftKeyboard(TextEdit *edit, SoftKeyboardState *state) {
 	return scrollView;
 }
 
+TextEditPopupScreen::TextEditPopupScreen(std::string *value, std::string_view placeholder, std::string_view title, int maxLen)
+		: PopupScreen(title, T(I18NCat::DIALOG, "OK"), T(I18NCat::DIALOG, "Cancel")), value_(value), placeholder_(placeholder), maxLen_(maxLen) {
+	if (!value_) {
+		// Point it to our temporary.
+		value_ = &textEditValue_;
+	}
+}
+
+
 void TextEditPopupScreen::CreatePopupContents(UI::ViewGroup *parent) {
 	using namespace UI;
 	UIContext &dc = *screenManager()->getUIContext();
@@ -949,7 +988,7 @@ void TextEditPopupScreen::CreatePopupContents(UI::ViewGroup *parent) {
 		});
 	}
 
-	UI::SetFocusedView(edit_);
+	UI::SetFocusedView(edit_, FocusFlags::CAUSE_SCREEN_CHANGE);
 }
 
 void TextEditPopupScreen::OnCompleted(DialogResult result) {
@@ -957,6 +996,7 @@ void TextEditPopupScreen::OnCompleted(DialogResult result) {
 		*value_ = StripSpaces(edit_->GetText());
 		EventParams e{};
 		e.v = edit_;
+		e.s = *value_;
 		OnChange.Trigger(e);
 	}
 }

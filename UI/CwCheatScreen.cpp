@@ -49,6 +49,11 @@ CwCheatScreen::~CwCheatScreen() {
 	delete engine_;
 }
 
+bool CwCheatScreen::WantsTextInput() const {
+	// We don't want to pop a software keyboard on the cheat screen, just for type-to-search.
+	return !System_GetPropertyBool(SYSPROP_KEYBOARD_IS_SOFT);
+}
+
 bool CwCheatScreen::TryLoadCheatInfo() {
 	std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(nullptr, gamePath_, GameInfoFlags::PARAM_SFO);
 	std::string gameID;
@@ -86,6 +91,15 @@ void CwCheatScreen::BeforeCreateViews() {
 	TryLoadCheatInfo();  // in case the info is already in cache.
 }
 
+bool CwCheatScreen::key(const KeyInput &input) {
+	if (search_.Key(cheatList_, input)) {
+		// This will eat up the ESC key, which is used to cancel searches.
+		return true;
+	}
+
+	return UITwoPaneBaseDialogScreen::key(input);
+}
+
 void CwCheatScreen::CreateSettingsViews(UI::ViewGroup *leftColumn) {
 	using namespace UI;
 	auto cw = GetI18NCategory(I18NCat::CWCHEATS);
@@ -105,6 +119,17 @@ void CwCheatScreen::CreateSettingsViews(UI::ViewGroup *leftColumn) {
 	leftColumn->Add(new Choice(mm->T("Browse"), ImageID("I_FOLDER_OPEN")))->OnClick.Handle(this, &CwCheatScreen::OnImportBrowse);
 
 	leftColumn->Add(new ItemHeader(di->T("Options")));
+	Choice *searchChoice = leftColumn->Add(new Choice(di->T("Search"), ImageID("I_SEARCH")));
+	searchChoice->OnClick.Add([this, searchChoice, screenManager = screenManager(), token = GetRequesterToken()](UI::EventParams &) {
+		auto di = GetI18NCategory(I18NCat::DIALOG);
+		AskForInput(screenManager, token, searchChoice, di->T("Search"), [this](const std::string &text, bool success) {
+			if (!success) {
+				return;
+			}
+			search_.searchFilter = text;
+			search_.ApplySearchFilter(cheatList_, false);
+		});
+	});
 #if !defined(MOBILE_DEVICE)
 	leftColumn->Add(new Choice(cw->T("Edit Cheat File")))->OnClick.Handle(this, &CwCheatScreen::OnEditCheatFile);
 #endif
@@ -118,13 +143,23 @@ void CwCheatScreen::CreateContentViews(UI::ViewGroup *parent) {
 	auto di = GetI18NCategory(I18NCat::DIALOG);
 	auto mm = GetI18NCategory(I18NCat::MAINMENU);
 
-	UI::ScrollView *rightScroll = parent->Add(new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT, 0.5f)));
+	UI::LinearLayout *rightSide = parent->Add(new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT, 0.5f)));
+	search_.searchFilter.clear();
+	search_.searchBar = rightSide->Add(new SearchBar(new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
+	search_.searchBar->OnCancel.Add([this](UI::EventParams &) {
+		search_.searchFilter.clear();
+		search_.ApplySearchFilter(cheatList_, false);
+	});
+
+	UI::ScrollView *rightScroll = rightSide->Add(new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, FILL_PARENT, 1.0f)));
 	rightScroll->SetTag("CwCheats");
 	rightScroll->RememberPosition(&g_Config.fCwCheatScrollPosition);
 
 	LinearLayout *rightColumn = new LinearLayoutList(ORIENT_VERTICAL, new LinearLayoutParams(200, FILL_PARENT));
 	rightColumn->SetSpacing(0.0f);
 	rightScroll->Add(rightColumn);
+
+	cheatList_ = rightColumn;
 
 	if (!errorMessage_.empty()) {
 		rightColumn->Add(new NoticeView(errorLevel_, errorMessage_, errorDetails_));
@@ -134,24 +169,29 @@ void CwCheatScreen::CreateContentViews(UI::ViewGroup *parent) {
 	rightColumn->Add(new ItemHeader(cw->T("Cheats")));
 
 	bool prevIsTitle = false;
+	View *prev = nullptr;
 	for (size_t i = 0; i < fileInfo_.size(); ++i) {
 		std::string_view text;
 		if (fileInfo_[i].IsTitle(&text)) {
 			// Title.
 			TextView *titleView = rightColumn->Add(new TextView(text, new LinearLayoutParams(WRAP_CONTENT, WRAP_CONTENT, UI::Margins(8, 8, 8, 0))));
 			titleView->SetTextSize(UI::TextSize::Big);
+			titleView->SetAlwaysVisibleInSearch(true);
 			prevIsTitle = true;
+			prev = nullptr;
 		} else if (fileInfo_[i].IsPostComment(&text)) {
-			rightColumn->Add(new SettingHint(text, nullptr));
+			rightColumn->Add(new SettingHint(text, prev));
 			prevIsTitle = false;
 		} else {
 			// Regular cheat code.
 			if (!prevIsTitle) {
 				rightColumn->Add(new Spacer(8.0f));
 			}
-			rightColumn->Add(new CheckBox(&fileInfo_[i].enabled, fileInfo_[i].name))->OnClick.Add([=](UI::EventParams &) {
+			CheckBox *checkBox = rightColumn->Add(new CheckBox(&fileInfo_[i].enabled, fileInfo_[i].name));
+			checkBox->OnClick.Add([=](UI::EventParams &) {
 				OnCheckBox((int)i);
 			});
+			prev = checkBox;
 			prevIsTitle = false;
 		}
 	}
@@ -254,7 +294,7 @@ void CwCheatScreen::ImportAndReport(const Path &cheatFile) {
 		auto cw = GetI18NCategory(I18NCat::CWCHEATS);
 		// Show an error message?
 		errorLevel_ = NoticeLevel::INFO;
-		errorMessage_ = cw->T("No cheats found for this game");
+		errorMessage_ = cw->T("No new cheats found for this game");
 		errorDetails_.clear();
 	} else {
 		auto cw = GetI18NCategory(I18NCat::CWCHEATS);
@@ -455,6 +495,13 @@ bool CwCheatScreen::RebuildCheatFile(int index) {
 			fputc('\n', out);
 	}
 	fclose(out);
+
+	// Don't force an auto-reload, though.
+	std::string str;
+	if (File::ReadTextFileToString(engine_->CheatFilename(), &str)) {
+		uint64_t newHash = XXH3_64bits(str.c_str(), str.size());
+		fileCheckHash_ = newHash;
+	}
 
 	// Cheats will need to be reparsed now.
 	g_Config.bReloadCheats = true;

@@ -233,8 +233,7 @@ ViewGroup *CreateSoftKeyboard(TextEdit *edit, SoftKeyboardState *state);
 
 class TextEditPopupScreen : public PopupScreen {
 public:
-	TextEditPopupScreen(std::string *value, std::string_view placeholder, std::string_view title, int maxLen)
-		: PopupScreen(title, T(I18NCat::DIALOG, "OK"), T(I18NCat::DIALOG, "Cancel")), value_(value), placeholder_(placeholder), maxLen_(maxLen) {}
+	TextEditPopupScreen(std::string *value, std::string_view placeholder, std::string_view title, int maxLen);
 	void CreatePopupContents(ViewGroup *parent) override;
 
 	const char *tag() const override { return "TextEditPopup"; }
@@ -544,6 +543,8 @@ private:
 	bool restoreFocus_ = false;
 	StringRestriction restriction_;
 };
+
+void AskForInput(ScreenManager *screenManager, RequesterToken token, UI::View *sourceView, std::string_view title, std::function<void(const std::string &, bool)> callback);
 
 class ChoiceWithValueDisplay : public AbstractChoiceWithValueDisplay {
 public:

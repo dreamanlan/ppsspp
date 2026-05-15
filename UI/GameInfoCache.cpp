@@ -447,6 +447,7 @@ void GameInfo::SetupTexture(Draw::DrawContext *thin3d, GameInfoTex &tex) {
 	}
 }
 
+// Will clear contents on failure.
 static bool ReadFileToString(IFileSystem *fs, std::string_view filename, std::string *contents, std::mutex *mtx) {
 	std::string fn(filename);
 	PSPFileInfo info = fs->GetFileInfo(fn);
@@ -463,16 +464,18 @@ static bool ReadFileToString(IFileSystem *fs, std::string_view filename, std::st
 		data.resize(info.size);
 		size_t readSize = fs->ReadFile(handle, (u8 *)data.data(), info.size);
 		fs->CloseFile(handle);
+		std::lock_guard<std::mutex> lock(*mtx);
 		if (readSize != info.size) {
+			contents->clear();
 			return false;
 		}
-		std::lock_guard<std::mutex> lock(*mtx);
 		*contents = std::move(data);
 	} else {
 		contents->resize(info.size);
 		size_t readSize = fs->ReadFile(handle, (u8 *)contents->data(), info.size);
 		fs->CloseFile(handle);
 		if (readSize != info.size) {
+			contents->clear();
 			return false;
 		}
 	}
@@ -882,26 +885,7 @@ handleELF:
 
 			case IdentifiedFileType::ARCHIVE_ZIP:
 				info_->title = info_->GetFilePath().GetFilename();
-				if (flags_ & GameInfoFlags::ICON) {
-					ReadVFSToString("zip.png", &info_->icon.data, &info_->lock);
-					info_->icon.dataLoaded = true;
-				}
-				break;
-
-			case IdentifiedFileType::ARCHIVE_RAR:
-				info_->title = info_->GetFilePath().GetFilename();
-				if (flags_ & GameInfoFlags::ICON) {
-					ReadVFSToString("rargray.png", &info_->icon.data, &info_->lock);
-					info_->icon.dataLoaded = true;
-				}
-				break;
-
-			case IdentifiedFileType::ARCHIVE_7Z:
-				info_->title = info_->GetFilePath().GetFilename();
-				if (flags_ & GameInfoFlags::ICON) {
-					ReadVFSToString("7z.png", &info_->icon.data, &info_->lock);
-					info_->icon.dataLoaded = true;
-				}
+				info_->icon.dataLoaded = true;
 				break;
 
 			case IdentifiedFileType::NORMAL_DIRECTORY:

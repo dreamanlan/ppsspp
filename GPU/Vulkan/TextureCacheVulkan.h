@@ -23,7 +23,6 @@
 #include "GPU/Common/TextureCacheCommon.h"
 #include "GPU/Common/TextureShaderCommon.h"
 #include "GPU/Vulkan/VulkanUtil.h"
-#include "GPU/Vulkan/VulkanMemory.h"
 
 struct VirtualFramebuffer;
 struct TextureShaderInfo;
@@ -122,7 +121,7 @@ private:
 
 	void BuildTexture(TexCacheEntry *const entry) override;
 
-	void CompileScalingShader(VkCommandBuffer cmdInit);
+	void CompileScalingShader();
 	bool CompileMultipassShader(VulkanContext *vulkan, const TextureShaderInfo &shaderInfo, std::string *error);
 	void ClearScalingShaders(VulkanContext *vulkan);
 	bool HasScalingShader() const;

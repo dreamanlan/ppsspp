@@ -25,6 +25,7 @@
 #include "Common/UI/Context.h"
 #include "UI/BaseScreens.h"
 #include "UI/SimpleDialogScreen.h"
+#include "UI/MiscViews.h"
 
 struct CheatFileInfo;
 class CWCheatEngine;
@@ -44,9 +45,12 @@ public:
 	void OnDisableAll(UI::EventParams &params);
 
 	void update() override;
+	bool key(const KeyInput &input) override;
 	void onFinish(DialogResult result) override;
 
 	const char *tag() const override { return "CwCheat"; }
+
+	bool WantsTextInput() const override;
 
 protected:
 	void BeforeCreateViews() override;
@@ -73,4 +77,7 @@ private:
 	std::string errorMessage_;
 	NoticeLevel errorLevel_ = NoticeLevel::ERROR;
 	std::string errorDetails_;
+
+	UI::ViewGroup *cheatList_ = nullptr;
+	ViewSearch search_;
 };
