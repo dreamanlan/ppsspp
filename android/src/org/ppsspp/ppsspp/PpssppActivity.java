@@ -172,6 +172,22 @@ public class PpssppActivity extends AppCompatActivity implements SensorEventList
 
 	public static boolean libraryLoaded = false;
 
+	public static void applyAchievementsHostOverride(String host) {
+		if (!initialized || !libraryLoaded || host == null || host.isEmpty()) {
+			return;
+		}
+
+		NativeApp.setAchievementsHostOverride(host);
+	}
+
+	public static void clearAchievementsHostOverride() {
+		if (!initialized || !libraryLoaded) {
+			return;
+		}
+
+		NativeApp.clearAchievementsHostOverride();
+	}
+
 	public static void CheckABIAndLoadLibrary() {
 		try {
 			System.loadLibrary("ppsspp_jni");
@@ -707,6 +723,12 @@ public class PpssppActivity extends AppCompatActivity implements SensorEventList
 			setShortcutParam(shortcutParam);
 		}
 
+		String achievementsHostOverride = AchievementsHostOverrideReceiver.getAchievementsHostOverride(this);
+		if (achievementsHostOverride != null && !achievementsHostOverride.isEmpty()) {
+			NativeApp.setAchievementsHostOverride(achievementsHostOverride);
+			Log.i(TAG, "Found achievements host override");
+		}
+
 		lifeCycle.onCreate();
 
 		mSensorManager = (SensorManager)getSystemService(Activity.SENSOR_SERVICE);
@@ -737,7 +759,7 @@ public class PpssppActivity extends AppCompatActivity implements SensorEventList
 
 		setVolumeControlStream(AudioManager.STREAM_MUSIC);
 
-		gainAudioFocus(this.audioManager, this.audioFocusChangeListener);
+		updateAudioFocus(this.audioManager, this.audioFocusChangeListener);
 		NativeApp.audioInit();
 
 		if (javaGL) {
@@ -1092,7 +1114,7 @@ public class PpssppActivity extends AppCompatActivity implements SensorEventList
 			mCameraHelper.resume();
 		}
 
-		gainAudioFocus(this.audioManager, this.audioFocusChangeListener);
+		updateAudioFocus(this.audioManager, this.audioFocusChangeListener);
 		NativeApp.resume();
 		mSensorManager.registerListener(this, mAccelerometer, SensorManager.SENSOR_DELAY_GAME);
 
@@ -1147,9 +1169,17 @@ public class PpssppActivity extends AppCompatActivity implements SensorEventList
 
 	// keep this static so we can call this even if we don't
 	// instantiate NativeAudioPlayer
-	public static void gainAudioFocus(AudioManager audioManager, AudioFocusChangeListener focusChangeListener) {
-		if (audioManager != null) {
+	public static void updateAudioFocus(AudioManager audioManager, AudioFocusChangeListener focusChangeListener) {
+		if (audioManager == null) {
+			Log.w(TAG, "Couldn't update audio focus, audio manager null");
+			return;
+		}
+		if (NativeApp.queryConfig("audioMixWithOthers").equals("0")) {
+			// Shouldn't mix with others - take over.
 			audioManager.requestAudioFocus(focusChangeListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+		} else {
+			// Mix with others - abandon focus so we don't kick others out.
+			audioManager.abandonAudioFocus(focusChangeListener);
 		}
 	}
 
@@ -1650,6 +1680,7 @@ public class PpssppActivity extends AppCompatActivity implements SensorEventList
 			// Workaround for issue #13363 to fix Split/Second game start - it requires text input
 			// but we don't support it on VR devices.
 			if (isVRDevice()) {
+				Log.w(TAG, "VR: Missing UI, supplying default string for text input request");
 				NativeApp.sendRequestResult(requestID, false, defString, 0);
 				return true;
 			}
@@ -1708,6 +1739,9 @@ public class PpssppActivity extends AppCompatActivity implements SensorEventList
 			return true;
 		} else if (command.equals("immersive")) {
 			updateSystemUiVisibility();
+			return true;
+		} else if (command.equals("audio_mode_changed")) {
+			updateAudioFocus(this.audioManager, this.audioFocusChangeListener);
 			return true;
 		} else if (command.equals("recreate")) {
 			recreate();

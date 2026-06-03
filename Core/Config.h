@@ -284,14 +284,13 @@ public:
 
 	bool bSoftwareRendering;
 	bool bSoftwareRenderingJit;
-	bool bHardwareTransform; // only used in the GLES backend
+	bool bHardwareTransform;
 	bool bSoftwareSkinning;
 	bool bVendorBugChecksEnabled;
 	bool bUseGeometryShader;
 
 	// Speedhacks (more will be moved here):
 	bool bSkipBufferEffects;
-	bool bDisableRangeCulling;
 	int iDepthRasterMode;
 
 	int iTexFiltering; // 1 = auto , 2 = nearest , 3 = linear , 4 = auto max quality
@@ -346,6 +345,7 @@ public:
 	int iRewindSnapshotInterval;
 	bool bUISound;
 	bool bEnableStateUndo;
+	bool bConfirmLoadState;
 	std::string sStateLoadUndoGame;
 	std::string sStateUndoLastSaveGame;
 	int iStateUndoLastSaveSlot;
@@ -514,6 +514,15 @@ public:
 	bool bAnalogIsCircular;
 	// Auto rotation speed
 	float fAnalogAutoRotSpeed;
+
+	// Advanced analog deadzone settings (Steam Input-style).
+	// Deadzone shape: 0 = Circle, 1 = Square (default, matches legacy max-norm), 2 = Cross
+	int iAnalogDeadzoneShape;
+	// Cross-shaped axial anti-deadzone. Boosts small off-axis values past this threshold,
+	// making the output skip the zone near each cardinal axis to prevent axis snapping.
+	float fAnalogAxialDeadzone;
+	// Response curve type: 0 = Linear, 1 = Aggressive, 2 = Relaxed, 3 = Wide
+	int iAnalogResponseCurve;
 
 	// Sets up how much the analog limiter button restricts digital->analog input.
 	float fAnalogLimiterDeadzone;

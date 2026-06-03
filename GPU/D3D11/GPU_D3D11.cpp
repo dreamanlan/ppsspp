@@ -20,6 +20,7 @@
 #include "Common/Log.h"
 #include "Common/GraphicsContext.h"
 #include "Common/Profiler/Profiler.h"
+#include "Common/Data/Text/StringWriter.h"
 
 #include "GPU/GPUState.h"
 
@@ -81,10 +82,6 @@ GPU_D3D11::~GPU_D3D11() {
 u32 GPU_D3D11::CheckGPUFeatures() const {
 	u32 features = GPUCommonHW::CheckGPUFeatures();
 
-	// Accurate depth is required because the Direct3D API does not support inverse Z.
-	// So we cannot incorrectly use the viewport transform as the depth range on Direct3D.
-	features |= GPU_USE_ACCURATE_DEPTH;
-
 	features |= GPU_USE_TEXTURE_FLOAT;
 	features |= GPU_USE_INSTANCE_RENDERING;
 	features |= GPU_USE_TEXTURE_LOD_CONTROL;
@@ -122,7 +119,6 @@ void GPU_D3D11::BeginHostFrame(const DisplayLayoutConfig &config) {
 	shaderManager_->DirtyLastShader();
 
 	framebufferManager_->BeginFrame(config);
-	gstate_c.Dirty(DIRTY_PROJTHROUGHMATRIX);
 
 	if (gstate_c.useFlagsChanged) {
 		// TODO: It'd be better to recompile them in the background, probably?
@@ -140,14 +136,9 @@ void GPU_D3D11::FinishDeferred() {
 	drawEngine_.FinishDeferred();
 }
 
-void GPU_D3D11::GetStats(char *buffer, size_t bufsize) {
-	size_t offset = FormatGPUStatsCommon(buffer, bufsize);
-	buffer += offset;
-	bufsize -= offset;
-	if ((int)bufsize < 0)
-		return;
-	snprintf(buffer, bufsize,
-		"Vertex, Fragment shaders loaded: %d, %d\n",
+void GPU_D3D11::GetStats(StringWriter &w) {
+	FormatGPUStatsCommon(w);
+	w.F("Vertex, Fragment shaders loaded: %d, %d\n",
 		shaderManagerD3D11_->GetNumVertexShaders(),
 		shaderManagerD3D11_->GetNumFragmentShaders()
 	);

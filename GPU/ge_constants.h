@@ -45,7 +45,7 @@ enum GECommand : uint8_t {
 	GE_CMD_LIGHTENABLE1 = 0x19,
 	GE_CMD_LIGHTENABLE2 = 0x1A,
 	GE_CMD_LIGHTENABLE3 = 0x1B,
-	GE_CMD_DEPTHCLAMPENABLE = 0x1C,
+	GE_CMD_DEPTHCLIPENABLE = 0x1C,
 	GE_CMD_CULLFACEENABLE = 0x1D,
 	GE_CMD_TEXTUREMAPENABLE = 0x1E,
 	GE_CMD_FOGENABLE = 0x1F,
@@ -278,6 +278,8 @@ enum GECommand : uint8_t {
 	GE_CMD_NOP_FF = 0xFF,
 };
 
+const char *GeCmdToString(GECommand cmd);
+
 #define GE_VTYPE_TRANSFORM (0<<23)
 #define GE_VTYPE_THROUGH   (1<<23)
 #define GE_VTYPE_THROUGH_MASK (1<<23)
@@ -304,7 +306,7 @@ enum GECommand : uint8_t {
 #define GE_VTYPE_NRM_MASK  (3<<5)
 #define GE_VTYPE_NRM_SHIFT 5
 
-//#define GE_VTYPE_POSITION_NONE  (0<<5)
+// No NONE, there is always a position.
 #define GE_VTYPE_POS_8BIT  (1<<7)
 #define GE_VTYPE_POS_16BIT (2<<7)
 #define GE_VTYPE_POS_FLOAT (3<<7)
@@ -594,6 +596,8 @@ enum GEPrimitiveType : int8_t {
 	GE_PRIM_KEEP_PREVIOUS = 7,
 	GE_PRIM_INVALID = -1,
 };
+
+const char *GePrimTypeToString(GEPrimitiveType prim);
 
 enum GELogicOp : uint8_t {
 	GE_LOGIC_CLEAR = 0,

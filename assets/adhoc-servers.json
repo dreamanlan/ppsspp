@@ -61,7 +61,7 @@
 			"host": "relay-sa.arenaanywhere.site",
 			"discord": "https://discord.gg/GdsXWmNHq5",
 			"ip": "34.35.138.175",
-			"web": "",
+			"web": "https://arenaanywhere.site/lobby-status.html",
 			"location": "South Africa",
 			"location-emoji": "🇿🇦",
 			"description": "For players looking to play any games",
@@ -72,20 +72,18 @@
 			"host": "relay.arenaanywhere.site",
 			"discord": "https://discord.gg/GdsXWmNHq5",
 			"ip": "34.91.25.46",
-			"web": "",
+			"web": "https://arenaanywhere.site/lobby-status.html",
 			"location": "Europe",
 			"location-emoji": "🇪🇺",
 			"description": "For players looking to play any games",
 			"data_mode": "AemuPostoffice"
 		},
 		{
-			"name": "ArenaAnywhere Dubai",
-			"host": "relay-dubai.arenaanywhere.site",
+			"name": "ArenaAnywhere US",
+			"host": "relay-usa.arenaanywhere.site",
 			"discord": "https://discord.gg/GdsXWmNHq5",
-			"ip": "34.165.197.39",
-			"web": "",
-			"location": "Dubai",
-			"location-emoji": "🇦🇪",
+			"web": "https://arenaanywhere.site/lobby-status.html",
+			"location": "US",
 			"description": "For players looking to play any games",
 			"data_mode": "AemuPostoffice"
 		},
@@ -94,7 +92,7 @@
 			"host": "relay-asia.arenaanywhere.site",
 			"ip": "35.198.217.43",
 			"discord": "https://discord.gg/GdsXWmNHq5",
-			"web": "",
+			"web": "https://arenaanywhere.site/lobby-status.html",
 			"location": "Singapore",
 			"location-emoji": "🇸🇬",
 			"description": "For players looking to play any games",
@@ -110,15 +108,6 @@
 			"description": "For players looking to play any games",
 			"data_mode": "AemuPostoffice",
 			"status_data_json": "http://sayaakanlawan.my.id/data.json"
-		},
-		{
-			"name": "Retroverze Relay Beta",
-			"host": "psp.retroverze.my.id",
-			"discord": "",
-			"web": "https://retroverze.my.id/beta",
-			"location": "Unknown",
-			"description": "For players looking to play any games",
-			"data_mode": "AemuPostoffice"
 		},
 		{
 			"name": "Games Nexus",
@@ -140,7 +129,8 @@
 			"location": "China",
 			"location-emoji": "🇨🇳",
 			"description": "For players looking to play any games",
-			"data_mode": "AemuPostoffice"
+			"data_mode": "AemuPostoffice",
+			"status_data_json": "https://adhoc.cvn-play.top/data.json"
 		},
 		{
 			"name": "NT Arena Brasil",
@@ -182,7 +172,7 @@
 			"location-emoji": "🇧🇷",
 			"description": "For players looking to play any games",
 			"data_mode": "AemuPostoffice",
-			"status_data_json": ""
+			"status_data_json": "https://status-brazil-01.sprawl-relay.link?format=aemu"
 		}
 	]
 }

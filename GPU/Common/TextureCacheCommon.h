@@ -25,7 +25,7 @@
 #include "Common/MemoryUtil.h"
 #include "Core/System.h"
 #include "GPU/GPU.h"
-#include "GPU/Common/GPUDebugInterface.h"
+#include "GPU/GPUCommon.h"
 #include "GPU/Common/TextureDecoder.h"
 #include "GPU/Common/TextureScalerCommon.h"
 #include "GPU/Common/TextureShaderCommon.h"
@@ -485,7 +485,7 @@ protected:
 		}
 		const u32 *checkp = (const u32 *)Memory::GetPointer(addr);
 
-		gpuStats.numTextureDataBytesHashed += sizeInRAM;
+		gpuStats.perFrame.numTextureDataBytesHashed += sizeInRAM;
 
 		if (Memory::IsValidAddress(addr + sizeInRAM)) {
 			return StableQuickTexHash(checkp, sizeInRAM);
