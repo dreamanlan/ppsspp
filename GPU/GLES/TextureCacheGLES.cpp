@@ -191,7 +191,7 @@ void TextureCacheGLES::UpdateCurrentClut(GEPaletteFormat clutFormat, u32 clutBas
 	clutLastFormat_ = gstate.clutformat;
 }
 
-void TextureCacheGLES::BindTexture(TexCacheEntry *entry) {
+void TextureCacheGLES::BindTexture(TexCacheEntry *entry, bool flatZ) {
 	if (!entry) {
 		render_->BindTexture(0, nullptr);
 		lastBoundTexture = nullptr;
@@ -201,8 +201,8 @@ void TextureCacheGLES::BindTexture(TexCacheEntry *entry) {
 		render_->BindTexture(0, entry->textureName);
 		lastBoundTexture = entry->textureName;
 	}
-	int maxLevel = (entry->status & TexCacheEntry::STATUS_NO_MIPS) ? 0 : entry->maxLevel;
-	SamplerCacheKey samplerKey = GetSamplingParams(maxLevel, entry);
+	int maxLevel = (entry->status & TexStatus::NO_MIPS) ? 0 : entry->maxLevel;
+	SamplerCacheKey samplerKey = GetSamplingParams(maxLevel, entry, flatZ);
 	ApplySamplingParams(samplerKey);
 	gstate_c.SetUseShaderDepal(ShaderDepalMode::OFF);
 }
@@ -269,7 +269,7 @@ void TextureCacheGLES::BuildTexture(TexCacheEntry *const entry) {
 			// on this hardware (strict OpenGL rules).
 			plan.levelsToCreate = 1;
 			plan.levelsToLoad = 1;
-			entry->status |= TexCacheEntry::STATUS_NO_MIPS;
+			entry->status |= TexStatus::NO_MIPS;
 		}
 	}
 
@@ -345,13 +345,13 @@ void TextureCacheGLES::BuildTexture(TexCacheEntry *const entry) {
 		render_->TextureImage(entry->textureName, 0, plan.w * plan.scaleFactor, plan.h * plan.scaleFactor, plan.depth, dstFmt, data, GLRAllocType::ALIGNED);
 
 		// Signal that we support depth textures so use it as one.
-		entry->status |= TexCacheEntry::STATUS_3D;
+		entry->status |= TexStatus::IS_3D;
 
 		render_->FinalizeTexture(entry->textureName, 1, false);
 	}
 
 	if (plan.doReplace) {
-		entry->SetAlphaStatus(TexCacheEntry::TexStatus(plan.replaced->AlphaStatus()));
+		entry->SetAlphaStatus(plan.replaced->AlphaStatus());
 	}
 }
 
@@ -388,7 +388,7 @@ bool TextureCacheGLES::GetCurrentTextureDebug(GPUDebugBuffer &buffer, int level,
 	TexCacheEntry *entry = nextTexture_;
 	// We might need a render pass to set the sampling params, unfortunately.  Otherwise BuildTexture may crash.
 	framebufferManagerGL_->RebindFramebuffer("RebindFramebuffer - GetCurrentTextureDebug");
-	ApplyTexture(false);
+	ApplyTexture(false, false);
 
 	GLRenderManager *renderManager = (GLRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
 

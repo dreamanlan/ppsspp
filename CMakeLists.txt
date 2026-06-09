@@ -2049,10 +2049,12 @@ set(GPU_SOURCES
 	GPU/Common/VertexDecoderCommon.h
 	GPU/Common/VertexDecoderHandwritten.cpp
 	GPU/Common/VertexDecoderHandwritten.h
+	GPU/Common/VertexReader.h
 	GPU/Common/TransformCommon.cpp
 	GPU/Common/TransformCommon.h
 	GPU/Common/IndexGenerator.cpp
 	GPU/Common/IndexGenerator.h
+	GPU/Common/ImageCommon.h
 	GPU/Common/TextureDecoder.cpp
 	GPU/Common/TextureDecoder.h
 	GPU/Common/TextureCacheCommon.cpp

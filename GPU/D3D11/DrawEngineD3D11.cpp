@@ -304,6 +304,9 @@ void DrawEngineD3D11::Flush() {
 		if (changed & (ClipInfoFlags::DepthClampFragment | ClipInfoFlags::MinMaxZDiscard)) {
 			gstate_c.Dirty(DIRTY_VERTEXSHADER_STATE | DIRTY_FRAGMENTSHADER_STATE | DIRTY_RASTER_STATE);
 		}
+		if (changed & ClipInfoFlags::FlatZ) {
+			gstate_c.Dirty(DIRTY_TEXTURE_PARAMS);
+		}
 		lastClipInfoFlags_ = clipInfoFlags_;
 	}
 
@@ -332,7 +335,7 @@ void DrawEngineD3D11::Flush() {
 
 		if (textureNeedsApply) {
 			gstate_c.dstSquared = false;
-			textureCache_->ApplyTexture();
+			textureCache_->ApplyTexture(true, clipInfoFlags_ & ClipInfoFlags::FlatZ);
 			if (gstate_c.dstSquared) {
 				gstate_c.Dirty(DIRTY_BLEND_STATE);
 			}
@@ -436,6 +439,7 @@ void DrawEngineD3D11::Flush() {
 		params.transformedExpanded = transformedExpanded_;
 		params.allowClear = true;
 		params.allowSeparateAlphaClear = false;  // D3D11 doesn't support separate alpha clears
+		params.clipInfoFlags = clipInfoFlags_;
 
 		const SoftwareTransformAction action = RunSoftwareTransform(params, prim, swDec->VertexType(), swDec->GetDecVtxFmt(), numDecodedVerts_, VERTEX_BUFFER_MAX, vertexCount, inds, RemainingIndices(inds), &result);
 
@@ -445,7 +449,7 @@ void DrawEngineD3D11::Flush() {
 		// TODO: This should be after BuildDrawingParams!
 		if (textureNeedsApply) {
 			gstate_c.pixelMapped = result.pixelMapped;
-			textureCache_->ApplyTexture();
+			textureCache_->ApplyTexture(true, clipInfoFlags_ & ClipInfoFlags::FlatZ);
 			gstate_c.pixelMapped = false;
 		}
 

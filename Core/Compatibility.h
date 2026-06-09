@@ -18,6 +18,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include <cstdint>
 #include <set>
 
@@ -49,7 +50,6 @@
 struct CompatFlags {
 	bool VertexDepthRounding;
 	bool PixelDepthRounding;
-	bool DepthRangeHack;
 	bool ClearToRAM;
 	bool Force04154000Download;
 	bool DrawSyncEatCycles;
@@ -80,7 +80,6 @@ struct CompatFlags {
 	bool MpegAvcWarmUp;
 	bool BlueToAlpha;
 	bool CenteredLines;
-	bool MaliDepthStencilBugWorkaround;
 	bool ZZT3SelectHack;
 	bool AllowLargeFBTextureOffsets;
 	bool AtracLoopHack;
@@ -122,6 +121,8 @@ struct CompatFlags {
 	bool PersistentFramebuffers;
 	bool FileCreatedTimeHack;
 	bool FastEmulatedGPU;
+	bool CorrectCullAfterClip;
+	float SpriteBorderFix;
 };
 
 struct VRCompat {
@@ -152,6 +153,8 @@ public:
 	const std::string &GetActiveFlagsString() const {
 		return activeList_;
 	}
+	const std::vector<std::string> &filesLoaded() const { return filesLoaded_; }
+
 
 private:
 	void Clear();
@@ -165,4 +168,5 @@ private:
 	VRCompat vrCompat_{};
 	std::set<std::string> ignored_;
 	std::string activeList_;
+	std::vector<std::string> filesLoaded_;
 };

@@ -573,7 +573,7 @@ u32 GPUCommonHW::CheckGPUFeatures() const {
 	if (draw_->GetDeviceCaps().logicOpSupported) {
 		features |= GPU_USE_LOGIC_OP;
 	}
-	if (draw_->GetDeviceCaps().anisoSupported) {
+	if (draw_->GetDeviceCaps().anisoSupported && g_Config.iAnisotropyLevel > 0) {
 		features |= GPU_USE_ANISOTROPY;
 	}
 	if (draw_->GetDeviceCaps().dualSourceBlend) {
@@ -965,7 +965,7 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 	const bool isTriangle = IsTrianglePrim(prim);
 
 	bool canExtend = isTriangle;
-	u32 vertexType = gstate.vertType;
+	GEVertexType vertexType = (GEVertexType)gstate.vertType;
 	if ((vertexType & GE_VTYPE_IDX_MASK) != GE_VTYPE_IDX_NONE) {
 		u32 indexAddr = gstate_c.indexAddr;
 		const int indexShift = ((vertexType & GE_VTYPE_IDX_MASK) >> GE_VTYPE_IDX_SHIFT) - 1;
@@ -997,10 +997,12 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 		}
 	}
 
-	// Through mode early-out for simple float 2D draws, like in Fate Extra CCC (very beneficial there due to avoiding texture loads)
-	if ((vertexType & (GE_VTYPE_THROUGH_MASK | GE_VTYPE_POS_MASK | GE_VTYPE_IDX_MASK)) == (GE_VTYPE_THROUGH_MASK | GE_VTYPE_POS_FLOAT | GE_VTYPE_IDX_NONE)) {
+	// Through mode early-out. Very beneficial for Fate Extra CCC (very beneficial there due to avoiding texture loads)
+	// Also we take the opportunity to check for flat draws, where we can detect sprites (to fix filter artifacts).
+	ClipInfoFlags flags{};
+	if (gstate.isModeThrough()) {
 		int bytesRead = 0;
-		if (!drawEngineCommon_->TestBoundingBoxThrough(verts, count, decoder, vertexType, &bytesRead)) {
+		if (!drawEngineCommon_->TestBoundingBoxThrough(prim, verts, inds, count, decoder, vertexType, &bytesRead, &flags)) {
 			gpuStats.perFrame.numCulledDraws++;
 			int cycles = vertexCost_ * count;
 			gpuStats.perFrame.vertexGPUCycles += cycles;
@@ -1016,7 +1018,7 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 	// For now, turn off culling on platforms where we don't have SIMD bounding box tests, like RISC-V.
 #if PPSSPP_ARCH(ARM_NEON) || PPSSPP_ARCH(SSE2)
 
-#define PASSES_CULLING ((vertexType & (GE_VTYPE_THROUGH_MASK | GE_VTYPE_MORPHCOUNT_MASK | GE_VTYPE_WEIGHT_MASK | GE_VTYPE_IDX_MASK)) || count > MAX_CULL_CHECK_COUNT)
+#define PASSES_CULLING ((vertexType & (GE_VTYPE_THROUGH_MASK | GE_VTYPE_MORPHCOUNT_MASK | GE_VTYPE_WEIGHT_MASK)) || count > MAX_CULL_CHECK_COUNT)
 
 #else
 
@@ -1024,13 +1026,11 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 
 #endif
 
-	ClipInfoFlags flags{};
-
 	// If certain conditions are true, do frustum culling.
 	bool passCulling = PASSES_CULLING;
 	if (!passCulling) {
 		// Do software culling.
-		if (drawEngineCommon_->TestBoundingBoxFast(gstate_c.cullMatrix, verts, count, decoder, vertexType, &flags)) {
+		if (drawEngineCommon_->TestBoundingBoxFast(gstate_c.cullMatrix, verts, inds, count, decoder, vertexType, &flags)) {
 			passCulling = true;
 		} else {
 			gpuStats.perFrame.numCulledDraws++;
@@ -1046,7 +1046,7 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 		if (!drawEngineCommon_->SubmitPrim(verts, inds, prim, count, decoder, vertTypeID, true, &bytesRead, flags)) {
 			canExtend = false;
 		}
-		onePassed = true;
+		// onePassed = true;
 	} else {
 		// Still need to advance bytesRead.
 		drawEngineCommon_->SkipPrim(prim, count, decoder, &bytesRead);
@@ -1120,8 +1120,7 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 			ClipInfoFlags flags{};
 			if (!passCulling) {
 				// Do software culling.
-				_dbg_assert_((vertexType & GE_VTYPE_IDX_MASK) == GE_VTYPE_IDX_NONE);
-				if (drawEngineCommon_->TestBoundingBoxFast(gstate_c.cullMatrix, verts, count, decoder, vertexType, &flags)) {
+				if (drawEngineCommon_->TestBoundingBoxFast(gstate_c.cullMatrix, verts, inds, count, decoder, vertexType, &flags)) {
 					passCulling = true;
 				} else {
 					gpuStats.perFrame.numCulledDraws++;
@@ -1132,7 +1131,7 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 					canExtend = false;
 				}
 				// As soon as one passes, assume we don't need to check the rest of this batch.
-				onePassed = true;
+				// onePassed = true;
 			} else {
 				// Still need to advance bytesRead.
 				drawEngineCommon_->SkipPrim(newPrim, count, decoder, &bytesRead);
@@ -1151,7 +1150,7 @@ void GPUCommonHW::Execute_Prim(u32 op, u32 diff) {
 					goto bail;
 				drawEngineCommon_->FlushSkin();
 				canExtend = false;  // TODO: Might support extending between some vertex types in the future.
-				vertexType = data;
+				vertexType = (GEVertexType)(data);
 				vertTypeID = GetVertTypeID(vertexType, gstate.getUVGenMode(), g_Config.bSoftwareSkinning);
 				decoder = drawEngineCommon_->GetVertexDecoder(vertTypeID);
 			}

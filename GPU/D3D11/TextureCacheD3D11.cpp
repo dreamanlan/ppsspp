@@ -245,7 +245,7 @@ void TextureCacheD3D11::UpdateCurrentClut(GEPaletteFormat clutFormat, u32 clutBa
 	clutLastFormat_ = gstate.clutformat;
 }
 
-void TextureCacheD3D11::BindTexture(TexCacheEntry *entry) {
+void TextureCacheD3D11::BindTexture(TexCacheEntry *entry, bool flatZ) {
 	if (!entry) {
 		ID3D11ShaderResourceView *textureView = nullptr;
 		context_->PSSetShaderResources(0, 1, &textureView);
@@ -256,8 +256,8 @@ void TextureCacheD3D11::BindTexture(TexCacheEntry *entry) {
 		context_->PSSetShaderResources(0, 1, &textureView);
 		lastBoundTexture_ = textureView;
 	}
-	int maxLevel = (entry->status & TexCacheEntry::STATUS_NO_MIPS) ? 0 : entry->maxLevel;
-	SamplerCacheKey samplerKey = GetSamplingParams(maxLevel, entry);
+	int maxLevel = (entry->status & TexStatus::NO_MIPS) ? 0 : entry->maxLevel;
+	SamplerCacheKey samplerKey = GetSamplingParams(maxLevel, entry, flatZ);
 	ComPtr<ID3D11SamplerState> state;
 	samplerCache_.GetOrCreateSampler(device_, samplerKey, &state);
 	context_->PSSetSamplers(0, 1, state.GetAddressOf());
@@ -430,23 +430,23 @@ void TextureCacheD3D11::BuildTexture(TexCacheEntry *const entry) {
 
 	// Signal that we support depth textures so use it as one.
 	if (plan.depth > 1) {
-		entry->status |= TexCacheEntry::STATUS_3D;
+		entry->status |= TexStatus::IS_3D;
 	}
 
 	if (levels == 1) {
-		entry->status |= TexCacheEntry::STATUS_NO_MIPS;
+		entry->status |= TexStatus::NO_MIPS;
 	} else {
-		entry->status &= ~TexCacheEntry::STATUS_NO_MIPS;
+		entry->status &= ~TexStatus::NO_MIPS;
 	}
 
 	if (plan.doReplace) {
-		entry->SetAlphaStatus(TexCacheEntry::TexStatus(plan.replaced->AlphaStatus()));
+		entry->SetAlphaStatus(plan.replaced->AlphaStatus());
 
 		if (!Draw::DataFormatIsBlockCompressed(plan.replaced->Format(), nullptr)) {
-			entry->status |= TexCacheEntry::STATUS_BGRA;
+			entry->status |= TexStatus::BGRA;
 		}
 	} else {
-		entry->status |= TexCacheEntry::STATUS_BGRA;
+		entry->status |= TexStatus::BGRA;
 	}
 }
 
@@ -499,7 +499,7 @@ bool TextureCacheD3D11::GetCurrentTextureDebug(GPUDebugBuffer &buffer, int level
 
 	// Apply texture may need to rebuild the texture if we're about to render, or bind a framebuffer.
 	TexCacheEntry *entry = nextTexture_;
-	ApplyTexture();
+	ApplyTexture(true, false);
 
 	ID3D11Texture2D *texture = (ID3D11Texture2D *)entry->texturePtr;
 	if (!texture)

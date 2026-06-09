@@ -358,10 +358,10 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 
 		WRITE(p, "struct VS_OUT {\n");
 		WRITE(p, "  vec3 v_texcoord : TEXCOORD0;\n");
-		const char *colorInterpolation = doFlatShading && compat.shaderLanguage == HLSL_D3D11 ? "nointerpolation " : "";
+		const char *colorInterpolation = (doFlatShading && compat.shaderLanguage == HLSL_D3D11) ? "nointerpolation " : "";
 		WRITE(p, "  %svec4 v_color0    : COLOR0;\n", colorInterpolation);
 		if (lmode) {
-			WRITE(p, "  vec3 v_color1    : COLOR1;\n");
+			WRITE(p, "  %svec3 v_color1    : COLOR1;\n", colorInterpolation);
 		}
 
 		WRITE(p, "  float v_fogdepth : TEXCOORD1;\n");
@@ -370,9 +370,6 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		}
 		// gl_Position must be last for D3D11.
 		WRITE(p, "  vec4 gl_Position   : SV_Position;\n");
-		minZClipPlaneSuffix = ".x";
-		maxZClipPlaneSuffix = ".y";
-		zClipPlaneSuffix = ".z";
 		if (clipMinMax && clipNearPlane) {
 			WRITE(p, "  float3 gl_ClipDistance : SV_ClipDistance;\n");
 		} else if (clipMinMax) {
@@ -1251,6 +1248,8 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 
 	// I think we should use min/max clipping for through-mode as well, right?
 	if (clipMinMax) {
+		// NOTE: When changing this test, don't forget to change the test in the fragment shader fallback too.
+
 		// We use clipping, where available, to implement min/max Z.
 		// 1.0 is used to disable the clip plane (should we generate more shaders instead? how costly are they?)
 
@@ -1258,21 +1257,29 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		// We should probably store the undivided outPos in a variable.
 
 		// We round to nearest 15-bit value for the check - this seems to match some of [Unknown]'s test, and PSP GPU floats
-		// often have a 15-bit mantissa.
-		WRITE(p, "  float clipZ = floor(outPos.z * 0.5 + 0.5) * 2.0;\n");
+		// often have a 15-bit mantissa. TODO: should we truncate or nearest?
+		// Due to us having a bit too much precision, we round the value up for the min check and down for the max check.
+		// Will test this on hardware more carefully soon.
+		// The min check rounded down fixes the Test Drive map problem, and the max check rounded down fixes Taiko no Tatsujin.
+		WRITE(p, "  float clipZNear = floor(outPos.z * 0.5 + 0.5) * 2.0;\n");
+		WRITE(p, "  float clipZFar = floor(outPos.z * 0.5) * 2.0;\n");
 
-		WRITE(p, "  %sgl_ClipDistance%s = u_minZmaxZ.x > 0.0 ? (clipZ - u_minZmaxZ.x) * outPos.w : 1.0;\n", compat.vsOutPrefix, minZClipPlaneSuffix);
-		WRITE(p, "  %sgl_ClipDistance%s = u_minZmaxZ.y < 65535.0 ? (u_minZmaxZ.y - clipZ) * outPos.w : 1.0;\n", compat.vsOutPrefix, maxZClipPlaneSuffix);
+		WRITE(p, "  %sgl_ClipDistance%s = u_minZmaxZ.x > 0.0 ? (clipZNear - u_minZmaxZ.x) * outPos.w : 1.0;\n", compat.vsOutPrefix, minZClipPlaneSuffix);
+		WRITE(p, "  %sgl_ClipDistance%s = u_minZmaxZ.y < 65535.0 ? (u_minZmaxZ.y - clipZFar) * outPos.w : 1.0;\n", compat.vsOutPrefix, maxZClipPlaneSuffix);
 	}
 
 	// Convert to NDC space, using the framebuffer offset and size stored in u_xywh.
 	WRITE(p, "  outPos.xy = ((outPos.xy - u_xywh.xy) / u_xywh.zw) * 2.0 - 1.0;\n");
 
 	if (gstate_c.Use(GPU_ROUND_DEPTH_TO_16BIT)) {
-		WRITE(p, "  outPos.z = float(int(outPos.z));\n");
+		// Actually 15-bit. Truncate here fixes Afterburner (similarly to the min/max clipping above).
+		// Possibly this should only be 15-bit in transformed mode? Full 16 in through? needs hardware testing.
+		WRITE(p, "  outPos.z = floor(outPos.z * 0.5) * 2.0;\n");
 	}
 
-	WRITE(p, "  outPos.z = outPos.z / 65536.0;\n");  // Or 65536?
+	// It seems that depth values of 65535.6 should survive. Seen in NBA2K12 for example.
+	// So even if it seems like 65535 would make more sense, we divide by 65536 here.
+	WRITE(p, "  outPos.z = outPos.z / 65536.0;\n");
 
 	// Convert back to clip space coordinates. This is needed for all modern shader models.
 	// After all our work in projected space, multiply xyz back with z to the get clip space position that the shader model wants.

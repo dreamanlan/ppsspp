@@ -177,7 +177,8 @@ void DrawTexturesWindow(ImConfig &cfg, TextureCacheCommon *textureCache) {
 				ImGui::Image(texId, ImVec2(w, h));
 				ImGui::Text("%08x: %dx%d, %d mips, %s", (uint32_t)(cfg.selectedTexAddr & 0xFFFFFFFF), w, h, entry->maxLevel + 1, GeTextureFormatToString((GETextureFormat)entry->format));
 				ImGui::Text("Stride: %d", entry->bufw);
-				ImGui::Text("Status: %08x: %s", entry->status, TexStatusToString((TexCacheEntry::TexStatus)(entry->status)).c_str());
+				ImGui::Text("Hash status: %s", TexHashStatusToString(entry->hashStatus));
+				ImGui::Text("Status: %08x: %s", entry->status, TexStatusToString(entry->status).c_str());
 				ImGui::Text("Hash: %08x", entry->fullhash);
 				ImGui::Text("CLUT Hash: %08x", entry->cluthash);
 				ImGui::Text("Minihash: %08x", entry->minihash);
@@ -1344,7 +1345,7 @@ void ImGeDebuggerWindow::Draw(ImConfig &cfg, ImControl &control, GPUCommon *gpuD
 				TexCacheEntry *tex = texcache ? texcache->SetTexture() : nullptr;
 				if (tex) {
 					ImGui::Text("Texture: %08x", tex->addr);
-					texcache->ApplyTexture(false);
+					texcache->ApplyTexture(false, false);
 
 					void *nativeView = texcache->GetNativeTextureView(tex, true);
 					ImTextureID texId = ImGui_ImplThin3d_AddNativeTextureTemp(nativeView);
@@ -1741,7 +1742,7 @@ void DrawImGeVertsWindow(ImConfig &cfg, ImControl &control, GPUCommon *gpu) {
 			// TODO: If cmd is BOUNDING_BOX, actually test the bounding box here and show the result.
 
 			// This performs software transform, if transformed is checked. We might want to cache it? Although, it's only for a single draw...
-			TransformStats stats;
+			TransformStats stats{};
 			if (!gpu->GetCurrentDrawAsDebugVertices(cmd, prim, &prim, inputVertexCount, &vertices, &indices, &indexOffset, &stats, flags)) {
 				inputVertexCount = 0;
 			}
