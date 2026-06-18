@@ -131,31 +131,27 @@ struct TextureDefinition {
 // At one point we might merge the concepts of framebuffers and textures, but that
 // moment is far away.
 
-enum class TexHashStatus : u8 {
-	Hashing = 0,
-	Reliable,        // Don't bother rehashing.
-	Unreliable,      // Always recheck hash.
-};
+// When hashing large textures, we optimize 512x512 down to 512x272 by default, since this
+// is commonly the only part accessed.  If access is made above 272, we hash the entire
+// texture, and set this flag to allow scaling the texture just once for the new hash.
 
 enum class TexStatus : u16 {
 	VIDEO = (1 << 0),
 	BGRA = (1 << 1),
 	ALPHA_SOLID = (1 << 2),      // Has no alpha channel, or always solid (==1.0) alpha.
 
-	CLUT_VARIANTS = (1 << 3),   // Has multiple CLUT variants.
-	CHANGE_FREQUENT = (1 << 4), // Changes often (less than 6 frames in between.)
+	MANY_CLUT_VARIANTS = (1 << 3),   // Has multiple CLUT variants.
+	RELIABLE = (1 << 4),    // Hash will never change. This only really applies to the font texture.
 	CLUT_RECHECK = (1 << 5),    // Another texture with same addr had a hashfail.
+	HASH_RECHECK = (1 << 6),   // Hash failed, but addr is the same, so we want to check again next time.
 	TO_SCALE = (1 << 7),        // Pending texture scaling in a later frame.
 	IS_SCALED_OR_REPLACED = (1 << 8),  // Has been scaled already (ignored for replacement checks).
 	TO_REPLACE = (1 << 9),    // Pending texture replacement.
-	// When hashing large textures, we optimize 512x512 down to 512x272 by default, since this
-	// is commonly the only part accessed.  If access is made above 272, we hash the entire
-	// texture, and set this flag to allow scaling the texture just once for the new hash.
-	FREE_CHANGE = (1 << 10),   // Allow one change before marking "frequent".
+	IS_3D = (1 << 10),
 	NO_MIPS = (1 << 11),      // Has bad or unusable mipmap levels.
 	FRAMEBUFFER_OVERLAP = (1 << 12),
 	FORCE_REBUILD = (1 << 13),
-	IS_3D = (1 << 14),
+	CLUT8_INDEXED = (1 << 14),  // Decoded as plain CLUT8 indices instead of all the way to colors.
 	CLUT_GPU = (1 << 15),
 };
 ENUM_CLASS_BITOPS(TexStatus);
@@ -174,30 +170,25 @@ struct TexCacheEntry {
 	GETextureFormat format;
 	u8 maxLevel;
 	u32 addr;
-	u32 minihash;
 	u16 dim;
 	u16 bufw;
 	u16 maxSeenV;
-	TexHashStatus hashStatus;
-	s16 invalidHint;
 	s16 numInvalidated;
-
+	u32 fullhash;
+	u32 cluthash;
 	union {
 		GLRTexture *textureName;
 		void *texturePtr;
 		VulkanTexture *vkTex;
 	};
+	ReplacedTexture *replacedTexture;
 #ifdef _WIN32
-	void *textureView;  // Used by D3D11 only for the shader resource view.
+	void *textureView;  // Used by D3D11 only for the shader resource view. We could also just point to a struct of the two, similar to VulkanTexture.
 #endif
 	int lastFrame;
-	int numFrames;
-	u32 framesUntilNextFullHash;
-	u32 fullhash;
-	u32 cluthash;
-	ReplacedTexture *replacedTexture;
+	int lastSyncDomain;
 
-	TextureAlpha GetAlphaStatus() {
+	TextureAlpha GetAlphaStatus() const {
 		return (status & TexStatus::ALPHA_SOLID) ? TextureAlpha::Solid : TextureAlpha::Any;
 	}
 	void SetAlphaStatus(TextureAlpha newStatus) {
@@ -219,7 +210,7 @@ struct TexCacheEntry {
 		return (textureBitsPerPixel[format] * bufw * dimHeight(dim)) / 8;
 	}
 
-	bool Matches(u16 dim2, u8 format2, u8 maxLevel2) const;
+	bool MatchesProperties(u16 dim2, u8 format2, u8 maxLevel2) const;
 	u64 CacheKey() const;
 	static u64 CacheKey(u32 addr, u8 format, u16 dim, u32 cluthash);
 	u32 EstimateTexMemoryUsage() const;
@@ -228,7 +219,6 @@ struct TexCacheEntry {
 // TODO: Work on shrinking it further.
 static_assert(sizeof(TexCacheEntry) <= 72, "TexCacheEntry is too big");
 
-const char *TexHashStatusToString(TexHashStatus status);
 std::string TexStatusToString(TexStatus status);
 
 // Can't be unordered_map, we use lower_bound ... although for some reason that (used to?) compiles on MSVC.
@@ -255,6 +245,12 @@ struct AttachCandidate {
 	int relevancy;
 
 	std::string ToString() const;
+};
+
+struct CLUTProperties {
+	// True if the clut is just alpha values in the same order (RGBA4444-bit only.)
+	bool clutAlphaLinear = false;
+	u16 clutAlphaLinearColor;
 };
 
 class FramebufferManagerCommon;
@@ -350,7 +346,7 @@ public:
 	void InvalidateAll(GPUInvalidationType type);
 	void ClearNextFrame();
 
-	TextureShaderCache *GetTextureShaderCache() { return textureShaderCache_; }
+	const TextureShaderCache &GetTextureShaderCache() const { return textureShaderCache_; }
 
 	virtual void ForgetLastTexture() = 0;
 	virtual void Clear(bool delete_them);
@@ -362,10 +358,12 @@ public:
 	void NotifyFramebuffer(VirtualFramebuffer *framebuffer, FramebufferNotification msg);
 	void NotifyWriteFormattedFromMemory(u32 addr, int size, int width, GEBufferFormat fmt);
 
-	size_t NumLoadedTextures() const {
-		return cache_.size();
+	int NumLoadedTextures() const {
+		return (int)cache_.size();
 	}
-
+	size_t NumSecondaryTextures() const {
+		return (int)secondCache_.size();
+	}
 	bool IsFakeMipmapChange() {
 		return PSP_CoreParameter().compat.flags().FakeMipmapChange && gstate.getTexLevelMode() == GE_TEXLEVEL_MODE_CONST;
 	}
@@ -376,8 +374,8 @@ public:
 
 	virtual void StartFrame();
 
-	virtual void DeviceLost() = 0;
-	virtual void DeviceRestore(Draw::DrawContext *draw) = 0;
+	virtual void DeviceLost();
+	virtual void DeviceRestore(Draw::DrawContext *draw);
 
 	// Accessors for the debugger.
 	virtual void *GetNativeTextureView(const TexCacheEntry *entry, bool flat) const = 0;
@@ -385,8 +383,8 @@ public:
 	const TexCache &Cache() const { return cache_; }
 	const TexCache &SecondCache() const { return secondCache_; }
 
-	const size_t CacheSizeEstimate() const { return cacheSizeEstimate_; }
-	const size_t SecondCacheSizeEstimate() const { return secondCacheSizeEstimate_; }
+	const size_t CacheSizeEstimate() const;
+	const size_t SecondCacheSizeEstimate() const;
 
 	struct VideoInfo {
 		u32 addr;
@@ -396,6 +394,11 @@ public:
 
 	const std::vector<VideoInfo> &Videos() const {
 		return videos_;
+	}
+
+	// For the debugger
+	const VirtualFramebuffer *NextFramebufferTexture() const {
+		return nextFramebufferTexture_;
 	}
 
 protected:
@@ -408,11 +411,11 @@ protected:
 	void Decimate(TexCacheEntry *exceptThisOne, bool forcePressure);  // forcePressure defaults to false.
 
 	void ApplyTextureFramebuffer(VirtualFramebuffer *framebuffer, GETextureFormat texFormat, RasterChannel channel);
-	void ApplyTextureDepal(TexCacheEntry *entry);
+	void ApplyTextureDepalFramebufferCLUT(TexCacheEntry *entry);
 
 	void HandleTextureChange(TexCacheEntry *const entry, const char *reason, bool initialMatch, bool doDelete);
 	virtual void BuildTexture(TexCacheEntry *const entry) = 0;
-	virtual void UpdateCurrentClut(GEPaletteFormat clutFormat, u32 clutBase, bool clutIndexIsSimple) = 0;
+	virtual void UpdateCurrentClut(GEPaletteFormat clutFormat, u32 clutBase, bool clutIndexIsSimple);  // only overridden in GLES
 	bool CheckFullHash(TexCacheEntry *entry, bool &doDelete);
 
 	virtual void BindAsClutTexture(Draw::Texture *tex, bool smooth) {}
@@ -425,16 +428,6 @@ protected:
 
 	// Return value is mapData normally, but could be another buffer allocated with AllocateAlignedMemory.
 	void LoadTextureLevel(TexCacheEntry &entry, uint8_t *mapData, size_t dataSize, int mapRowPitch, BuildTexturePlan &plan, int srcLevel, Draw::DataFormat dstFmt, TexDecodeFlags texDecFlags);
-
-	template <typename T>
-	inline const T *GetCurrentClut() {
-		return (const T *)clutBuf_;
-	}
-
-	template <typename T>
-	inline const T *GetCurrentRawClut() {
-		return (const T *)clutBufRaw_;
-	}
 
 	// These need to be member functions just for IsVideo and Replacer.
 	SamplerCacheKey GetSamplingParams(int maxLevel, const TexCacheEntry *entry, bool flatZ);
@@ -492,7 +485,8 @@ protected:
 	TextureReplacer replacer_;
 	TextureScalerCommon scaler_;
 	FramebufferManagerCommon *framebufferManager_;
-	TextureShaderCache *textureShaderCache_;
+	TextureShaderCache textureShaderCache_;
+	ClutTextureCache clutTextureCache_;
 	ShaderManagerCommon *shaderManager_;
 
 	bool clearCacheNextFrame_ = false;
@@ -500,16 +494,14 @@ protected:
 
 	int decimationCounter_;
 	int texelsScaledThisFrame_ = 0;
-	int timesInvalidatedAllThisFrame_ = 0;
 	double replacementTimeThisFrame_ = 0;
 	// Recomputed once per frame. Depends FPS and soon also config.
 	double replacementFrameBudgetSeconds_ = 0.5 / 60.0;
 
+	// The primary cache uses the texture address along with the clut hash as the key.
 	TexCache cache_;
-	u32 cacheSizeEstimate_ = 0;
-
+	// The secondary cache uses the texture hash and clut hash as the key.
 	TexCache secondCache_;
-	u32 secondCacheSizeEstimate_ = 0;
 
 	std::vector<VideoInfo> videos_;
 
@@ -528,16 +520,14 @@ protected:
 	u32 *clutBufConverted_;
 	// This is the active one.
 	u32 *clutBuf_;
+
 	u32 clutLastFormat_ = 0xFFFFFFFF;
 	u32 clutTotalBytes_ = 0;
 	u32 clutMaxBytes_ = 0;
 	u32 clutRenderAddress_ = 0xFFFFFFFF;
 	u32 clutRenderOffset_;
 	GEBufferFormat clutRenderFormat_;
-
-	// True if the clut is just alpha values in the same order (RGBA4444-bit only.)
-	bool clutAlphaLinear_ = false;
-	u16 clutAlphaLinearColor_;
+	CLUTProperties clutProperties_;
 
 	// Facilities for GPU depal of static textures.
 	Draw::Framebuffer *dynamicClutTemp_ = nullptr;
@@ -554,7 +544,7 @@ protected:
 	u32 *expandClut_;
 };
 
-inline bool TexCacheEntry::Matches(u16 dim2, u8 format2, u8 maxLevel2) const {
+inline bool TexCacheEntry::MatchesProperties(u16 dim2, u8 format2, u8 maxLevel2) const {
 	return dim == dim2 && format == format2 && maxLevel == maxLevel2;
 }
 

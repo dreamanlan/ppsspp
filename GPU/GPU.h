@@ -91,20 +91,22 @@ inline float truncateToFloat24(float f) {
 
 // TODO: Possibly use macros to disable expensive parts of stats tracking in release builds.
 struct GPUStatsPerFrame {
-	// Per frame statistics
+	int numEnqueue;
+	int numUpdateStall;
+	int numDrawSyncs;
+	int numListSyncs;
 	int numDrawCalls;
 	int numVertexDecodes;
 	int numCulledDraws;
-	int numDrawSyncs;
-	int numListSyncs;
 	int numFlushes;
 	int numSoftTransformedDraws;
 	int numSoftClippedTriangles;
 	int numBBOXJumps;
 	int numVertsSubmitted;
 	int numVertsDecoded;
-	int numUncachedVertsDrawn;
+	int numVertsDrawn;
 	int numTextureInvalidations;
+	int numTexturesChanged;
 	int numTextureInvalidationsByFramebuffer;
 	int numTexturesHashed;
 	int numTextureDataBytesHashed;

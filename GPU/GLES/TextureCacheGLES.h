@@ -40,9 +40,6 @@ public:
 	void StartFrame() override;
 
 	void SetFramebufferManager(FramebufferManagerGLES *fbManager);
-	void SetDepalShaderCache(TextureShaderCache *dpCache) {
-		textureShaderCache_ = dpCache;
-	}
 	void SetDrawEngine(DrawEngineGLES *td) {
 		drawEngine_ = td;
 	}
@@ -80,5 +77,3 @@ private:
 
 	enum { INVALID_TEX = -1 };
 };
-
-static Draw::DataFormat getClutDestFormat(GEPaletteFormat format);

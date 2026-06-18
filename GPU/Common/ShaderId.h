@@ -28,7 +28,7 @@ enum VShaderBit : uint8_t {
 	VS_BIT_IS_THROUGH = 1,
 	// bit 2 is free.
 	VS_BIT_HAS_COLOR = 3,
-	VS_BIT_CLIP_ENABLE = 4,
+	// bit 4 is free.
 	VS_BIT_VERTEX_RANGE_CULLING = 5,
 	VS_BIT_SIMPLE_STEREO = 6,
 	// bit 7 is free,
@@ -36,10 +36,7 @@ enum VShaderBit : uint8_t {
 	VS_BIT_HAS_NORMAL = 9,  // conditioned on hw transform
 	VS_BIT_NORM_REVERSE = 10,
 	VS_BIT_HAS_TEXCOORD = 11,
-	VS_BIT_HAS_COLOR_TESS = 12,  // 1 bit
-	VS_BIT_HAS_TEXCOORD_TESS = 13,  // 1 bit
-	VS_BIT_NORM_REVERSE_TESS = 14, // 1 bit
-	VS_BIT_HAS_NORMAL_TESS = 15, // 1 bit
+	// 4 bits free: 12-15
 	VS_BIT_UVGEN_MODE = 16,
 	VS_BIT_UVPROJ_MODE = 18,  // 2, can overlap with LS0
 	VS_BIT_LS0 = 18,  // 2
@@ -61,7 +58,7 @@ enum VShaderBit : uint8_t {
 	VS_BIT_LIGHT3_COMP = 44,  // 2 bits
 	VS_BIT_LIGHT3_TYPE = 46,  // 2 bits
 	VS_BIT_MATERIAL_UPDATE = 48,  // 3 bits
-	VS_BIT_SPLINE = 51, // 1 bit
+	// Bit 51 is free.
 	VS_BIT_LIGHT0_ENABLE = 52,
 	VS_BIT_LIGHT1_ENABLE = 53,
 	VS_BIT_LIGHT2_ENABLE = 54,
@@ -72,8 +69,7 @@ enum VShaderBit : uint8_t {
 	VS_BIT_FS_MINMAX_DISCARD = 59, // Do min/max and/or depth clamp in the fragment shader. It just means we need to forward Z and W to the fragment shader.
 	VS_BIT_FS_DEPTH_CLAMP = 60, // Do depth clamp in the fragment shader.
 	VS_BIT_FLATSHADE = 62, // 1 bit
-	VS_BIT_BEZIER = 63, // 1 bit
-	// No more free
+	// Bit 63 is free.
 };
 
 static inline VShaderBit operator +(VShaderBit bit, int i) {
@@ -85,20 +81,17 @@ enum FShaderBit : uint8_t {
 	FS_BIT_CLEARMODE = 0,
 	FS_BIT_DO_TEXTURE = 1,
 	FS_BIT_TEXFUNC = 2,  // 3 bits
-	FS_BIT_DOUBLE_COLOR = 5,  // Not used with FS_BIT_UBERSHADER
-	FS_BIT_3D_TEXTURE = 6,
-	FS_BIT_SHADER_TEX_CLAMP = 7,
-	FS_BIT_CLAMP_S = 8,
-	FS_BIT_CLAMP_T = 9,
-	FS_BIT_TEXALPHA = 10,  // Not used with FS_BIT_UBERSHADER
-	FS_BIT_LMODE = 11,
+	FS_BIT_SHADER_TEX_CLAMP = 5,
+	FS_BIT_CLAMP_S = 6,
+	FS_BIT_CLAMP_T = 7,
+	FS_BIT_SHADER_DEPAL_FORMAT = 8,  // 3 bits (GEBufferFormat), connected to FS_BIT_SHADER_DEPAL_MODE
 	FS_BIT_ALPHA_TEST = 12,
 	FS_BIT_ALPHA_TEST_FUNC = 13,  // 3 bits
 	FS_BIT_ALPHA_AGAINST_ZERO = 16,
 	FS_BIT_COLOR_TEST = 17,
 	FS_BIT_COLOR_TEST_FUNC = 18,  // 2 bits
 	FS_BIT_COLOR_AGAINST_ZERO = 20,
-	FS_BIT_ENABLE_FOG = 21,  // Not used with FS_BIT_UBERSHADER
+	FS_BIT_ENABLE_FOG = 21,
 	FS_BIT_DO_TEXTURE_PROJ = 22,
 	FS_BIT_MINMAX_DISCARD = 23,
 	FS_BIT_STENCIL_TO_ALPHA = 24,  // 2 bits
@@ -118,10 +111,10 @@ enum FShaderBit : uint8_t {
 	FS_BIT_SAMPLE_ARRAY_TEXTURE = 57,  // For multiview, framebuffers are array textures and we need to sample the two layers correctly.
 	FS_BIT_STEREO = 58,
 	FS_BIT_USE_FRAMEBUFFER_FETCH = 59,
-	FS_BIT_UBERSHADER = 60,
+	FS_BIT_LMODE = 60,
 	FS_BIT_DEPTH_TEST_NEVER = 61,  // Only used on Mali. Set when depth == NEVER. We forcibly avoid writing to depth in this case, since it crashes the driver.
 	FS_BIT_DEPTH_CLAMP = 62,  // These both are connected to VS_BIT_MINMAX_DISCARD_OR_DEPTH_CLAMP in the vertex shader.
-	// Free bit: 63
+	FS_BIT_3D_TEXTURE = 63,
 };
 
 static inline FShaderBit operator +(FShaderBit bit, int i) {
@@ -262,7 +255,7 @@ namespace Draw {
 class Bugs;
 }
 
-void ComputeVertexShaderID(VShaderID *id, u32 vertType, bool useHWTransform, bool useHWTessellation, bool weightsAsFloat, bool useSkinInDecode, ClipInfoFlags clipInfoFlags);
+void ComputeVertexShaderID(VShaderID *id, u32 vertType, bool useHWTransform, bool weightsAsFloat, bool useSkinInDecode, ClipInfoFlags clipInfoFlags);
 // Generates a compact string that describes the shader. Useful in a list to get an overview
 // of the current flora of shaders.
 std::string VertexShaderDesc(const VShaderID &id);

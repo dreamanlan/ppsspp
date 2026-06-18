@@ -320,7 +320,6 @@ public:
 	float fUITint;
 	float fUISaturation;
 
-	bool bTextureBackoffCache;
 	bool bVertexDecoderJit;
 	int iAppSwitchMode;
 	bool bFullScreen;
@@ -363,10 +362,8 @@ public:
 	int iBloomHack; //0 = off, 1 = safe, 2 = balanced, 3 = aggressive
 	int iSkipGPUReadbackMode;  // 0 = off, 1 = skip, 2 = to texture
 	int iSplineBezierQuality; // 0 = low , 1 = Intermediate , 2 = High
-	bool bHardwareTessellation;
 	bool bShaderCache;  // Hidden ini-only setting, useful for debugging shader compile times.
 	bool bUberShaderVertex;
-	bool bUberShaderFragment;
 	int iDefaultTab;
 	int iScreenshotMode;
 	bool bVulkanDisableImplicitLayers;

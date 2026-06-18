@@ -244,7 +244,7 @@ uint64_t ShaderManagerVulkan::UpdateUniforms(bool useBufferedRendering) {
 	return dirty;
 }
 
-void ShaderManagerVulkan::GetShaders(int prim, u32 vertexType, VulkanVertexShader **vshader, VulkanFragmentShader **fshader, const ComputedPipelineState &pipelineState, bool useHWTransform, bool useHWTessellation, bool weightsAsFloat, bool useSkinInDecode, ClipInfoFlags clipInfoFlags) {
+void ShaderManagerVulkan::GetShaders(int prim, u32 vertexType, VulkanVertexShader **vshader, VulkanFragmentShader **fshader, const ComputedPipelineState &pipelineState, bool useHWTransform, bool weightsAsFloat, bool useSkinInDecode, ClipInfoFlags clipInfoFlags) {
 	VulkanContext *vulkan = (VulkanContext *)draw_->GetNativeObject(Draw::NativeObject::CONTEXT);
 
 	VShaderID VSID;
@@ -254,7 +254,7 @@ void ShaderManagerVulkan::GetShaders(int prim, u32 vertexType, VulkanVertexShade
 	if (gstate_c.IsDirty(DIRTY_VERTEXSHADER_STATE)) {
 		gstate_c.Clean(DIRTY_VERTEXSHADER_STATE);
 		recomputedVS = true;
-		ComputeVertexShaderID(&VSID, vertexType, useHWTransform, useHWTessellation, weightsAsFloat, useSkinInDecode, clipInfoFlags);
+		ComputeVertexShaderID(&VSID, vertexType, useHWTransform, weightsAsFloat, useSkinInDecode, clipInfoFlags);
 		if (VSID == lastVSID_) {
 			_dbg_assert_(lastVShader_ != nullptr);
 			vs = lastVShader_;
@@ -410,7 +410,7 @@ enum class VulkanCacheDetectFlags {
 };
 
 #define CACHE_HEADER_MAGIC 0xff51f420 
-#define CACHE_VERSION 55
+#define CACHE_VERSION 56
 
 struct VulkanCacheHeader {
 	uint32_t magic;

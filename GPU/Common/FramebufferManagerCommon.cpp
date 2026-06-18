@@ -944,7 +944,7 @@ Draw2DPipeline *FramebufferManagerCommon::GetReinterpretPipeline(GEBufferFormat 
 
 	Draw2DPipeline *pipeline = reinterpretFromTo_[(int)from][(int)to];
 	if (!pipeline) {
-		pipeline = draw2D_.Create2DPipeline([=](ShaderWriter &shaderWriter) -> Draw2DPipelineInfo {
+		pipeline = draw2D_.Create2DPipeline([from, to](ShaderWriter &shaderWriter) -> Draw2DPipelineInfo {
 			return GenerateReinterpretFragmentShader(shaderWriter, from, to);
 		});
 		reinterpretFromTo_[(int)from][(int)to] = pipeline;
@@ -1099,7 +1099,6 @@ void FramebufferManagerCommon::NotifyRenderFramebufferSwitched(VirtualFramebuffe
 			float clearDepth = 0.0f;
 			if (vfb->usageFlags & FB_USAGE_INVALIDATE_DEPTH) {
 				depthAction = Draw::RPAction::CLEAR;
-				clearDepth = GetDepthScaleFactors(gstate_c.UseFlags()).Offset();
 				vfb->usageFlags &= ~FB_USAGE_INVALIDATE_DEPTH;
 			}
 			draw_->BindFramebufferAsRenderTarget(vfb->fbo, {Draw::RPAction::KEEP, depthAction, Draw::RPAction::KEEP, 0, clearDepth}, "FBSwitch");
@@ -2213,6 +2212,7 @@ bool FramebufferManagerCommon::NotifyFramebufferCopy(u32 src, u32 dst, int size,
 			WARN_LOG_ONCE(btdcpyheight, Log::FrameBuf, "Memcpy fbo download %08x -> %08x skipped, %d+%d is taller than %d", src, dst, srcY, srcH, srcBuffer->bufferHeight);
 		} else if (GetSkipGPUReadbackMode() == SkipGPUReadbackMode::NO_SKIP && (!srcBuffer->memoryUpdated || channel == RASTER_DEPTH)) {
 			ReadFramebufferToMemory(srcBuffer, 0, srcY, srcBuffer->width, srcH, channel, Draw::ReadbackMode::BLOCK);
+			gstate_c.textureSyncTimeDomain++;
 			srcBuffer->usageFlags = (srcBuffer->usageFlags | FB_USAGE_DOWNLOAD) & ~FB_USAGE_DOWNLOAD_CLEAR;
 		}
 		return false;
@@ -2811,6 +2811,7 @@ bool FramebufferManagerCommon::NotifyBlockTransferBefore(u32 dstBasePtr, int dst
 					WARN_LOG_ONCE(btdheight, Log::G3D, "Block transfer download %08x -> %08x dangerous, %d+%d is taller than %d", srcBasePtr, dstBasePtr, srcRect.y, srcRect.h, srcRect.vfb->bufferHeight);
 				}
 				ReadFramebufferToMemory(srcRect.vfb, static_cast<int>(srcX * srcXFactor), srcY, static_cast<int>(srcRect.w_bytes * srcXFactor), srcRect.h, RASTER_COLOR, Draw::ReadbackMode::BLOCK);
+				gstate_c.textureSyncTimeDomain++;
 				srcRect.vfb->usageFlags = (srcRect.vfb->usageFlags | FB_USAGE_DOWNLOAD) & ~FB_USAGE_DOWNLOAD_CLEAR;
 			}
 		}

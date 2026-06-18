@@ -472,12 +472,11 @@ enum : u32 {
 	GPU_USE_VS_RANGE_CULLING = FLAG_BIT(3),
 	GPU_USE_BLEND_MINMAX = FLAG_BIT(4),
 	GPU_USE_LOGIC_OP = FLAG_BIT(5),
-	GPU_USE_FRAGMENT_UBERSHADER = FLAG_BIT(6),
-	// Free bit: 7
+	// Free bits: 6-7
 	GPU_USE_ANISOTROPY = FLAG_BIT(8),
 	GPU_USE_CLEAR_RAM_HACK = FLAG_BIT(9),
-	GPU_USE_INSTANCE_RENDERING = FLAG_BIT(10),
-	GPU_USE_VERTEX_TEXTURE_FETCH = FLAG_BIT(11),
+	// Free bit: 10
+	// Free bit: 11
 	GPU_USE_TEXTURE_FLOAT = FLAG_BIT(12),
 	GPU_USE_16BIT_FORMATS = FLAG_BIT(13),
 	GPU_USE_DEPTH_CLAMP = FLAG_BIT(14),
@@ -539,12 +538,6 @@ struct GPUStateCache {
 	}
 	bool IsDirty(u64 what) const {
 		return (dirty & what) != 0ULL;
-	}
-	void SetUseShaderDepal(ShaderDepalMode mode) {
-		if (mode != shaderDepalMode) {
-			shaderDepalMode = mode;
-			Dirty(DIRTY_FRAGMENTSHADER_STATE);
-		}
 	}
 	void SetTextureSolidAlpha(bool solidAlpha) {
 		if (solidAlpha != textureSolidAlpha) {
@@ -629,6 +622,11 @@ public:
 	bool textureSolidAlpha;
 	bool vertexFullAlpha;
 
+	// The PSP CPU can only safely modify textures *between* syncs, so we can safely cache textures without
+	// rehashing until the next sync. So for each texture we keep track which sync index we actually updated
+	// it on.
+	int textureSyncTimeDomain;
+
 	int skipDrawReason;
 
 	UVScale uv;
@@ -696,7 +694,15 @@ public:
 	int spline_num_points_u;
 
 	ShaderDepalMode shaderDepalMode;
-	GEBufferFormat depalFramebufferFormat;
+	GEBufferFormat depalTextureFormat;
+
+	void SetShaderDepal(ShaderDepalMode mode, GEBufferFormat texFormat = {}) {
+		if (mode != shaderDepalMode || (mode != ShaderDepalMode::OFF && texFormat != depalTextureFormat)) {
+			shaderDepalMode = mode;
+			depalTextureFormat = texFormat;
+			Dirty(DIRTY_FRAGMENTSHADER_STATE);
+		}
+	}
 
 	u32 getRelativeAddress(u32 data) const {
 		u32 baseExtended = ((gstate.base & 0x000F0000) << 8) | data;
@@ -710,4 +716,3 @@ class GPUInterface;
 class GPUCommon;
 
 extern GPUStateCache gstate_c;
-

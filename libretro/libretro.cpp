@@ -789,15 +789,6 @@ static void check_variables(CoreParameter &coreParam)
          g_Config.iSkipGPUReadbackMode = (int)SkipGPUReadbackMode::SKIP;
    }
 
-   var.key = "ppsspp_lazy_texture_caching";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      if (!strcmp(var.value, "disabled"))
-         g_Config.bTextureBackoffCache = false;
-      else
-         g_Config.bTextureBackoffCache = true;
-   }
-
    var.key = "ppsspp_spline_quality";
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
@@ -825,15 +816,6 @@ static void check_variables(CoreParameter &coreParam)
          g_Config.bSoftwareSkinning = false;
       else
          g_Config.bSoftwareSkinning = true;
-   }
-
-   var.key = "ppsspp_hardware_tesselation";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      if (!strcmp(var.value, "disabled"))
-         g_Config.bHardwareTessellation = false;
-      else
-         g_Config.bHardwareTessellation = true;
    }
 
    var.key = "ppsspp_lower_resolution_for_effects";

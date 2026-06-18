@@ -31,6 +31,7 @@
 #include "GPU/Common/FramebufferManagerCommon.h"
 #include "GPU/Common/GPUStateUtils.h"
 #include "GPU/Common/SoftwareTransformCommon.h"
+#include "GPU/Common/ShaderUniforms.h"
 #include "GPU/Common/TransformCommon.h"
 #include "GPU/Common/VertexDecoderCommon.h"
 #include "GPU/Common/VertexReader.h"
@@ -62,7 +63,8 @@ static SoftwareTransformAction ProjectClipAndExpand(SoftwareTransformParams &par
 // Note: 0 is BR and 2 is TL.
 
 // The PSP has a funky mechanism where the UV direction of screen-space rectangles is decided by the relative positioning
-// of the two corners defining the rectangle.
+// of the two corners defining the rectangle. This all boils down to a simple swap of the UVs of the two middle vertices,
+// after a check.
 static void RotateUV(TransformedVertex v[4]) {
 	const float x1 = v[2].x;
 	const float x2 = v[0].x;
@@ -79,7 +81,7 @@ static void RotateUV(TransformedVertex v[4]) {
 }
 
 static bool ShouldApplySpriteBorderFix(const GPUgstate &gstate) {
-	return gstate.isAlphaBlendEnabled() && gstate.getBlendFuncA() != GE_SRCBLEND_FIXA && gstate.isTextureAlphaUsed();
+	return gstate.isMagnifyFilteringEnabled() && gstate.isAlphaBlendEnabled() && gstate.getBlendFuncA() != GE_SRCBLEND_FIXA && gstate.isTextureAlphaUsed();
 }
 
 // Clears on the PSP are best done by drawing a series of vertical strips
@@ -199,9 +201,7 @@ SoftwareTransformAction RunSoftwareTransform(SoftwareTransformParams &params, in
 			bool matchingComponents = params.allowSeparateAlphaClear || (alphaMatchesColor && depthMatchesStencil);
 			bool stencilNotMasked = !gstate.isClearModeAlphaMask() || gstate.getStencilWriteMask() == 0x00;
 			if (matchingComponents && stencilNotMasked) {
-				DepthScaleFactors depthScale = GetDepthScaleFactors(gstate_c.UseFlags());
-				// Need to rescale from a [0, 1] float.  This is the final transformed value.
-				float depth = depthScale.EncodeFromU16(transformed[1].z);
+				float depth = std::clamp(transformed[1].z, 0.0f, 65535.0f) / 65535.0f;
 				// Non-zero depth clears are unusual, but some drivers don't match drawn depth values to cleared values.
 				// Games sometimes expect exact matches (see #12626, for example) for equal comparisons.
 				if (!(params.everUsedEqualDepth && gstate.isClearModeDepthMask() && result->depth > 0.0f && result->depth < 1.0f)) {
@@ -214,17 +214,10 @@ SoftwareTransformAction RunSoftwareTransform(SoftwareTransformParams &params, in
 		}
 	} else {
 		Lighter lighter(vertType);
-		float fog_end = getFloat24(gstate.fog1);
-		float fog_slope = getFloat24(gstate.fog2);
-		// Same fixup as in ShaderManagerGLES.cpp
-		// Not really sure what a sensible value might be, but let's try 64k.
-		constexpr float largeFogValue = 65535.0f;
-		if (my_isnanorinf(fog_end)) {
-			fog_end = std::signbit(fog_end) ? -largeFogValue : largeFogValue;
-		}
-		if (my_isnanorinf(fog_slope)) {
-			fog_slope = std::signbit(fog_slope) ? -largeFogValue : largeFogValue;
-		}
+		float fogVal[2];
+		UpdateFogCoef(gstate, fogVal);
+		const float fog_end = fogVal[0];
+		const float fog_slope = fogVal[1];
 
 		const int texW = gstate.getTextureWidth(0);
 		const int texH = gstate.getTextureHeight(0);
@@ -1014,20 +1007,41 @@ static bool ExpandRectangles(int vertexCount, int &numDecodedVerts, int vertsSiz
 	}
 
 	bool pixelMapped = g_Config.bSmart2DTexFiltering && !gstate_c.textureIsVideo;
+	if (pixelMapped) {
+		// Check for pixel mapping. If we find pixel mapping, abandon spriteBorderFix.
+		for (int i = 0; i < vertexCount; i += 2) {
+			const TransformedVertex &transVtxTL = transformed[indsIn[i + 0]];
+			const TransformedVertex &transVtxBR = transformed[indsIn[i + 1]];
+
+			if (pixelMapped) {
+				float dx = transVtxBR.x - transVtxTL.x;
+				float dy = transVtxBR.y - transVtxTL.y;
+				float du = transVtxBR.u - transVtxTL.u;
+				float dv = transVtxBR.v - transVtxTL.v;
+
+				// NOTE: We will accept it as pixel mapped if only one dimension is stretched. This fixes dialog frames in FFI.
+				// Though, there could be false positives in other games due to this. Let's see if it is a problem...
+				if (dx <= 0 || dy <= 0 || (dx != du && dy != dv)) {
+					pixelMapped = false;
+					break;
+				}
+			}
+		}
+	}
 
 	float spriteBorderFixL = 0.0f;
 	float spriteBorderFixR = 0.0f;
 	float spriteBorderFixT = 0.0f;
 	float spriteBorderFixB = 0.0f;
-	float spriteBorderFix = PSP_CoreParameter().compat.flags().SpriteBorderFix;
-	if (spriteBorderFix && !ShouldApplySpriteBorderFix(gstate)) {
-		spriteBorderFix = 0.0f;
+	const float spriteBorderFix = PSP_CoreParameter().compat.flags().SpriteBorderFix;
+	if (pixelMapped || (spriteBorderFix && !ShouldApplySpriteBorderFix(gstate))) {
+		// Don't apply spriteBorderFix if pixel mapped. 
 	} else {
 		if (spriteBorderFix < 0.0f) {
-			spriteBorderFixL = (spriteBorderFix / uScale) / gstate_c.curTextureWidth;
-			spriteBorderFixT = (spriteBorderFix / vScale) / gstate_c.curTextureHeight;
-			spriteBorderFixR = (spriteBorderFix / uScale) / gstate_c.curTextureWidth;
-			spriteBorderFixB = (spriteBorderFix / vScale) / gstate_c.curTextureHeight;
+			spriteBorderFixL = (-spriteBorderFix / uScale) / gstate_c.curTextureWidth;
+			spriteBorderFixT = (-spriteBorderFix / vScale) / gstate_c.curTextureHeight;
+			spriteBorderFixR = (-spriteBorderFix / uScale) / gstate_c.curTextureWidth;
+			spriteBorderFixB = (-spriteBorderFix / vScale) / gstate_c.curTextureHeight;
 		} else if (spriteBorderFix > 0.0f) {
 			spriteBorderFixL = 0.0f;
 			spriteBorderFixR = (spriteBorderFix / uScale) / gstate_c.curTextureWidth;
@@ -1036,22 +1050,10 @@ static bool ExpandRectangles(int vertexCount, int &numDecodedVerts, int vertsSiz
 		}
 	}
 
+
 	for (int i = 0; i < vertexCount; i += 2) {
 		const TransformedVertex &transVtxTL = transformed[indsIn[i + 0]];
 		const TransformedVertex &transVtxBR = transformed[indsIn[i + 1]];
-
-		if (pixelMapped) {
-			float dx = transVtxBR.x - transVtxTL.x;
-			float dy = transVtxBR.y - transVtxTL.y;
-			float du = transVtxBR.u - transVtxTL.u;
-			float dv = transVtxBR.v - transVtxTL.v;
-
-			// NOTE: We will accept it as pixel mapped if only one dimension is stretched. This fixes dialog frames in FFI.
-			// Though, there could be false positives in other games due to this. Let's see if it is a problem...
-			if (dx <= 0 || dy <= 0 || (dx != du && dy != dv)) {
-				pixelMapped = false;
-			}
-		}
 
 		float z = transVtxBR.z;
 		// Apply Z clamping. It appears clipping/culling does not affect rectangles, see #12058.
@@ -1067,30 +1069,30 @@ static bool ExpandRectangles(int vertexCount, int &numDecodedVerts, int vertsSiz
 
 		// bottom right
 		trans[0] = transVtxBR;
-		trans[0].u = (transVtxBR.u + spriteBorderFixR) * uScale;
-		trans[0].v = (transVtxBR.v + spriteBorderFixB) * vScale;
+		trans[0].u = (transVtxBR.u - spriteBorderFixR) * uScale;
+		trans[0].v = (transVtxBR.v - spriteBorderFixB) * vScale;
 		trans[0].z = z;
 
 		// top right
 		trans[1] = transVtxBR;
 		trans[1].y = transVtxTL.y;
-		trans[1].u = (transVtxBR.u + spriteBorderFixR) * uScale;
-		trans[1].v = (transVtxTL.v - spriteBorderFixT) * vScale;
+		trans[1].u = (transVtxBR.u - spriteBorderFixR) * uScale;
+		trans[1].v = (transVtxTL.v + spriteBorderFixT) * vScale;
 		trans[1].z = z;
 
 		// top left
 		trans[2] = transVtxBR;
 		trans[2].x = transVtxTL.x;
 		trans[2].y = transVtxTL.y;
-		trans[2].u = (transVtxTL.u - spriteBorderFixL) * uScale;
-		trans[2].v = (transVtxTL.v - spriteBorderFixT) * vScale;
+		trans[2].u = (transVtxTL.u + spriteBorderFixL) * uScale;
+		trans[2].v = (transVtxTL.v + spriteBorderFixT) * vScale;
 		trans[2].z = z;
 
 		// bottom left
 		trans[3] = transVtxBR;
 		trans[3].x = transVtxTL.x;
-		trans[3].u = (transVtxTL.u - spriteBorderFixL) * uScale;
-		trans[3].v = (transVtxBR.v + spriteBorderFixB) * vScale;
+		trans[3].u = (transVtxTL.u + spriteBorderFixL) * uScale;
+		trans[3].v = (transVtxBR.v - spriteBorderFixB) * vScale;
 		trans[3].z = z;
 
 		// That's the four corners. Now process UV rotation.
@@ -1661,6 +1663,8 @@ bool GetCurrentDrawAsDebugVertices(DrawEngineCommon *drawEngine, GECommand cmd, 
 	case GE_PRIM_TRIANGLE_FAN:
 	case GE_PRIM_TRIANGLE_STRIP:
 		prim = GE_PRIM_TRIANGLES;
+		break;
+	default:
 		break;
 	}
 

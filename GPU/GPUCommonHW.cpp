@@ -495,13 +495,6 @@ void GPUCommonHW::UpdateCmdInfo() {
 		cmdInfo_[GE_CMD_MATERIALUPDATE].RemoveDirty(DIRTY_LIGHT_CONTROL);
 		cmdInfo_[GE_CMD_MATERIALUPDATE].AddDirty(DIRTY_VERTEXSHADER_STATE);
 	}
-
-	if (gstate_c.Use(GPU_USE_FRAGMENT_UBERSHADER)) {
-		// Texfunc controls both texalpha and doubling. The rest is not dynamic yet so can't remove fragment shader dirtying.
-		cmdInfo_[GE_CMD_TEXFUNC].AddDirty(DIRTY_TEX_ALPHA_MUL);
-	} else {
-		cmdInfo_[GE_CMD_TEXFUNC].RemoveDirty(DIRTY_TEX_ALPHA_MUL);
-	}
 }
 
 void GPUCommonHW::SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) {
@@ -620,11 +613,6 @@ u32 GPUCommonHW::CheckGPUFeatures() const {
 		features |= GPU_USE_CLEAR_RAM_HACK;
 	}
 
-	// Some backends will turn this off again in the calling function.
-	if (g_Config.bUberShaderFragment) {
-		features |= GPU_USE_FRAGMENT_UBERSHADER;
-	}
-
 	if (!draw_->GetBugs().Has(Draw::Bugs::BROKEN_NAN_IN_CONDITIONAL)) {
 		features |= GPU_USE_VS_RANGE_CULLING;
 	}
@@ -663,7 +651,7 @@ std::vector<std::string> GPUCommonHW::DebugGetShaderIDs(DebugShaderType type) {
 	case SHADER_TYPE_VERTEXLOADER:
 		return drawEngineCommon_->DebugGetVertexLoaderIDs();
 	case SHADER_TYPE_TEXTURE:
-		return textureCache_->GetTextureShaderCache()->DebugGetShaderIDs(type);
+		return textureCache_->GetTextureShaderCache().DebugGetShaderIDs(type);
 	default:
 		return shaderManager_->DebugGetShaderIDs(type);
 	}
@@ -674,7 +662,7 @@ std::string GPUCommonHW::DebugGetShaderString(std::string id, DebugShaderType ty
 	case SHADER_TYPE_VERTEXLOADER:
 		return drawEngineCommon_->DebugGetVertexLoaderString(id, stringType);
 	case SHADER_TYPE_TEXTURE:
-		return textureCache_->GetTextureShaderCache()->DebugGetShaderString(id, type, stringType);
+		return textureCache_->GetTextureShaderCache().DebugGetShaderString(id, type, stringType);
 	default:
 		return shaderManager_->DebugGetShaderString(id, type, stringType);
 	}
@@ -1340,15 +1328,7 @@ void GPUCommonHW::Execute_Bezier(u32 op, u32 diff) {
 
 	// We need to dirty UVSCALEOFFSET here because we look at the submit type when setting that uniform.
 	gstate_c.Dirty(DIRTY_RASTER_STATE | DIRTY_VERTEXSHADER_STATE | DIRTY_UVSCALEOFFSET);
-	if (drawEngineCommon_->CanUseHardwareTessellation(surface.primType)) {
-		gstate_c.submitType = SubmitType::HW_BEZIER;
-		if (gstate_c.spline_num_points_u != surface.num_points_u) {
-			gstate_c.Dirty(DIRTY_BEZIERSPLINE);
-			gstate_c.spline_num_points_u = surface.num_points_u;
-		}
-	} else {
-		gstate_c.submitType = SubmitType::BEZIER;
-	}
+	gstate_c.submitType = SubmitType::BEZIER;
 
 	int bytesRead = 0;
 	gstate_c.UpdateUVScaleOffset();
@@ -1420,15 +1400,7 @@ void GPUCommonHW::Execute_Spline(u32 op, u32 diff) {
 
 	// We need to dirty UVSCALEOFFSET here because we look at the submit type when setting that uniform.
 	gstate_c.Dirty(DIRTY_RASTER_STATE | DIRTY_VERTEXSHADER_STATE | DIRTY_UVSCALEOFFSET);
-	if (drawEngineCommon_->CanUseHardwareTessellation(surface.primType)) {
-		gstate_c.submitType = SubmitType::HW_SPLINE;
-		if (gstate_c.spline_num_points_u != surface.num_points_u) {
-			gstate_c.Dirty(DIRTY_BEZIERSPLINE);
-			gstate_c.spline_num_points_u = surface.num_points_u;
-		}
-	} else {
-		gstate_c.submitType = SubmitType::SPLINE;
-	}
+	gstate_c.submitType = SubmitType::SPLINE;
 
 	int bytesRead = 0;
 	gstate_c.UpdateUVScaleOffset();
@@ -1804,11 +1776,12 @@ int GPUCommonHW::ListSync(int listid, int mode) {
 void GPUCommonHW::FormatGPUStatsCommon(StringWriter &w) {
 	float vertexAverageCycles = gpuStats.perFrame.numVertsSubmitted > 0 ? (float)gpuStats.perFrame.vertexGPUCycles / (float)gpuStats.perFrame.numVertsSubmitted : 0.0f;
 	w.F(
-		"DL processing time: %0.2f ms, %d drawsync, %d listsync\n"
+		"DL processing time: %0.2f ms\n"
+		"%d enqueue, %d updatestall, %d drawsync, %d listsync\n"
 		"Draw: %d (%d dec, %d culled), flushes %d, clears %d, bbox jumps %d\n"
 		"%d soft. Vertices: %d dec: %d drawn: %d clipped tris: %d\n"
 		"FBOs active: %d (evaluations: %d, created %d)\n"
-		"Textures: %d, dec: %d, invalidated: %d, hashed: %d kB, clut %d\n"
+		"Textures: %d (s: %d), dec: %d, invalidated: %d, changed %d, hashed: %d kB, clut %d\n"
 		"readbacks %d (%d non-block), upload %d (cached %d), depal %d\n"
 		"block transfers: %d\n"
 		"replacer: tracks %d references, %d unique textures\n"
@@ -1817,6 +1790,8 @@ void GPUCommonHW::FormatGPUStatsCommon(StringWriter &w) {
 		"Z-rast: %0.2f+%0.2f+%0.2f (total %0.2f/%0.2f) ms\n"
 		"Z-rast: %d prim, %d nopix, %d small, %d earlysize, %d zcull, %d box\n%s",
 		gpuStats.perFrame.msProcessingDisplayLists * 1000.0f,
+		gpuStats.perFrame.numEnqueue,
+		gpuStats.perFrame.numUpdateStall,
 		gpuStats.perFrame.numDrawSyncs,
 		gpuStats.perFrame.numListSyncs,
 		gpuStats.perFrame.numDrawCalls,
@@ -1828,14 +1803,16 @@ void GPUCommonHW::FormatGPUStatsCommon(StringWriter &w) {
 		gpuStats.perFrame.numSoftTransformedDraws,
 		gpuStats.perFrame.numVertsSubmitted,
 		gpuStats.perFrame.numVertsDecoded,
-		gpuStats.perFrame.numUncachedVertsDrawn,
+		gpuStats.perFrame.numVertsDrawn,
 		gpuStats.perFrame.numSoftClippedTriangles,
 		(int)framebufferManager_->NumVFBs(),
 		gpuStats.perFrame.numFramebufferEvaluations,
 		gpuStats.perFrame.numFBOsCreated,
 		(int)textureCache_->NumLoadedTextures(),
+		(int)textureCache_->NumSecondaryTextures(),
 		gpuStats.perFrame.numTexturesDecoded,
 		gpuStats.perFrame.numTextureInvalidations,
+		gpuStats.perFrame.numTexturesChanged,
 		gpuStats.perFrame.numTextureDataBytesHashed / 1024,
 		gpuStats.perFrame.numClutTextures,
 		gpuStats.perFrame.numBlockingReadbacks,
