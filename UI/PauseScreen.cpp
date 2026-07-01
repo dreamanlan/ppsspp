@@ -333,7 +333,13 @@ void SaveSlotView::OnSaveState(UI::EventParams &e) {
 
 void GamePauseScreen::update() {
 	UpdateUIState(UISTATE_PAUSEMENU);
+
+	if (!firstFrame_ && g_controlMapper.PollPauseTrigger()) {
+		TriggerFinish(DR_BACK);
+	}
 	UIScreen::update();
+
+	firstFrame_ = false;
 
 	if (finishNextFrame_) {
 		TriggerFinish(finishNextFrameResult_);
@@ -374,20 +380,6 @@ GamePauseScreen::GamePauseScreen(const Path &filename, bool bootPending)
 GamePauseScreen::~GamePauseScreen() {
 	g_controlMapper.RemoveListener(this);
 	__DisplaySetWasPaused();
-}
-
-bool GamePauseScreen::UnsyncKey(const KeyInput &key) {
-	bool retval = UIScreen::UnsyncKey(key);
-	retval = g_controlMapper.Key(key) || retval;
-	if (g_controlMapper.PollPauseTrigger()) {
-		TriggerFinish(DR_BACK);
-	}
-	return retval;
-}
-
-void GamePauseScreen::UnsyncAxis(const AxisInput *axes, size_t count) {
-	UIScreen::UnsyncAxis(axes, count);
-	g_controlMapper.Axis(axes, count);
 }
 
 void GamePauseScreen::OnVKey(VirtKey virtualKeyCode, bool down) {

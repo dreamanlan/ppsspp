@@ -17,21 +17,6 @@ namespace Draw {
 	class DrawContext;
 }
 
-enum class QueuedEventType : u8 {
-	KEY,
-	AXIS,
-	TOUCH,
-};
-
-struct QueuedEvent {
-	QueuedEventType type;
-	union {
-		TouchInput touch;
-		KeyInput key;
-		AxisInput axis;
-	};
-};
-
 class UIScreen : public Screen {
 public:
 	UIScreen();
@@ -42,13 +27,9 @@ public:
 	void deviceLost() override;
 	void deviceRestored(Draw::DrawContext *draw) override;
 
-	virtual void touch(const TouchInput &touch);
-	virtual bool key(const KeyInput &key);
-	virtual void axis(const AxisInput &axis);
-
-	bool UnsyncTouch(const TouchInput &touch) override;
-	bool UnsyncKey(const KeyInput &key) override;
-	void UnsyncAxis(const AxisInput *axes, size_t count) override;
+	bool touch(const TouchInput &touch) override;
+	bool key(const KeyInput &key) override;
+	void axis(const AxisInput &axis) override;
 
 	TouchInput transformTouch(const TouchInput &touch) override;
 
@@ -92,19 +73,21 @@ protected:
 
 	bool recreateViews_ = true;
 	DeviceOrientation lastOrientation_ = DeviceOrientation::Landscape;
-
-private:
-	std::mutex eventQueueLock_;
-	std::deque<QueuedEvent> eventQueue_;
 };
 
 class UIDialogScreen : public UIScreen {
 public:
 	UIDialogScreen() : UIScreen(), finished_(false) {}
 	~UIDialogScreen() override;
+	void update() override {
+		UIScreen::update();
+		firstFrame_ = false;
+	}
 	bool key(const KeyInput &key) override;
 	void sendMessage(UIMessage message, const char *value) override;
 
+protected:
+	bool firstFrame_ = true;  // Since back button can toggle this screen, we need to make sure we don't immediately pop it on the first frame.
 private:
 	bool finished_;
 };
