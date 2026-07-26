@@ -434,18 +434,18 @@ static std::set<SceUID> loadedModules;
 // STATE END
 //////////////////////////////////////////////////////////////////////////
 
-static void __KernelModuleInit()
-{
+static void __KernelModuleInit() {
 	actionAfterModule = __KernelRegisterActionType(AfterModuleEntryCall::Create);
 }
 
-void __KernelModuleDoState(PointerWrap &p)
-{
+void __KernelModuleDoState(PointerWrap &p) {
 	auto s = p.Section("sceKernelModule", 1, 2);
 	if (!s)
 		return;
 
 	Do(p, actionAfterModule);
+
+	// TODO: Only needed during read, right?
 	__KernelRestoreActionType(actionAfterModule, AfterModuleEntryCall::Create);
 
 	if (s >= 2) {
@@ -463,15 +463,13 @@ void __KernelModuleDoState(PointerWrap &p)
 				}
 			}
 		}
-	}
-
-	if (g_Config.bFuncReplacements) {
-		MIPSAnalyst::ReplaceFunctions();
+		if (g_Config.bFuncReplacements) {
+			MIPSAnalyst::ReplaceFunctions();
+		}
 	}
 }
 
-void __KernelModuleShutdown()
-{
+void __KernelModuleShutdown() {
 	loadedModules.clear();
 	MIPSAnalyst::Reset();
 	HLEPlugins::Unload();
@@ -766,6 +764,30 @@ void UnexportFuncSymbol(const FuncSymbolExport &func) {
 			}
 		}
 	}
+}
+
+// Used to add detail to the "Unknown syscall" log in HLE.cpp's GetSyscallFuncPointer - a call
+// through a still-unresolved import ends up as a generic "invalid syscall" opcode that no
+// longer carries the original module name/NID, but the (fixed, unique) address of the syscall
+// instruction itself does - it's exactly the stubAddr every pending FuncSymbolImport recorded
+// when it was written by WriteFuncMissingStub.
+bool KernelFindImportByStubAddr(u32 stubAddr, std::string *importModuleName, u32 *nid, std::string *importingModuleName) {
+	u32 error;
+	for (SceUID moduleId : loadedModules) {
+		PSPModule *module = kernelObjects.Get<PSPModule>(moduleId, error);
+		if (!module) {
+			continue;
+		}
+		for (const auto &func : module->importedFuncs) {
+			if (func.stubAddr == stubAddr) {
+				*importModuleName = func.moduleName;
+				*nid = func.nid;
+				*importingModuleName = module->GetName();
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 void PSPModule::Cleanup() {
@@ -1113,10 +1135,17 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 			_assert_msg_(temp != nullptr, "Failed to allocate gzip decompression buffer (decryptedSize: %d)", decryptedSize);
 			memcpy(temp, ptr, decryptedSize);
 			int outBytes = gzipDecompress((u8 *)ptr, maxElfSize, temp);
-			if (outBytes < 0) {
-				ERROR_LOG(Log::sceModule, "Module gzip decompression failed!");
-			}
 			free(temp);
+			if (outBytes < 0) {
+				// Not necessarily actually gzip - some kd/ system modules (and possibly VSH
+				// modules) use KL4E compression instead, which we don't support decompressing.
+				// Bail out cleanly here rather than falling through to parse whatever's left
+				// in the buffer (still compressed, not a valid ELF) as if it were real code.
+				*error_string = StringFromFormat("Module '%s' decompression failed", head->modname);
+				// TODO: Might be the wrong error code.
+				error = SCE_KERNEL_ERROR_FILEERR;
+				return nullptr;
+			}
 			INFO_LOG(Log::sceModule, "gzip is enabled in '%s', decompressing (%d -> %d bytes, bufmax=%d).", head->modname, decryptedSize, outBytes, maxElfSize);
 		}
 
@@ -1874,11 +1903,11 @@ int __KernelGPUReplay() {
 		Core_Stop();
 	}
 
-	if (PSP_CoreParameter().headLess && !PSP_CoreParameter().startBreak) {
+	if (result == GPURecord::ReplayResult::Done && PSP_CoreParameter().headLess && !PSP_CoreParameter().startBreak) {
 		PSPPointer<u8> topaddr;
 		u32 linesize = 512;
 		__DisplayGetFramebuf(&topaddr, &linesize, nullptr, 0);
-		System_SendDebugScreenshot(std::string((const char *)&topaddr[0], linesize * 272), 272);
+		System_SendDebugScreenshot(&topaddr[0], linesize, 272);
 		Core_Stop();
 	}
 

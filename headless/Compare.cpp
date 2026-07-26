@@ -34,25 +34,7 @@
 #include "GPU/Common/TextureDecoder.h"
 
 
-bool teamCityMode = false;
 std::string currentTestName = "";
-
-void TeamCityPrint(const char *fmt, ...)
-{
-	if (!teamCityMode)
-		return;
-
-	const int TEMP_BUFFER_SIZE = 32768;
-	char temp[TEMP_BUFFER_SIZE];
-
-	va_list args;
-	va_start(args, fmt);
-	vsnprintf(temp, TEMP_BUFFER_SIZE - 1, fmt, args);
-	temp[TEMP_BUFFER_SIZE - 1] = '\0';
-	va_end(args);
-
-	printf("##teamcity[%s]\n", temp);
-}
 
 void GitHubActionsPrint(const char *type, const char *fmt, ...) {
 	if (!getenv("GITHUB_ACTIONS"))
@@ -74,8 +56,7 @@ struct BufferedLineReader {
 	const static int MAX_BUFFER = 5;
 	const static int TEMP_BUFFER_SIZE = 32768;
 
-	BufferedLineReader(const std::string &data) : data_(data) {
-	}
+	BufferedLineReader(const std::string &data) : data_(data) {}
 
 	void Fill() {
 		while (valid_ < MAX_BUFFER && HasMoreLines()) {
@@ -221,14 +202,11 @@ bool CompareOutput(const Path &bootFilename, const std::string &output, bool ver
 		BufferedLineReader actual(output);
 
 		bool failed = false;
-		while (expected.HasLines())
-		{
+		while (expected.HasLines()) {
 			if (expected.Compare(actual))
 				continue;
 
-			if (!failed)
-			{
-				TeamCityPrint("testFailed name='%s' message='Output different from expected file'", currentTestName.c_str());
+			if (!failed) {
 				GitHubActionsPrint("error", "Incorrect output for %s", currentTestName.c_str());
 				failed = true;
 			}
@@ -236,20 +214,18 @@ bool CompareOutput(const Path &bootFilename, const std::string &output, bool ver
 			// This is a really dirt simple comparing algorithm.
 
 			// Perhaps it was an extra line?
-			if (expected.Peek(0) == actual.Peek(1) || !expected.HasLines())
+			if (expected.Peek(0) == actual.Peek(1) || !expected.HasLines()) {
 				printf("+ %s\n", actual.Consume().c_str());
-			// A single missing line?
-			else if (expected.Peek(1) == actual.Peek(0) || !actual.HasLines())
+				// A single missing line?
+			} else if (expected.Peek(1) == actual.Peek(0) || !actual.HasLines()) {
 				printf("- %s\n", expected.Consume().c_str());
-			else
-			{
+			} else {
 				printf("O %s\n", actual.Consume().c_str());
 				printf("E %s\n", expected.Consume().c_str());
 			}
 		}
 
-		while (actual.HasLines())
-		{
+		while (actual.HasLines()) {
 			// If it's a blank line, this will pass.
 			if (actual.Compare(expected))
 				continue;
@@ -257,16 +233,12 @@ bool CompareOutput(const Path &bootFilename, const std::string &output, bool ver
 			printf("+ %s\n", actual.Consume().c_str());
 		}
 
-		if (verbose)
-		{
-			if (!failed)
-			{
+		if (verbose) {
+			if (!failed) {
 				printf("++++++++++++++ The Equal Output +++++++++++++\n");
 				printf("%s", output.c_str());
 				printf("+++++++++++++++++++++++++++++++++++++++++++++\n");
-			}
-			else
-			{
+			} else {
 				printf("============== output from failed %s:\n", GetTestName(bootFilename).c_str());
 				printf("%s", output.c_str());
 				printf("============== expected output:\n");
@@ -285,12 +257,10 @@ bool CompareOutput(const Path &bootFilename, const std::string &output, bool ver
 			// Okay, just a screenshot then.  Allow a pass with no output (i.e. screenshot match.)
 			failed = output.find_first_not_of(" \r\n\t") != output.npos;
 			if (failed) {
-				TeamCityPrint("testFailed name='%s' message='Output different from expected file'", currentTestName.c_str());
 				GitHubActionsPrint("error", "Incorrect output for %s", currentTestName.c_str());
 			}
 		} else {
 			fprintf(stderr, "Expectation file %s not found\n", expect_filename.c_str());
-			TeamCityPrint("testIgnored name='%s' message='Expects file missing'", currentTestName.c_str());
 			GitHubActionsPrint("error", "Expected file missing for %s", currentTestName.c_str());
 		}
 
@@ -338,7 +308,7 @@ std::vector<u32> TranslateDebugBufferToCompare(const GPUDebugBuffer *buffer, u32
 		outStride = -outStride;
 	}
 
-	// Skip the bottom of the image in the buffer was smaller.  Remember, we're flipped.
+	// Skip the bottom of the image if the buffer was smaller.  Remember, we're flipped.
 	u32 *dst = &data[0];
 	if (safeH < h) {
 		dst += (h - safeH) * stride;

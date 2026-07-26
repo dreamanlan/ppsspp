@@ -32,10 +32,11 @@
 #include "Common/File/VFS/ZipFileReader.h"
 #include "Common/File/VFS/DirectoryReader.h"
 #include "Common/File/FileUtil.h"
-#include "Common/GraphicsContext.h"
+#include "Common/GPU/GraphicsContext.h"
 #include "Common/TimeUtil.h"
 #include "Common/StringUtils.h"
 #include "Common/Thread/ThreadManager.h"
+#include "Core/CmdLine.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/Core.h"
@@ -58,6 +59,13 @@
 #endif
 
 static HeadlessHost *g_headlessHost;
+
+static Path g_comparisonScreenshot;
+static Path g_screenshotSavePath;
+static double g_maxScreenshotError = 0.0;
+static std::string g_debugOutputBuffer;
+static bool g_writeFailureScreenshot = true;
+static bool g_writeDebugOutput = true;
 
 #if PPSSPP_PLATFORM(ANDROID)
 JNIEnv *getEnv() {
@@ -97,29 +105,14 @@ bool System_GetPropertyBool(SystemProperty prop) {
 void System_Notify(SystemNotification notification) {}
 void System_PostUIMessage(UIMessage message, std::string_view param) {}
 void System_RunOnMainThread(std::function<void()>) {}
-bool System_MakeRequest(SystemRequestType type, int requestId, const std::string &param1, const std::string &param2, int64_t param3, int64_t param4) {
-	switch (type) {
-	case SystemRequestType::SEND_DEBUG_OUTPUT:
-		if (g_headlessHost) {
-			g_headlessHost->SendDebugOutput(param1);
-			return true;
-		}
-		return false;
-	case SystemRequestType::SEND_DEBUG_SCREENSHOT:
-		if (g_headlessHost) {
-			g_headlessHost->SendDebugScreenshot((const u8 *)param1.data(), (uint32_t)(param1.size() / param3), param3);
-			return true;
-		}
-		return false;
-	default:
-		return false;
-	}
-}
+
+std::vector<std::string> System_GetCameraDeviceList() { return std::vector<std::string>(); }
 void System_AskForPermission(SystemPermission permission) {}
 PermissionStatus System_GetPermissionStatus(SystemPermission permission) { return PERMISSION_STATUS_GRANTED; }
 void System_AudioGetDebugStats(char *buf, size_t bufSize) { if (buf) buf[0] = '\0'; }
 void System_AudioClear() {}
 void System_AudioPushSamples(const s32 *audio, int numSamples, float volume) {}
+bool System_MakeRequest(SystemRequestType type, int requestId, const std::string &param1, const std::string &param2, int64_t param3, int64_t param4) { return false; }
 
 // TODO: To avoid having to define these here, these should probably be turned into system "requests".
 bool NativeSaveSecret(std::string_view nameOfSecret, std::string_view data) { return false; }
@@ -127,8 +120,7 @@ std::string NativeLoadSecret(std::string_view nameOfSecret) {
 	return "";
 }
 
-int printUsage(const char *progname, const char *reason)
-{
+int printUsage(const char *progname, const char *reason) {
 	if (reason != NULL)
 		fprintf(stderr, "Error: %s\n\n", reason);
 	fprintf(stderr, "PPSSPP Headless\n");
@@ -143,6 +135,7 @@ int printUsage(const char *progname, const char *reason)
 	fprintf(stderr, "  --graphics=BACKEND    use a different gpu backend\n");
 	fprintf(stderr, "                        options: gles, software, directx9, etc.\n");
 	fprintf(stderr, "  --screenshot=FILE     compare against a screenshot\n");
+	fprintf(stderr, "  --screenshot-save=FILE  save rendered screenshot to a BMP file\n");
 	fprintf(stderr, "  --max-mse=NUMBER      maximum allowed MSE error for screenshot\n");
 	fprintf(stderr, "  --timeout=SECONDS     abort test it if takes longer than SECONDS\n");
 
@@ -171,6 +164,98 @@ static HeadlessHost *getHost(GPUCore gpuCore) {
 	}
 }
 
+void FlushDebugOutput() {
+	if (!g_debugOutputBuffer.empty()) {
+		fwrite(g_debugOutputBuffer.data(), sizeof(char), g_debugOutputBuffer.length(), stdout);
+		g_debugOutputBuffer.clear();
+	}
+}
+
+void SetWriteDebugOutput(bool flag) {
+	g_writeDebugOutput = flag;
+}
+
+void SetComparisonScreenshot(const Path &filename, double maxError) {
+	g_comparisonScreenshot = filename;
+	g_maxScreenshotError = maxError;
+}
+void SetScreenshotSavePath(const Path &filename) {
+	g_screenshotSavePath = filename;
+}
+void SetWriteFailureScreenshot(bool flag) {
+	g_writeFailureScreenshot = flag;
+}
+
+void SendDebugOutput(std::string_view output) {
+	if (!g_writeDebugOutput)
+		return;
+#ifdef _WIN32
+	std::string str(output);
+	OutputDebugStringUTF8(str.c_str());
+#endif
+	if (output.find('\n') != output.npos) {
+		g_debugOutputBuffer += output;
+		FlushDebugOutput();
+	} else {
+		g_debugOutputBuffer += output;
+	}
+}
+
+bool System_SendDebugOutput(std::string_view data) {
+	SendDebugOutput(data);
+	return true;
+}
+
+void SendAndCollectOutput(const std::string &output) {
+	SendDebugOutput(output);
+	if (PSP_CoreParameter().collectDebugOutput) {
+		*PSP_CoreParameter().collectDebugOutput += output;
+	}
+}
+
+void System_SendDebugScreenshot(const uint8_t *data, int width, int height) {
+	const u8 *pixbuf = (const u8 *)data;
+	u32 w = width;
+	u32 h = height;
+
+	// We ignore the current framebuffer parameters and just grab the full screen.
+	const static u32 FRAME_STRIDE = 512;
+	const static u32 FRAME_WIDTH = 480;
+	const static u32 FRAME_HEIGHT = 272;
+
+	GPUDebugBuffer buffer;
+	gpu->GetCurrentFramebuffer(buffer, GPU_DBG_FRAMEBUF_DISPLAY);
+	const std::vector<u32> pixels = TranslateDebugBufferToCompare(&buffer, 512, 272);
+
+	// If a screenshot save path is set, save unconditionally.
+	if (!g_screenshotSavePath.empty()) {
+		ScreenshotComparer saver(pixels, FRAME_STRIDE, FRAME_WIDTH, FRAME_HEIGHT);
+		if (saver.SaveActualBitmap(g_screenshotSavePath))
+			SendAndCollectOutput("Screenshot saved to: " + g_screenshotSavePath.ToVisualString() + "\n");
+	}
+
+	// Only compare if we have a reference.
+	if (g_comparisonScreenshot.empty()) {
+		return;
+	}
+
+	ScreenshotComparer comparer(pixels, FRAME_STRIDE, FRAME_WIDTH, FRAME_HEIGHT);
+	double errors = comparer.Compare(g_comparisonScreenshot);
+	if (errors < 0) {
+		SendAndCollectOutput(comparer.GetError() + "\n");
+	}
+
+	if (errors > g_maxScreenshotError) {
+		SendAndCollectOutput(StringFromFormat("Screenshot MSE: %f\n", errors));
+	}
+
+	if (errors > g_maxScreenshotError && g_writeFailureScreenshot) {
+		if (comparer.SaveActualBitmap(Path("__testfailure.bmp")))
+			SendAndCollectOutput("Actual output written to: __testfailure.bmp\n");
+		comparer.SaveVisualComparisonPNG(Path("__testcompare.png"));
+	}
+}
+
 struct AutoTestOptions {
 	double timeout;
 	double maxScreenshotError;
@@ -180,6 +265,8 @@ struct AutoTestOptions {
 };
 
 bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const AutoTestOptions &opt) {
+	using namespace Draw;
+
 	// Kinda ugly, trying to guesstimate the test name from filename...
 	currentTestName = GetTestName(coreParameter.fileToStart);
 
@@ -191,15 +278,13 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const
 		// Shouldn't really happen anymore, the errors happen later in PSP_InitUpdate.
 		fprintf(stderr, "Failed to start '%s'.\n", coreParameter.fileToStart.c_str());
 		printf("TESTERROR\n");
-		TeamCityPrint("testIgnored name='%s' message='PRX/ELF missing'", currentTestName.c_str());
 		GitHubActionsPrint("error", "PRX/ELF missing for %s", currentTestName.c_str());
 		return false;
 	}
 
-	TeamCityPrint("testStarted name='%s' captureStandardOutput='true'", currentTestName.c_str());
-
-	if (opt.compare)
-		headlessHost->SetComparisonScreenshot(ExpectedScreenshotFromFilename(coreParameter.fileToStart), opt.maxScreenshotError);
+	if (opt.compare) {
+		SetComparisonScreenshot(ExpectedScreenshotFromFilename(coreParameter.fileToStart), opt.maxScreenshotError);
+	}
 
 	std::string error_string;
 	while (PSP_InitUpdate(&error_string) == BootState::Booting) {
@@ -207,9 +292,6 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const
 	}
 
 	if (!PSP_IsInited()) {
-		TeamCityPrint("%s", error_string.c_str());
-		TeamCityPrint("testFailed name='%s' message='Startup failed'", currentTestName.c_str());
-		TeamCityPrint("testFinished name='%s'", currentTestName.c_str());
 		GitHubActionsPrint("error", "Test init failed for %s", currentTestName.c_str());
 		return false;
 	}
@@ -229,13 +311,13 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const
 	bool passed = true;
 	double deadline = time_now_d() + opt.timeout;
 	coreState = coreParameter.startBreak ? CORE_STEPPING_CPU : CORE_RUNNING_CPU;
-	while (coreState == CORE_RUNNING_CPU || coreState == CORE_STEPPING_CPU)
-	{
+	while (coreState == CORE_RUNNING_CPU || coreState == CORE_STEPPING_CPU) {
 		int blockTicks = (int)usToCycles(1000000 / 10);
 		PSP_RunLoopFor(blockTicks);
 
 		// If we were rendering, this might be a nice time to do something about it.
 		if (coreState == CORE_NEXTFRAME) {
+			// INFO_LOG(Log::System, "(frame)");
 			coreState = CORE_RUNNING_CPU;
 			headlessHost->SwapBuffers();
 		}
@@ -252,8 +334,7 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const
 			if (!opt.bench) {
 				printf("%s", output.c_str());
 
-				System_SendDebugOutput("TIMEOUT\n");
-				TeamCityPrint("testFailed name='%s' message='Test timeout'", currentTestName.c_str());
+				SendDebugOutput("TIMEOUT\n");
 				GitHubActionsPrint("error", "Test timeout for %s", currentTestName.c_str());
 			}
 
@@ -266,11 +347,12 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const
 	}
 
 	if (draw) {
-		draw->BindFramebufferAsRenderTarget(nullptr, { Draw::RPAction::CLEAR, Draw::RPAction::DONT_CARE, Draw::RPAction::DONT_CARE }, "Backbuffer");
+		draw->BindFramebufferAsRenderTarget(nullptr, { Draw::RPAction::CLEAR, Draw::RPAction::DONT_CARE, Draw::RPAction::DONT_CARE }, "BackBuffer");
 		// Vulkan may get angry if we don't do a final present.
 		if (gpu) {
 			gpu->SetCurFramebufferDirty(true);
 			gpu->PrepareCopyDisplayToOutput(g_Config.GetDisplayLayoutConfig(DeviceOrientation::Landscape));
+			draw->BindFramebufferAsRenderTarget(nullptr, {RPAction::CLEAR, RPAction::CLEAR, RPAction::CLEAR}, "BackBuffer");
 			gpu->CopyDisplayToOutput(g_Config.GetDisplayLayoutConfig(DeviceOrientation::Landscape));
 		}
 
@@ -279,13 +361,13 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const
 
 	PSP_Shutdown(true);
 
-	if (!opt.bench)
-		headlessHost->FlushDebugOutput();
+	if (!opt.bench) {
+		FlushDebugOutput();
+	}
 
-	if (opt.compare && passed)
+	if (opt.compare && passed) {
 		passed = CompareOutput(coreParameter.fileToStart, output, opt.verbose);
-
-	TeamCityPrint("testFinished name='%s'", currentTestName.c_str());
+	}
 
 	return passed;
 }
@@ -329,7 +411,7 @@ static void AddRecursively(std::vector<std::string> *tests, Path actualPath) {
 	}
 }
 
-static void AddTestsByPath(std::vector<std::string> *tests, std::string_view path) {
+static void AddToTestsByPath(std::vector<std::string> *tests, std::string_view path) {
 	if (endsWith(path, "/...")) {
 		path = path.substr(0, path.size() - 4);
 		// Recurse for tests
@@ -342,8 +424,7 @@ static void AddTestsByPath(std::vector<std::string> *tests, std::string_view pat
 	}
 }
 
-int main(int argc, const char* argv[])
-{
+int main(int argc, const char* argv[]) {
 	PROFILE_INIT();
 	TimeInit();
 #if PPSSPP_PLATFORM(WINDOWS)
@@ -361,8 +442,22 @@ int main(int argc, const char* argv[])
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
 #endif
 
+	CommandLineOptions cmdLineOptions;
+	CommandLineParseResult parseResult = cmdLineOptions.Parse(argc, argv, CmdLineMode::Headless);
+	switch (parseResult) {
+	case CommandLineParseResult::Exit:
+		return 0;
+	case CommandLineParseResult::Error:
+		return 1;
+	case CommandLineParseResult::Continue:
+		break;
+	}
+
 	AutoTestOptions testOptions{};
-	testOptions.timeout = std::numeric_limits<double>::infinity();
+	testOptions.compare = cmdLineOptions.compare.value_or(false);
+	testOptions.bench = cmdLineOptions.bench.value_or(false);
+	testOptions.timeout = cmdLineOptions.timeout.value_or(std::numeric_limits<double>::infinity());
+
 	bool fullLog = false;
 	const char *stateToLoad = 0;
 	GPUCore gpuCore = GPUCORE_SOFTWARE;
@@ -373,76 +468,33 @@ int main(int argc, const char* argv[])
 
 	std::vector<std::string> testFilenames;
 	std::vector<std::string> ignoredTests;
-	const char *mountIso = nullptr;
-	const char *mountRoot = nullptr;
-	const char *screenshotFilename = nullptr;
+	std::string mountIso;
+	std::string mountRoot;
 
-	for (int i = 1; i < argc; i++)
-	{
-		if (!strcmp(argv[i], "-m") || !strcmp(argv[i], "--mount"))
-		{
+	if (cmdLineOptions.cpuCore.has_value()) {
+		cpuCore = cmdLineOptions.cpuCore.value();
+	}
+
+	if (cmdLineOptions.root.has_value()) {
+		mountRoot = cmdLineOptions.root.value().c_str();
+	}
+
+	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "-m") || !strcmp(argv[i], "--mount")) {
 			if (++i >= argc)
 				return printUsage(argv[0], "Missing argument after -m");
 			mountIso = argv[i];
-		}
-		else if (!strcmp(argv[i], "-r") || !strcmp(argv[i], "--root"))
-		{
-			if (++i >= argc)
-				return printUsage(argv[0], "Missing argument after -r");
-			mountRoot = argv[i];
 		}
 		else if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--log"))
 			fullLog = true;
 		else if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--odslog"))
 			outputDebugStringLog = true;
-		else if (!strcmp(argv[i], "-i"))
-			cpuCore = CPUCore::INTERPRETER;
-		else if (!strcmp(argv[i], "-j"))
-			cpuCore = CPUCore::JIT;
-		else if (!strcmp(argv[i], "--jit-ir"))
-			cpuCore = CPUCore::JIT_IR;
-		else if (!strcmp(argv[i], "--ir"))
-			cpuCore = CPUCore::IR_INTERPRETER;
-		else if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--compare"))
-			testOptions.compare = true;
-		else if (!strcmp(argv[i], "--bench"))
-			testOptions.bench = true;
 		else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose"))
 			testOptions.verbose = true;
-		else if (!strcmp(argv[i], "--old-atrac"))
-			oldAtrac = true;
-		else if (!strncmp(argv[i], "--graphics=", strlen("--graphics=")) && strlen(argv[i]) > strlen("--graphics="))
-		{
-			const char *gpuName = argv[i] + strlen("--graphics=");
-			if (!strcasecmp(gpuName, "gles"))
-				gpuCore = GPUCORE_GLES;
-			// There used to be a separate "null" rendering core - just use software.
-			else if (!strcasecmp(gpuName, "software") || !strcasecmp(gpuName, "null"))
-				gpuCore = GPUCORE_SOFTWARE;
-			else if (!strcasecmp(gpuName, "directx11"))
-				gpuCore = GPUCORE_DIRECTX11;
-			else if (!strcasecmp(gpuName, "vulkan"))
-				gpuCore = GPUCORE_VULKAN;
-			else
-				return printUsage(argv[0], "Unknown gpu backend specified after --graphics=. Allowed: software, directx9, directx11, vulkan, gles, null.");
-		}
-		// Default to GLES if no value selected.
-		else if (!strcmp(argv[i], "--graphics")) {
-#if PPSSPP_API(ANY_GL)
-			gpuCore = GPUCORE_GLES;
-#else
-			gpuCore = GPUCORE_DIRECTX11;
-#endif
-		} else if (!strncmp(argv[i], "--screenshot=", strlen("--screenshot=")) && strlen(argv[i]) > strlen("--screenshot="))
-			screenshotFilename = argv[i] + strlen("--screenshot=");
-		else if (!strncmp(argv[i], "--timeout=", strlen("--timeout=")) && strlen(argv[i]) > strlen("--timeout="))
-			testOptions.timeout = strtod(argv[i] + strlen("--timeout="), nullptr);
 		else if (!strncmp(argv[i], "--max-mse=", strlen("--max-mse=")) && strlen(argv[i]) > strlen("--max-mse="))
 			testOptions.maxScreenshotError = strtod(argv[i] + strlen("--max-mse="), nullptr);
 		else if (!strncmp(argv[i], "--debugger=", strlen("--debugger=")) && strlen(argv[i]) > strlen("--debugger="))
 			debuggerPort = (int)strtoul(argv[i] + strlen("--debugger="), NULL, 10);
-		else if (!strcmp(argv[i], "--teamcity"))
-			teamCityMode = true;
 		else if (!strncmp(argv[i], "--state=", strlen("--state=")) && strlen(argv[i]) > strlen("--state="))
 			stateToLoad = argv[i] + strlen("--state=");
 		else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h"))
@@ -451,10 +503,13 @@ int main(int argc, const char* argv[])
 			if (++i >= argc)
 				return printUsage(argv[0], "Missing argument after --ignore");
 			ignoredTests.push_back(argv[i]);
-		} else {
-			AddTestsByPath(&testFilenames, argv[i]);
 		}
 	}
+
+	for (const std::string &filename : cmdLineOptions.bootFilenames) {
+		AddToTestsByPath(&testFilenames, filename);
+	}
+
 
 	if (testFilenames.size() == 1 && testFilenames[0][0] == '@')
 		testFilenames = ReadFromListFile(testFilenames[0].substr(1));
@@ -485,6 +540,8 @@ int main(int argc, const char* argv[])
 		g_logManager.EnableOutput(LogOutput::Printf);
 	}
 
+	cmdLineOptions.ApplyToConfig();
+
 	// Needs to be after log so we don't interfere with test output.
 	g_threadManager.Init(cpu_info.num_cores, cpu_info.logical_cpu_count);
 
@@ -500,18 +557,18 @@ int main(int argc, const char* argv[])
 	coreParameter.gpuCore = glWorking ? gpuCore : GPUCORE_SOFTWARE;
 	coreParameter.graphicsContext = graphicsContext;
 	coreParameter.enableSound = false;
-	coreParameter.mountIso = mountIso ? Path(mountIso) : Path();
-	coreParameter.mountRoot = mountRoot ? Path(mountRoot) : Path();
+	coreParameter.mountIso = mountIso.empty() ? Path() : Path(mountIso);
+	coreParameter.mountRoot = mountRoot.empty() ? Path() : Path(mountRoot);
 	coreParameter.startBreak = false;
 	coreParameter.headLess = true;
-	coreParameter.renderScaleFactor = 1;
-	coreParameter.renderWidth = 480;
-	coreParameter.renderHeight = 272;
-	coreParameter.pixelWidth = 480;
-	coreParameter.pixelHeight = 272;
+	coreParameter.renderScaleFactor = cmdLineOptions.resolutionScale.value_or(1);
+	coreParameter.renderWidth = 480 * coreParameter.renderScaleFactor;
+	coreParameter.renderHeight = 272 * coreParameter.renderScaleFactor;
+	coreParameter.pixelWidth = 480 * coreParameter.renderScaleFactor;
+	coreParameter.pixelHeight = 272 * coreParameter.renderScaleFactor;
 	coreParameter.fastForward = true;
 
-	g_Config.RestoreDefaults(RestoreSettingsBits::SETTINGS | RestoreSettingsBits::CONTROLS, true);
+	g_Config.RestoreDefaults(RestoreSettingsBits::SETTINGS | RestoreSettingsBits::CONTROLS | RestoreSettingsBits::RECENT, true);
 
 	// Somehow this affects the test execution of pspautotests/tests/gpu/vertices/morph.prx, even though
 	// we actually set the cpu core in CoreParameter above. Probably because we end up using the JIT vs non-JIT
@@ -539,9 +596,8 @@ int main(int argc, const char* argv[])
 	g_Config.iDateFormat = PSP_SYSTEMPARAM_DATE_FORMAT_DDMMYYYY;
 	g_Config.iButtonPreference = PSP_SYSTEMPARAM_BUTTON_CROSS;
 	g_Config.iLockParentalLevel = 9;
-	g_Config.iInternalResolution = 1;
+	g_Config.iInternalResolution = coreParameter.renderScaleFactor;
 	g_Config.bEnableLogging = (fullLog || outputDebugStringLog);
-	g_Config.bSoftwareSkinning = true;
 	g_Config.bVertexDecoderJit = true;
 	g_Config.bSoftwareRendering = coreParameter.gpuCore == GPUCORE_SOFTWARE;
 	g_Config.bSoftwareRenderingJit = true;
@@ -558,8 +614,6 @@ int main(int argc, const char* argv[])
 	g_Config.internalDataDirectory.clear();
 	g_Config.bUseOldAtrac = oldAtrac;
 	g_Config.iForceEnableHLE = 0xFFFFFFFF;  // Run all modules as HLE. We don't have anything to load in this context.
-
-	// g_Config.bUseOldAtrac = true;
 
 	Path exePath = File::GetExeDirectory();
 	g_Config.flash0Directory = exePath / "assets/flash0";
@@ -589,10 +643,12 @@ int main(int argc, const char* argv[])
 		nextPath = nextPath.NavigateUp();
 	}
 
-	if (screenshotFilename)
-		headlessHost->SetComparisonScreenshot(Path(std::string(screenshotFilename)), testOptions.maxScreenshotError);
-	headlessHost->SetWriteFailureScreenshot(!teamCityMode && !getenv("GITHUB_ACTIONS") && !testOptions.bench);
-	headlessHost->SetWriteDebugOutput(!testOptions.compare && !testOptions.bench);
+	if (cmdLineOptions.screenshotFilename.has_value())
+		SetComparisonScreenshot(Path(std::string(cmdLineOptions.screenshotFilename.value())), testOptions.maxScreenshotError);
+	if (cmdLineOptions.screenshotFilenameSave.has_value())
+		SetScreenshotSavePath(Path(std::string(cmdLineOptions.screenshotFilenameSave.value())));
+	SetWriteFailureScreenshot(!getenv("GITHUB_ACTIONS") && !testOptions.bench);
+	SetWriteDebugOutput(!testOptions.compare && !testOptions.bench);
 
 #if PPSSPP_PLATFORM(ANDROID)
 	// For some reason the debugger installs it with this name?
@@ -617,13 +673,16 @@ int main(int argc, const char* argv[])
 		StartWebServer(WebServerFlags::DEBUGGER);
 	}
 
-	if (stateToLoad != NULL)
+	if (stateToLoad) {
 		SaveState::Load(Path(stateToLoad), -1);
+	}
+
+	// Run the tests (or frame dumps), one after another.
 
 	std::vector<std::string> failedTests;
 	std::vector<std::string> passedTests;
-	for (size_t i = 0; i < testFilenames.size(); ++i)
-	{
+
+	for (size_t i = 0; i < testFilenames.size(); ++i) {
 		coreParameter.fileToStart = Path(testFilenames[i]);
 		if (testOptions.compare)
 			printf("%s:\n", coreParameter.fileToStart.c_str());
@@ -635,9 +694,9 @@ int main(int argc, const char* argv[])
 			for (int i = 0; i < 100; ++i) {
 				RunAutoTest(headlessHost, coreParameter, testOptions);
 				runs++;
-
-				if (time_now_d() > deadline)
+				if (time_now_d() > deadline) {
 					break;
+				}
 			}
 			double et = time_now_d();
 
@@ -649,9 +708,9 @@ int main(int argc, const char* argv[])
 			if (passed) {
 				passedTests.push_back(testName);
 				printf("  %s - passed!\n", testName.c_str());
-			}
-			else
+			} else {
 				failedTests.push_back(testName);
+			}
 		}
 	}
 
@@ -684,7 +743,7 @@ int main(int argc, const char* argv[])
 
 	g_threadManager.Teardown();
 
-	if (!failedTests.empty() && !teamCityMode)
+	if (!failedTests.empty())
 		return 1;
 	return 0;
 }
