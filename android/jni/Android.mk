@@ -127,7 +127,8 @@ NATIVE_FILES :=\
   $(SRC)/Common/GPU/OpenGL/GLRenderManager.cpp \
   $(SRC)/Common/GPU/OpenGL/GLQueueRunner.cpp \
   $(SRC)/Common/GPU/OpenGL/GLProfiler.cpp \
-  $(SRC)/Common/GPU/OpenGL/DataFormatGL.cpp
+  $(SRC)/Common/GPU/OpenGL/DataFormatGL.cpp \
+  $(SRC)/Common/GPU/OpenGL/OpenGLGraphicsContext.cpp
 
 VULKAN_FILES := \
   $(SRC)/Common/GPU/Vulkan/thin3d_vulkan.cpp \
@@ -916,7 +917,6 @@ LOCAL_STATIC_LIBRARIES += ppsspp_common ppsspp_core libarmips libzstd
 LOCAL_MODULE := ppsspp_jni
 LOCAL_SRC_FILES := \
   $(SRC)/android/jni/app-android.cpp \
-  $(SRC)/android/jni/AndroidJavaGLContext.cpp \
   $(SRC)/android/jni/AndroidAudio.cpp \
   $(SRC)/android/jni/OpenSLContext.cpp \
   $(SRC)/UI/ImDebugger/ImDebugger.cpp \
@@ -1042,6 +1042,8 @@ ifeq ($(UNITTEST),1)
     $(SRC)/unittest/TestThreadManager.cpp \
     $(SRC)/unittest/TestVertexJit.cpp \
     $(SRC)/unittest/TestVFS.cpp \
+		$(SRC)/unittest/TestLzrc.cpp \
+    $(SRC)/unittest/TestZipSlip.cpp \
     $(TESTARMEMITTER_FILE) \
     $(SRC)/unittest/UnitTest.cpp
 

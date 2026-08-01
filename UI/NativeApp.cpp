@@ -191,7 +191,6 @@ static Draw::DrawContext *g_draw;
 static Draw::Pipeline *colorPipeline;
 static Draw::Pipeline *texColorPipeline;
 static UIContext *uiContext;
-static int g_restartGraphics;
 static bool g_windowHidden = false;
 static std::string g_achievementsHostOverride;
 static std::string g_savedAchievementsHost;
@@ -579,10 +578,12 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 	// Apply parsed command line options to config.
 	cmdLineOptions.ApplyToConfig();
 
-	const char *fileToLog = nullptr;
-
 	bool gotBootFilename = false;
 	boot_filename.clear();
+
+	if (boot_filename.empty() && cmdLineOptions.bootVSH.has_value() && cmdLineOptions.bootVSH.value()) {
+		boot_filename = g_Config.flash0Directory / "vsh/module/vshmain.prx";
+	}
 
 	// Parse command line
 	LogLevel logLevel = LogLevel::LINFO;
@@ -596,6 +597,7 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 		setLogLevel(cmdLineOptions.logLevel.value());
 	}
 
+	std::string fileToLog;
 	for (int i = 1; i < argc; i++) {
 		if (argv[i][0] == '-') {
 #if defined(__APPLE__)
@@ -672,7 +674,7 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 		}
 	}
 
-	if (fileToLog) {
+	if (!fileToLog.empty()) {
 		// Start logging immediately.
 		g_logManager.EnableOutput(LogOutput::File);
 		g_logManager.SetFileLogPath(Path(fileToLog));
@@ -1021,18 +1023,6 @@ void NativeFrame(GraphicsContext *graphicsContext) {
 		}
 	}
 
-	// This can only be accessed from Windows currently, and causes linking errors with headless etc.
-	if (g_restartGraphics == 1) {
-		// Used for debugging only.
-		NativeShutdownGraphics(graphicsContext);
-		g_restartGraphics++;
-		return;
-	}
-	else if (g_restartGraphics == 2) {
-		NativeInitGraphics(graphicsContext);
-		g_restartGraphics = 0;
-	}
-
 	double startTime = time_now_d();
 
 	ProcessWheelRelease(NKCODE_EXT_MOUSEWHEEL_UP, startTime, false);
@@ -1207,7 +1197,6 @@ void NativeFrame(GraphicsContext *graphicsContext) {
 
 bool HandleGlobalMessage(UIMessage message, const std::string &value) {
 	if (message == UIMessage::RESTART_GRAPHICS) {
-		g_restartGraphics = 1;
 		return true;
 	} else if (message == UIMessage::SAVESTATE_DISPLAY_SLOT) {
 		auto sy = GetI18NCategory(I18NCat::SYSTEM);

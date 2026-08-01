@@ -220,6 +220,10 @@ if(USE_SYSTEM_RAPIDJSON)
 	add_compile_definitions(SYSTEM_RAPIDJSON)
 endif()
 
+if(USE_SYSTEM_MINIUPNPC)
+	add_compile_definitions(USE_SYSTEM_MINIUPNPC)
+endif()
+
 if(WEBOS)
 	set(USING_X11_VULKAN OFF)
 	set(USING_GLES2 ON)
@@ -909,8 +913,6 @@ endif()
 if(ANDROID)
 	list(APPEND AndroidJniSource
 		android/jni/app-android.cpp
-		android/jni/AndroidJavaGLContext.cpp
-		android/jni/AndroidJavaGLContext.h
 		android/jni/AndroidAudio.cpp
 		android/jni/AndroidAudio.h
 		android/jni/OpenSLContext.cpp
@@ -1387,6 +1389,8 @@ if(UNITTEST)
 		unittest/TestX64Emitter.cpp
 		unittest/TestVertexJit.cpp
 		unittest/TestVFS.cpp
+		unittest/TestZipSlip.cpp
+		unittest/TestLzrc.cpp
 		unittest/TestRiscVEmitter.cpp
 		unittest/TestLoongArch64Emitter.cpp
 		unittest/TestSoftwareGPUJit.cpp
