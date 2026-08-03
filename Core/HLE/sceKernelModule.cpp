@@ -358,7 +358,9 @@ void PSPModule::GetLongInfo(char *ptr, int bufSize) const {
 	StringWriter w(ptr, bufSize);
 	w.F("%s: Version %d.%d. %d segments", nm.name, nm.version[1], nm.version[0], nm.nsegment).endl();
 	w.F("Memory block: %08x (%08x/%d bytes)", memoryBlockAddr, memoryBlockSize, memoryBlockSize).endl();
-	for (int i = 0; i < (int)nm.nsegment; i++) {
+	// nm.nsegment is attacker-controlled (up to u32 max) but segmentaddr/
+	// segmentsize are fixed 4-entry arrays; clamp like the other consumers.
+	for (int i = 0; i < (int)nm.nsegment && i < 4; i++) {
 		w.F("  %08x (%08x bytes)\n", nm.segmentaddr[i], nm.segmentsize[i]);
 	}
 	w.F("Text: %08x (%08x bytes)\n", nm.text_addr, nm.text_size);
@@ -835,8 +837,8 @@ static bool KernelImportModuleFuncs(PSPModule *module, u32 *firstImportStubAddr,
 		entryPos += entry->size;
 
 		const char *modulename;
-		if (Memory::IsValidAddress(entry->name)) {
-			modulename = Memory::GetCharPointer(entry->name);
+		if (Memory::IsValidNullTerminatedString(entry->name)) {
+			modulename = Memory::GetCharPointerUnchecked(entry->name);
 		} else {
 			modulename = "(invalidname)";
 			needReport = true;
@@ -932,7 +934,9 @@ static bool KernelImportModuleFuncs(PSPModule *module, u32 *firstImportStubAddr,
 
 			char temp[512];
 			const char *modulename;
-			if (Memory::IsValidAddress(entry->name)) {
+			// Check for NUL termination within the mapped region so %s below
+			// can't read past guest RAM on a crafted, unterminated name.
+			if (Memory::IsValidNullTerminatedString(entry->name)) {
 				modulename = Memory::GetCharPointerUnchecked(entry->name);
 			} else {
 				modulename = "(invalidname)";
