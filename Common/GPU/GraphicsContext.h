@@ -6,6 +6,16 @@
 #include "Common/GPU/thin3d.h"
 #include "Common/TimeUtil.h"
 
+struct WindowDesc {
+	WindowSystem winsys{};
+	void *data1 = nullptr;
+	void *data2 = nullptr;
+
+	bool Valid() const {
+		return winsys != WindowSystem::WINDOWSYSTEM_UNINITIALIZED && data2;  // Not all platforms use data1, so don't check it.
+	}
+};
+
 // Init is done differently on each platform, and done close to the creation, so it's
 // expected to be implemented by subclasses.
 class GraphicsContext {
@@ -37,8 +47,12 @@ public:
 
 	// Called from the render thread from threaded backends.
 	virtual void ThreadStart() {}
-	virtual bool ThreadFrame(bool waitIfEmpty) { return true; }   // waitIfEmpty should normally be true, except in exit scenarios.
+	virtual bool ThreadFrame() { return true; }   // Returns false when it's time to exit the loop.
 	virtual void ThreadEnd() {}
+
+	// When this is called, the emulation thread has stopped producing frames completely.
+	// Called from the emu thread, so be ready for that.
+	virtual void NotifyEmuThreadExit() {}
 
 	// Useful for checks that need to be performed every frame.
 	// Should strive to get rid of these.
@@ -46,31 +60,14 @@ public:
 
 	// TODO: Store in a protected variable?
 	virtual Draw::DrawContext *GetDrawContext() = 0;
+};
 
-	void ThreadFrameUntilCondition(std::function<bool()> conditionStopped) {
-		_dbg_assert_(NeedsSeparateEmuThread());
-		BeginShutdownSurface();
-		bool exitOnEmpty = false;
-
-		INFO_LOG(Log::System, "Executing graphicsContext->ThreadFrame to clear buffers");
-		while (true) {
-			// When EmuThread is done, we know there are no more frames coming. When that happens,
-			// we'll bail.
-			if (!exitOnEmpty && conditionStopped()) {
-				INFO_LOG(Log::System, "Found out that the thread is done.");
-				exitOnEmpty = true;
-			}
-
-			const bool retval = ThreadFrame(false);
-			if (!retval && exitOnEmpty) {
-				INFO_LOG(Log::System, "ThreadFrame returned false and emu thread is done, breaking.");
-				break;
-			} else {
-				sleep_ms(5, "exit poll");
-			}
-		}
-	}
-
-protected:
-	virtual void BeginShutdownSurface() {}  // This is currently only used on Android.
+// This is used by the headless build, for the case of software rendering where we really don't need any context,
+// unlike the standalone build where we do need a context anyway for UI and stuff.
+class NullGraphicsContext : public GraphicsContext {
+public:
+	NullGraphicsContext() {}
+	Draw::DrawContext *GetDrawContext() override { return nullptr; }
+	void Resize() override {}
+	bool NeedsSeparateEmuThread() const override { return false; }
 };

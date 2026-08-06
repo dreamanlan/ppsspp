@@ -52,6 +52,7 @@ SDLJoystick *joystick = NULL;
 
 #include "Common/GPU/GraphicsContext.h"
 #include "Common/GPU/Vulkan/VulkanLoader.h"
+#include "Common/GPU/Vulkan/VulkanContext.h"
 #include "Common/GPU/Vulkan/VulkanGraphicsContext.h"
 #include "Common/TimeUtil.h"
 #include "Common/Input/InputState.h"
@@ -66,6 +67,7 @@ SDLJoystick *joystick = NULL;
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "SDLGLGraphicsContext.h"
+#include "SDLUtil.h"
 
 #include <SDL3/SDL_vulkan.h>
 
@@ -606,21 +608,15 @@ static void StopSDLAudioDevice() {
 }
 
 static void UpdateScreenDPI(SDL_Window *window) {
-	int drawable_width, window_width, window_height;
-	SDL_GetWindowSize(window, &window_width, &window_height);
-
-	if (g_Config.iGPUBackend == (int)GPUBackend::OPENGL)
-		SDL_GetWindowSizeInPixels(window, &drawable_width, NULL);
-	else if (g_Config.iGPUBackend == (int)GPUBackend::VULKAN)
-		SDL_GetWindowSizeInPixels(window, &drawable_width, NULL);
-	else {
-		// If we add SDL support for more platforms, we'll end up here.
-		g_DesktopDPI = 1.0f;
-		return;
+	// SDL3's window display scale already accounts for the display's content
+	// scale and the window's pixel density, so we don't need to (incorrectly)
+	// derive it ourselves from the ratio of pixel size to window size.
+	float scale = SDL_GetWindowDisplayScale(window);
+	if (scale <= 0.0f) {
+		WARN_LOG(Log::System, "SDL_GetWindowDisplayScale failed: %s", SDL_GetError());
+		scale = 1.0f;
 	}
-	// Round up a little otherwise there would be a gap sometimes
-	// in fractional scaling
-	g_DesktopDPI = ((float) drawable_width + 1.0f) / window_width;
+	g_DesktopDPI = scale;
 }
 
 // Simple implementations of System functions
@@ -1243,29 +1239,6 @@ void System_Notify(SystemNotification notification) {
 bool System_SendDebugOutput(std::string_view data) { return false; }
 void System_SendDebugScreenshot(const uint8_t *data, int width, int height) {}
 
-// returns -1 on failure
-static int parseInt(const char *str) {
-	int val;
-	int retval = sscanf(str, "%d", &val);
-	fprintf(stderr, "%i = scanf %s\n", retval, str);
-	if (retval != 1) {
-		return -1;
-	} else {
-		return val;
-	}
-}
-
-static float parseFloat(const char *str) {
-	float val;
-	int retval = sscanf(str, "%f", &val);
-	fprintf(stderr, "%i = sscanf %s\n", retval, str);
-	if (retval != 1) {
-		return -1.0f;
-	} else {
-		return val;
-	}
-}
-
 void UpdateWindowState(SDL_Window *window) {
 	SDL_SetWindowTitle(window, g_windowState.title.c_str());
 	if (g_windowState.applyFullScreenNextFrame) {
@@ -1333,25 +1306,21 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 	case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
 		{
 			INFO_LOG(Log::UI, "SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: %d x %d", event.window.data1, event.window.data2);
-			int new_width = event.window.data1;
-			int new_height = event.window.data2;
+			const int new_width = event.window.data1;
+			const int new_height = event.window.data2;
 
 			Native_NotifyWindowHidden(false);
 
 			Uint64 window_flags = SDL_GetWindowFlags(window);
 			bool fullscreen = (window_flags & SDL_WINDOW_FULLSCREEN) != 0;
 
-			// !!! This is the wrong thread!
-			// This one calls NativeResized if the size changed.
-			Native_UpdateScreenScale(new_width, new_height, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor));
+			System_RunOnMainThread([new_width, new_height]() {
+				Native_UpdateScreenScale(new_width, new_height, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor));
+			});
 
 			// Set variable here in case fullscreen was toggled by hotkey
 			if (g_Config.bFullScreen != fullscreen) {
 				g_Config.bFullScreen = fullscreen;
-			} else {
-				// It is possible for the monitor to change DPI, so recalculate
-				// DPI on each resize event.
-				UpdateScreenDPI(window);
 			}
 
 			if (!g_Config.bFullScreen) {
@@ -1367,6 +1336,21 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			} else if (lastUIState != UISTATE_INGAME || !fullscreen) {
 				SDL_ShowCursor();
 			}
+			break;
+		}
+	case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
+		{
+			// The window moved to a display with a different content scale, or the
+			// user changed the display's scale setting. Recompute the DPI and
+			// re-derive the screen scale from the window's current pixel size.
+			UpdateScreenDPI(window);
+
+			int pixelWidth = 0;
+			int pixelHeight = 0;
+			SDL_GetWindowSizeInPixels(window, &pixelWidth, &pixelHeight);
+			System_RunOnMainThread([pixelWidth, pixelHeight]() {
+				Native_UpdateScreenScale(pixelWidth, pixelHeight, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor));
+			});
 			break;
 		}
 	case SDL_EVENT_WINDOW_MOVED:
@@ -1484,7 +1468,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			TouchInput input{};
 			input.id = event.tfinger.fingerID;
 			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale_x;
-			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_x;
+			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_y;
 			input.flags = TouchInputFlags::MOVE;
 			input.timestamp = event.tfinger.timestamp;
 			NativeTouch(input);
@@ -1497,7 +1481,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			TouchInput input{};
 			input.id = event.tfinger.fingerID;
 			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale_x;
-			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_x;
+			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_y;
 			input.flags = TouchInputFlags::DOWN;
 			input.timestamp = event.tfinger.timestamp;
 			NativeTouch(input);
@@ -1516,7 +1500,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			TouchInput input{};
 			input.id = event.tfinger.fingerID;
 			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale_x;
-			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_x;
+			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_y;
 			input.flags = TouchInputFlags::UP;
 			input.timestamp = event.tfinger.timestamp;
 			NativeTouch(input);
@@ -1540,7 +1524,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 				// - Native_UpdateScreenScale expects pixels, so in a way "96 DPI" points
 				// - The UI code expects motion events in "logical DPI" points
 				float mx = event.button.x * g_DesktopDPI * g_display.dpi_scale_x;
-				float my = event.button.y * g_DesktopDPI * g_display.dpi_scale_x;
+				float my = event.button.y * g_DesktopDPI * g_display.dpi_scale_y;
 				inputTracker->mouseDown |= 1;
 				TouchInput input{};
 				input.x = mx;
@@ -1556,7 +1540,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 		case SDL_BUTTON_RIGHT:
 			{
 				float mx = event.button.x * g_DesktopDPI * g_display.dpi_scale_x;
-				float my = event.button.y * g_DesktopDPI * g_display.dpi_scale_x;
+				float my = event.button.y * g_DesktopDPI * g_display.dpi_scale_y;
 				inputTracker->mouseDown |= 2;
 				TouchInput input{};
 				input.x = mx;
@@ -1612,7 +1596,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 	case SDL_EVENT_MOUSE_MOTION:
 		{
 			float mx = event.motion.x * g_DesktopDPI * g_display.dpi_scale_x;
-			float my = event.motion.y * g_DesktopDPI * g_display.dpi_scale_x;
+			float my = event.motion.y * g_DesktopDPI * g_display.dpi_scale_y;
 			TouchInput input{};
 			input.x = mx;
 			input.y = my;
@@ -1630,7 +1614,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 		case SDL_BUTTON_LEFT:
 			{
 				float mx = event.button.x * g_DesktopDPI * g_display.dpi_scale_x;
-				float my = event.button.y * g_DesktopDPI * g_display.dpi_scale_x;
+				float my = event.button.y * g_DesktopDPI * g_display.dpi_scale_y;
 				inputTracker->mouseDown &= ~1;
 				TouchInput input{};
 				input.x = mx;
@@ -1645,7 +1629,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 		case SDL_BUTTON_RIGHT:
 			{
 				float mx = event.button.x * g_DesktopDPI * g_display.dpi_scale_x;
-				float my = event.button.y * g_DesktopDPI * g_display.dpi_scale_x;
+				float my = event.button.y * g_DesktopDPI * g_display.dpi_scale_y;
 				inputTracker->mouseDown &= ~2;
 				// Right button only emits mouse move events. This is weird,
 				// but consistent with Windows. Needs cleanup.
@@ -1743,56 +1727,6 @@ void UpdateSDLCursor() {
 #endif
 }
 
-bool DetermineVulkanWindowSystem(SDL_Window *window, WindowSystem *windowSystem, void **data1, void **data2) {
-	_dbg_assert_(window);
-	SDL_PropertiesID windowProps = SDL_GetWindowProperties(window);
-	void *x11Display = SDL_GetPointerProperty(windowProps, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
-	if (x11Display != nullptr) {
-		intptr_t x11Window = (intptr_t)SDL_GetNumberProperty(windowProps, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
-#if defined(VK_USE_PLATFORM_XLIB_KHR)
-		*windowSystem = WINDOWSYSTEM_XLIB;
-		*data1 = x11Display;
-		*data2 = (void *)x11Window;
-#elif defined(VK_USE_PLATFORM_XCB_KHR)
-		*windowSystem = WINDOWSYSTEM_XCB;
-		*data1 = (void *)XGetXCBConnection((Display *)x11Display);
-		*data2 = (void *)x11Window;
-#endif
-		return true;
-	}
-#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
-	void *waylandDisplay = SDL_GetPointerProperty(windowProps, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, nullptr);
-	void *waylandSurface = SDL_GetPointerProperty(windowProps, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, nullptr);
-	if (waylandDisplay != nullptr && waylandSurface != nullptr) {
-		*windowSystem = WINDOWSYSTEM_WAYLAND;
-		*data1 = waylandDisplay;
-		*data2 = waylandSurface;
-		return true;
-	}
-#elif defined(VK_USE_PLATFORM_METAL_EXT)
-#if PPSSPP_PLATFORM(MAC)
-	void *cocoaWindow = SDL_GetPointerProperty(windowProps, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
-	if (cocoaWindow != nullptr) {
-		*windowSystem = WINDOWSYSTEM_METAL_EXT;
-		*data1 = makeWindowMetalCompatible(cocoaWindow);
-		*data2 = nullptr;
-		return true;
-	}
-#else
-	// This path is currently not used as we do not use SDL on iOS, but it is here for completeness.
-	void *uikitWindow = SDL_GetPointerProperty(windowProps, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr);
-	if (uikitWindow != nullptr) {
-		*windowSystem = WINDOWSYSTEM_METAL_EXT;
-		*data1 = makeWindowMetalCompatible(uikitWindow);
-		*data2 = nullptr;
-		return true;
-	}
-#endif
-#endif  // VK_USE_PLATFORM_METAL_EXT
-	fprintf(stderr, "Unable to determine Vulkan window system from SDL3 window properties\n");
-	return false;
-}
-
 #ifdef _WIN32
 #undef main
 #endif
@@ -1849,43 +1783,12 @@ int main(int argc, char *argv[]) {
 
 	const int compiled = SDL_VERSION;
 	const int linked = SDL_GetVersion();
-	int set_xres = -1;
-	int set_yres = -1;
-	float set_dpi = 0.0f;
-	float set_scale = 1.0f;
-
-	// Produce a new set of arguments with the ones we skip.
-	int remain_argc = 1;
-	const char *remain_argv[256] = { argv[0] };
-	constexpr int remain_argv_cap = (int)(sizeof(remain_argv) / sizeof(remain_argv[0]));
+	int set_xres = cmdLineOptions.xres.value_or(-1);
+	int set_yres = cmdLineOptions.yres.value_or(-1);
+	float set_dpi = (float)cmdLineOptions.dpi.value_or(0.0);
+	float set_scale = (float)cmdLineOptions.scale.value_or(1.0);
 
 	Uint32 mode = 0;
-	for (int i = 1; i < argc; i++) {
-		if (set_xres == -2)
-			set_xres = parseInt(argv[i]);
-		else if (set_yres == -2)
-			set_yres = parseInt(argv[i]);
-		else if (set_dpi == -2)
-			set_dpi = parseFloat(argv[i]);
-		else if (set_scale == -2)
-			set_scale = parseFloat(argv[i]);
-		else if (!strcmp(argv[i], "--xres"))
-			set_xres = -2;
-		else if (!strcmp(argv[i], "--yres"))
-			set_yres = -2;
-		else if (!strcmp(argv[i], "--dpi"))
-			set_dpi = -2;
-		else if (!strcmp(argv[i], "--scale"))
-			set_scale = -2;
-		else {
-			if (remain_argc < remain_argv_cap - 1) {
-				remain_argv[remain_argc++] = argv[i];
-			} else {
-				fprintf(stderr, "Too many command-line arguments, ignoring: %s\n", argv[i]);
-			}
-		}
-	}
-	remain_argv[remain_argc] = nullptr;
 
 	std::string app_name;
 	std::string app_name_nice;
@@ -2006,7 +1909,7 @@ int main(int argc, char *argv[]) {
 
 	// After NativeInit, code should no longer look at cmdLineOptions, they should have been translated
 	// into g_Config settings. This is because NativeInit may modify g_Config settings based on the command line options.
-	NativeInit(remain_argc, (const char **)remain_argv, cmdLineOptions, path, external_dir, nullptr);
+	NativeInit(argc, (const char **)argv, cmdLineOptions, path, external_dir, nullptr);
 
 	// Use the setting from the config when initing the window.
 	if (g_Config.bFullScreen) {
@@ -2053,34 +1956,35 @@ int main(int argc, char *argv[]) {
 	}
 
 	SDL_Window *window = nullptr;
+	WindowDesc windowDesc;
 	auto initializeBackend = [&](GPUBackend backend, GraphicsContext **graphicsContext, std::string *errorMessage) -> bool {
-		// Surface init params.
-		WindowSystem windowSystem = WINDOWSYSTEM_NONE;
-		void *data1 = nullptr;
-		void *data2 = nullptr;
-
 		GraphicsContext *ctx = nullptr;
 		if (backend == GPUBackend::OPENGL) {
 			SDL_GLContext glContext = nullptr;
-			window = CreateSDLGLWindowAndContext(x, y, w, h, mode, cmdLineOptions.force_gl_version, &glContext);
+			window = CreateSDLGLWindowAndContext(x, y, w, h, mode, cmdLineOptions.force_gl_version, &glContext, errorMessage);
 
-			data1 = (void *)window;
-			data2 = (void *)glContext;
+			windowDesc.winsys = WINDOWSYSTEM_SDL;
+			windowDesc.data1 = (void *)window;
+			windowDesc.data2 = (void *)glContext;
 
 			ctx = new SDLGLGraphicsContext();
 		} else {
-			mode |= SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN;
-			window = SDL_CreateWindow("Initializing graphics...", w, h, (SDL_WindowFlags)mode);
+			// Use a local copy of mode: this flag combination is Vulkan-specific, and if we fall back to
+			// OpenGL below, we don't want SDL_WINDOW_VULKAN to stick around and get OR'd in there too.
+			Uint32 vulkanMode = mode | SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN;
+			window = SDL_CreateWindow("Initializing graphics...", w, h, (SDL_WindowFlags)vulkanMode);
 			if (!window) {
-				fprintf(stderr, "Error creating SDL window: %s\n", SDL_GetError());
-				exit(1);
+				if (errorMessage) {
+					*errorMessage = StringFromFormat("Error creating SDL window: %s", SDL_GetError());
+				}
+				return false;
 			}
 			if (x != SDL_WINDOWPOS_UNDEFINED && y != SDL_WINDOWPOS_UNDEFINED) {
 				SDL_SetWindowPosition(window, x, y);
 			}
 
 			// Overwrite the surface init params with what we need for Vulkan..
-			if (!DetermineVulkanWindowSystem(window, &windowSystem, &data1, &data2)) {
+			if (!DetermineVulkanWindowSystem(window, &windowDesc, errorMessage)) {
 				return false;
 			}
 			// NOTE : This should match the lines below in the Vulkan case.
@@ -2092,7 +1996,18 @@ int main(int argc, char *argv[]) {
 			return false;
 		}
 
-		if (!ctx->InitSurface(windowSystem, data1, data2, errorMessage)) {
+		if (backend == GPUBackend::VULKAN) {
+			// linux wayland can give -1x-1 during vkGetPhysicalDeviceSurfaceCapabilitiesKHR
+			VulkanGraphicsContext *vkgfxctx = (VulkanGraphicsContext *)ctx;
+			VulkanContext *vkctx = (VulkanContext *)vkgfxctx->GetAPIContext();
+			vkctx->SetCbGetDrawSize([window]() {
+				int w=1,h=1;
+				SDL_GetWindowSizeInPixels(window, &w, &h);
+				return VkExtent2D {(uint32_t)w, (uint32_t)h};
+			});
+		}
+
+		if (!ctx->InitSurface(windowDesc.winsys, windowDesc.data1, windowDesc.data2, errorMessage)) {
 			fprintf(stderr, "Surface creation failed: %s\n", errorMessage->c_str());
 			return false;
 		}
@@ -2128,9 +2043,12 @@ int main(int argc, char *argv[]) {
 	}
 	UpdateScreenDPI(window);
 
-	float dpi_scale = 1.0f / (g_ForcedDPI == 0.0f ? g_DesktopDPI : g_ForcedDPI);
-
-	Native_UpdateScreenScale(w * g_DesktopDPI, h * g_DesktopDPI, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor));
+	// Initialize g_display synchronously before starting the EmuThread below, since it renders
+	// immediately without waiting for us to process an initial SDL resize/scale event -
+	// otherwise the first frames can render with dp_xres/dp_yres still at their defaults.
+	int initialPixelWidth = 0, initialPixelHeight = 0;
+	SDL_GetWindowSizeInPixels(window, &initialPixelWidth, &initialPixelHeight);
+	Native_UpdateScreenScale(initialPixelWidth, initialPixelHeight, UIScaleFactorToMultiplier(g_Config.iUIScaleFactor));
 
 	SDL_SetWindowTitle(window, (app_name_nice + " " + PPSSPP_GIT_VERSION).c_str());
 
@@ -2185,7 +2103,6 @@ int main(int argc, char *argv[]) {
 
 	// We use the emuthread both for OpenGL and Vulkan, but in OpenGL mode we also render from the main thread.
 	_dbg_assert_(graphicsContext);
-	std::thread emuThread = EmuThread_Start(graphicsContext, new NativeApplication(), nullptr);
 
 	InputStateTracker inputTracker{};
 
@@ -2202,11 +2119,23 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	const bool mainThreadIsRender = graphicsContext->NeedsSeparateEmuThread();
-	if (!mainThreadIsRender) {
+	const bool needsSeparateEmuThread = graphicsContext->NeedsSeparateEmuThread();
+	if (!needsSeparateEmuThread) {
 		// Vulkan mode uses this.
-		// We should only be a message pump. This allows for lower latency
-		// input events, and so on. The spawned EmuThread runs emulation and rendering.
+
+		std::thread emuThread = std::thread([&] {
+			RunMainLoop(graphicsContext, new NativeApplication(), [&](GraphicsContext *graphicsContext) {
+				NativeFrame(graphicsContext);
+				bool keepRunning = !(g_QuitRequested || g_RestartRequested);
+				if (!keepRunning) {
+					INFO_LOG(Log::System, "EmuThread was requested to exit normally.");
+				}
+				return keepRunning;
+			});
+		});
+
+		// The SDL main thread only becomes a plain message pump. This allows for lower latency
+		// input events, and so on. The spawned main thread runs emulation and rendering.
 		while (true) {
 			SDL_Event event;
 			if (SDL_WaitEventTimeout(&event, 100)) {
@@ -2233,37 +2162,52 @@ int main(int argc, char *argv[]) {
 				}
 			}
 		}
-	} else while (true) {
-		// OpenGL mode uses this.
-		{
-			SDL_Event event;
-			while (SDL_PollEvent(&event)) {
-				ProcessSDLEvent(window, event, &inputTracker);
+		INFO_LOG(Log::System, "Joining main thread...");
+		emuThread.join();
+	} else {
+		// OpenGL mode uses this path.
+		std::thread emuThread = EmuThread_Start(graphicsContext, new NativeApplication(), [&](GraphicsContext *graphicsContext){
+			NativeFrame(graphicsContext);
+			return true;
+		});
+		while (true) {
+			// OpenGL mode uses this.
+			{
+				SDL_Event event;
+				while (SDL_PollEvent(&event)) {
+					ProcessSDLEvent(window, event, &inputTracker);
+				}
 			}
-		}
-		if (g_QuitRequested || g_RestartRequested)
-			break;
-
-		UpdateTextFocus(window);
-		UpdateSDLCursor();
-
-		inputTracker.MouseCaptureControl(window);
-
-		bool renderThreadPaused = Native_IsWindowHidden() && g_Config.bPauseWhenMinimized;
-		if (graphicsContext->NeedsSeparateEmuThread() && !renderThreadPaused) {
-			if (!graphicsContext->ThreadFrame(true))
+			if (g_QuitRequested || g_RestartRequested)
 				break;
-		}
 
-		{
-			std::lock_guard<std::mutex> guard(g_mutexWindow);
-			if (g_windowState.update) {
-				UpdateWindowState(window);
+			UpdateTextFocus(window);
+			UpdateSDLCursor();
+
+			inputTracker.MouseCaptureControl(window);
+
+			bool renderThreadPaused = Native_IsWindowHidden() && g_Config.bPauseWhenMinimized;
+			if (graphicsContext->NeedsSeparateEmuThread() && !renderThreadPaused) {
+				if (!graphicsContext->ThreadFrame()) {
+					// The render thread was instructed to exit by the emu thread,
+					// and has now reached the end of the submitted frames.
+					// EmuThread will be in the process of exiting, so below
+					// we can just EmuThread_Join().
+					break;
+				}
+			}
+
+			{
+				std::lock_guard<std::mutex> guard(g_mutexWindow);
+				if (g_windowState.update) {
+					UpdateWindowState(window);
+				}
 			}
 		}
+		INFO_LOG(Log::System, "Requesting render thread exit...");
+		EmuThread_Join(graphicsContext, emuThread);
 	}
 
-	EmuThread_Join(graphicsContext, emuThread);
 
 	delete joystick;
 

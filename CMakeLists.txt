@@ -1049,6 +1049,7 @@ else()
 		SDL/SDLJoystick.h
 		SDL/SDLJoystick.cpp
 		SDL/SDLMain.cpp
+		SDL/SDLUtil.cpp
 		SDL/SDLGLGraphicsContext.cpp
 	)
 	if(SDL_TTF_LIB_TARGET)
@@ -1327,17 +1328,24 @@ file(GLOB UIImages CONFIGURE_DEPENDS
 if(HEADLESS)
 	set(HeadlessSource
 		headless/Headless.cpp
-		headless/HeadlessHost.cpp
-		headless/HeadlessHost.h
 		headless/Compare.cpp
 		headless/Compare.h
-		headless/SDLHeadlessHost.cpp
-		headless/SDLHeadlessHost.h
 	)
+	if(SDL_LIB_TARGET)
+		list(APPEND HeadlessSource
+			headless/SDLHeadlessGLGraphicsContext.cpp
+			headless/SDLHeadlessGLGraphicsContext.h
+			# TODO: Break these out into a library instead of cross linking like this.
+			SDL/SDLUtil.cpp
+			SDL/SDLUtil.h
+		)
+	endif()
 	if(APPLE)
 		list(APPEND HeadlessSource
 			Common/Render/Text/draw_text_cocoa.mm
 			Common/Render/Text/draw_text_cocoa.h
+			SDL/SDLCocoaMetalLayer.h
+			SDL/SDLCocoaMetalLayer.mm
 		)
 		set_source_files_properties(Common/Render/Text/draw_text_cocoa.mm
 			PROPERTIES COMPILE_FLAGS -fobjc-arc)
@@ -1391,6 +1399,7 @@ if(UNITTEST)
 		unittest/TestVFS.cpp
 		unittest/TestZipSlip.cpp
 		unittest/TestLzrc.cpp
+		unittest/TestTextureReplacer.cpp
 		unittest/TestRiscVEmitter.cpp
 		unittest/TestLoongArch64Emitter.cpp
 		unittest/TestSoftwareGPUJit.cpp

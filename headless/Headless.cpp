@@ -28,6 +28,10 @@
 
 #include "Common/CommonWindows.h"
 #if PPSSPP_PLATFORM(WINDOWS)
+#if PPSSPP_API(ANY_GL)
+#include "Windows/GPU/WindowsGLContext.h"
+#endif
+#include "Windows/GPU/D3D11Context.h"
 #else
 #include <csignal>
 #endif
@@ -41,11 +45,13 @@
 #include "Common/TimeUtil.h"
 #include "Common/StringUtils.h"
 #include "Common/Thread/ThreadManager.h"
+#include "Common/GPU/Vulkan/VulkanGraphicsContext.h"
 #include "Core/CmdLine.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
+#include "Core/EmuThread.h"
 #include "Core/System.h"
 #include "Core/WebServer.h"
 #include "Core/HLE/sceUtility.h"
@@ -56,14 +62,11 @@
 #include "Common/Log/LogManager.h"
 
 #include "Compare.h"
-#include "HeadlessHost.h"
 #if defined(_WIN32)
 #include "WindowsHeadlessHost.h"
 #elif defined(SDL)
-#include "SDLHeadlessHost.h"
+#include "SDLHeadlessGLGraphicsContext.h"
 #endif
-
-static HeadlessHost *g_headlessHost;
 
 static Path g_comparisonScreenshot;
 static Path g_screenshotSavePath;
@@ -110,7 +113,6 @@ bool System_GetPropertyBool(SystemProperty prop) {
 void System_Notify(SystemNotification notification) {}
 void System_PostUIMessage(UIMessage message, std::string_view param) {}
 void System_RunOnMainThread(std::function<void()>) {}
-
 std::vector<std::string> System_GetCameraDeviceList() { return std::vector<std::string>(); }
 void System_AskForPermission(SystemPermission permission) {}
 PermissionStatus System_GetPermissionStatus(SystemPermission permission) { return PERMISSION_STATUS_GRANTED; }
@@ -127,30 +129,8 @@ std::string NativeLoadSecret(std::string_view nameOfSecret) {
 
 int printUsage(const CommandLineOptions &options, const char *progname, const char *reason) {
 	options.PrintUsage(progname, reason);
-	fprintf(stderr, "  -m, --mount umd.cso   mount iso on umd1:\n");
-	fprintf(stderr, "  -r, --root some/path  mount path on host0: (elfs must be in here)\n");
-	fprintf(stderr, "  -l, --log             full log output, not just emulated printfs\n");
-	fprintf(stderr, "                        options: gles, software, directx9, etc.\n");
-	fprintf(stderr, "  --screenshot=FILE     compare against a screenshot\n");
-	fprintf(stderr, "  --screenshot-save=FILE  save rendered screenshot to a BMP file\n");
-	fprintf(stderr, "  --max-mse=NUMBER      maximum allowed MSE error for screenshot\n");
-	fprintf(stderr, "  --timeout=SECONDS     abort test it if takes longer than SECONDS\n");
 	fprintf(stderr, "  --ir                  use ir interpreter\n");
 	return 1;
-}
-
-static HeadlessHost *getHost(GPUCore gpuCore) {
-	switch (gpuCore) {
-	case GPUCORE_SOFTWARE:
-		return new HeadlessHost();
-#ifdef HEADLESSHOST_CLASS
-	default:
-		return new HEADLESSHOST_CLASS();
-#else
-	default:
-		return new HeadlessHost();
-#endif
-	}
 }
 
 void FlushDebugOutput() {
@@ -245,6 +225,52 @@ void System_SendDebugScreenshot(const uint8_t *data, int width, int height) {
 	}
 }
 
+static GraphicsContext *CreateGraphicsContext(GPUCore gpuCore, std::string **deviceSetting) {
+#ifdef SDL
+	*deviceSetting = nullptr;
+	switch (gpuCore) {
+	case GPUCORE_GLES:
+		return new SDLHeadlessGLGraphicsContext();
+	case GPUCORE_VULKAN:
+		*deviceSetting = &g_Config.sVulkanDevice;
+		return new VulkanGraphicsContext();
+	default:
+		return nullptr;
+	}
+#elif PPSSPP_PLATFORM(WINDOWS) && !PPSSPP_PLATFORM(UWP)
+	switch (gpuCore) {
+#if PPSSPP_API(ANY_GL)
+	case GPUCORE_GLES:
+		*deviceSetting = nullptr;
+		return new WindowsGLContext();
+#endif
+	case GPUCORE_DIRECTX11:
+		*deviceSetting = &g_Config.sD3D11Device;
+		return new D3D11Context();
+	case GPUCORE_VULKAN:
+		*deviceSetting = &g_Config.sVulkanDevice;
+		return new VulkanGraphicsContext();
+	case GPUCORE_SOFTWARE:
+	default:
+		return nullptr;
+	}
+#elif PPSSPP_ARCH(LOONGARCH64)
+	// The loongarch64 cross-compilation toolchain has no SDL3 packages available (see the
+	// LOONGARCH64_DEVICE branch in CMakeLists.txt), so this build is compile-tested only and
+	// never actually needs to create a graphics context at runtime.
+	*deviceSetting = nullptr;
+	return nullptr;
+#elif PPSSPP_PLATFORM(ANDROID)
+	// The Android headless build is compile-tested only and never actually needs to create a graphics context at runtime.
+	// However, it would still be nice if hardware rendering worked - it can be executed over adb.
+	*deviceSetting = nullptr;
+	return nullptr;
+#else
+#error The Headless build is not supported on this platform. Please use SDL (Mac/Linux) or Windows (non-UWP).
+	return nullptr;
+#endif
+}
+
 struct AutoTestOptions {
 	double timeout;
 	double maxScreenshotError;
@@ -254,7 +280,7 @@ struct AutoTestOptions {
 	bool printEqualLines;
 };
 
-static bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, const AutoTestOptions &opt) {
+static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &coreParameter, const AutoTestOptions &opt) {
 	using namespace Draw;
 
 	// Kinda ugly, trying to guesstimate the test name from filename...
@@ -309,7 +335,6 @@ static bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter
 		if (coreState == CORE_NEXTFRAME) {
 			// INFO_LOG(Log::System, "(frame)");
 			coreState = CORE_RUNNING_CPU;
-			headlessHost->SwapBuffers();
 		}
 		if (coreState == CORE_STEPPING_CPU && !coreParameter.startBreak) {
 			break;
@@ -337,12 +362,11 @@ static bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter
 	}
 
 	if (draw) {
-		draw->BindFramebufferAsRenderTarget(nullptr, { Draw::RPAction::CLEAR, Draw::RPAction::DONT_CARE, Draw::RPAction::DONT_CARE }, "BackBuffer");
 		// Vulkan may get angry if we don't do a final present.
 		if (gpu) {
 			gpu->SetCurFramebufferDirty(true);
 			gpu->PrepareCopyDisplayToOutput(g_Config.GetDisplayLayoutConfig(DeviceOrientation::Landscape));
-			draw->BindFramebufferAsRenderTarget(nullptr, {RPAction::CLEAR, RPAction::CLEAR, RPAction::CLEAR}, "BackBuffer");
+			draw->BindFramebufferAsRenderTarget(nullptr, {RPAction::CLEAR, RPAction::DONT_CARE, RPAction::DONT_CARE}, "BackBuffer");
 			gpu->CopyDisplayToOutput(g_Config.GetDisplayLayoutConfig(DeviceOrientation::Landscape));
 		}
 
@@ -414,6 +438,75 @@ static void AddToTestsByPath(std::vector<std::string> *tests, std::string_view p
 	}
 }
 
+// Returns the retval that will be returned from main.
+int RunTests(GraphicsContext *graphicsContext, CoreParameter &coreParameter, const AutoTestOptions &testOptions, const std::vector<std::string> &testFilenames) {
+	std::vector<std::string> failedTests;
+	std::vector<std::string> passedTests;
+	std::vector<std::string> missingTests;
+
+	for (size_t i = 0; i < testFilenames.size(); ++i) {
+		coreParameter.fileToStart = Path(testFilenames[i]);
+		if (!File::Exists(coreParameter.fileToStart)) {
+			fprintf(stderr, "File not found: %s\n", coreParameter.fileToStart.c_str());
+			missingTests.push_back(testFilenames[i]);
+			continue;
+		}
+		if (testOptions.compare) {
+			printf("%s:\n", coreParameter.fileToStart.c_str());
+		}
+		const bool passed = RunAutoTest(graphicsContext, coreParameter, testOptions);
+		if (testOptions.bench) {
+			double st = time_now_d();
+			double deadline = st + testOptions.timeout;
+			double runs = 0.0;
+			for (int i = 0; i < 100; ++i) {
+				RunAutoTest(graphicsContext, coreParameter, testOptions);
+				runs++;
+				if (time_now_d() > deadline) {
+					break;
+				}
+			}
+			double et = time_now_d();
+
+			std::string testName = GetTestName(coreParameter.fileToStart);
+			printf("  %s - %f seconds average\n", testName.c_str(), (et - st) / runs);
+		}
+		if (testOptions.compare) {
+			std::string testName = GetTestName(coreParameter.fileToStart);
+			if (passed) {
+				passedTests.push_back(testName);
+				printf("  %s - passed!\n", testName.c_str());
+			} else {
+				failedTests.push_back(testName);
+			}
+		}
+	}
+
+	if (testOptions.compare) {
+		printf("%d tests passed, %d tests failed, %d tests missing.\n", (int)passedTests.size(), (int)failedTests.size(), (int)missingTests.size());
+		if (!failedTests.empty()) {
+			printf("Failed tests:\n");
+			for (size_t i = 0; i < failedTests.size(); ++i) {
+				printf("  %s\n", failedTests[i].c_str());
+			}
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+class HeadlessApplication : public Application {
+public:
+	bool InitGraphics(GraphicsContext *graphicsContext) override {
+		Core_SetGraphicsContext(graphicsContext);
+		return true;
+	}
+	void ShutdownGraphics(GraphicsContext *graphicsContext) override {
+		graphicsContext->NotifyEmuThreadExit();
+	}
+};
+
 int main(int argc, const char* argv[]) {
 	PROFILE_INIT();
 	TimeInit();
@@ -455,17 +548,18 @@ int main(int argc, const char* argv[]) {
 	testOptions.timeout = cmdLineOptions.timeout.value_or(std::numeric_limits<double>::infinity());
 	testOptions.verbose = cmdLineOptions.verbose.value_or(false);
 	testOptions.printEqualLines = cmdLineOptions.printEqualLines.value_or(false);
+	testOptions.maxScreenshotError = cmdLineOptions.maxScreenshotError.value_or(0.0);
 
-	bool fullLog = false;
-	const char *stateToLoad = 0;
+	bool fullLog = cmdLineOptions.enableLogging.value_or(false);
+	const char *stateToLoad = cmdLineOptions.stateToLoad.has_value() ? cmdLineOptions.stateToLoad.value().c_str() : nullptr;
 	GPUCore gpuCore = GPUCORE_SOFTWARE;
 	CPUCore cpuCore = CPUCore::JIT;
 	bool oldAtrac = false;
-	bool outputDebugStringLog = false;
+	bool outputDebugStringLog = cmdLineOptions.odsLog.value_or(false);
 
 	std::vector<std::string> testFilenames;
-	std::vector<std::string> ignoredTests;
-	std::string mountIso;
+	const std::vector<std::string> &ignoredTests = cmdLineOptions.ignoredTests;
+	std::string mountIso = cmdLineOptions.mountIso.value_or("");
 	std::string mountRoot;
 
 	if (cmdLineOptions.cpuCore.has_value()) {
@@ -474,29 +568,6 @@ int main(int argc, const char* argv[]) {
 
 	if (cmdLineOptions.root.has_value()) {
 		mountRoot = cmdLineOptions.root.value().c_str();
-	}
-
-	for (int i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "-m") || !strcmp(argv[i], "--mount")) {
-			if (++i >= argc)
-				return printUsage(cmdLineOptions, argv[0], "Missing argument after -m");
-			mountIso = argv[i];
-		}
-		else if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--log"))
-			fullLog = true;
-		else if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--odslog"))
-			outputDebugStringLog = true;
-		else if (!strncmp(argv[i], "--max-mse=", strlen("--max-mse=")) && strlen(argv[i]) > strlen("--max-mse="))
-			testOptions.maxScreenshotError = strtod(argv[i] + strlen("--max-mse="), nullptr);
-		else if (!strncmp(argv[i], "--state=", strlen("--state=")) && strlen(argv[i]) > strlen("--state="))
-			stateToLoad = argv[i] + strlen("--state=");
-		else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h"))
-			return printUsage(cmdLineOptions, argv[0], NULL);
-		else if (!strcmp(argv[i], "--ignore")) {
-			if (++i >= argc)
-				return printUsage(cmdLineOptions, argv[0], "Missing argument after --ignore");
-			ignoredTests.push_back(argv[i]);
-		}
 	}
 
 	for (const std::string &filename : cmdLineOptions.bootFilenames) {
@@ -534,12 +605,7 @@ int main(int argc, const char* argv[]) {
 	// Needs to be after log so we don't interfere with test output.
 	g_threadManager.Init(cpu_info.num_cores, cpu_info.logical_cpu_count);
 
-	HeadlessHost *headlessHost = getHost(gpuCore);
-	g_headlessHost = headlessHost;
-
 	std::string error_string;
-	GraphicsContext *graphicsContext = nullptr;
-	bool glWorking = headlessHost->InitGraphics(&error_string, &graphicsContext, gpuCore);
 
 	// Force known values for deterministic test execution. This happens before
 	// ApplyToConfig() below, so a matching command line flag can still override any of it -
@@ -574,7 +640,7 @@ int main(int argc, const char* argv[]) {
 	g_Config.iInternalResolution = cmdLineOptions.resolutionScale.value_or(1);
 	g_Config.bEnableLogging = (fullLog || outputDebugStringLog);
 	g_Config.bVertexDecoderJit = true;
-	g_Config.bSoftwareRendering = (glWorking ? gpuCore : GPUCORE_SOFTWARE) == GPUCORE_SOFTWARE;
+	g_Config.bSoftwareRendering = cmdLineOptions.softwareRendering.value_or(false);
 	g_Config.bSoftwareRenderingJit = true;
 	g_Config.iSplineBezierQuality = 2;
 	g_Config.bHighQualityDepth = true;
@@ -594,11 +660,59 @@ int main(int argc, const char* argv[]) {
 	// overrides above, so a matching command line flag always wins.
 	cmdLineOptions.ApplyToConfig();
 
+	// Translate backend to core. We probably should consider merging these enums.
+	if (!g_Config.bSoftwareRendering) {
+		if (!cmdLineOptions.gpuBackend.has_value()) {
+			fprintf(stderr, "No graphics backend specified, but software rendering is disabled. Use --graphics=software, gles, directx11, or vulkan.\n");
+			return 1;
+		}
+		switch (cmdLineOptions.gpuBackend.value()) {
+		case GPUBackend::OPENGL:
+			gpuCore = GPUCORE_GLES;
+			break;
+		case GPUBackend::DIRECT3D11:
+			gpuCore = GPUCORE_DIRECTX11;
+			break;
+		case GPUBackend::VULKAN:
+			gpuCore = GPUCORE_VULKAN;
+			break;
+		}
+	}
+
+	// Time to set up graphics
+	GraphicsContext *graphicsContext = nullptr;
+	std::string *deviceSetting = nullptr;
+	void *window = nullptr;
+	WindowDesc windowDesc;
+	if (g_Config.bSoftwareRendering) {
+		// For software rendering, we just create a dummy graphics context (to share as much code as possible).
+		// We don't bother with a window.
+		graphicsContext = new NullGraphicsContext();
+	} else {
+#if PPSSPP_PLATFORM(ANDROID) || PPSSPP_ARCH(LOONGARCH64)
+		fprintf(stderr, "Headless graphics context creation is not supported on this platform.\n");
+		return 1;
+#else
+		// TODO: Will we need a larger window for higher resolutions? Well, not if we use buffered rendering.
+		window = CreateHiddenWindow(480, 272, cmdLineOptions.gpuBackend.value(), &windowDesc);
+		if (!windowDesc.Valid()) {
+			fprintf(stderr, "Failed to create a window for graphics context");
+			return 1;
+		}
+		graphicsContext = CreateGraphicsContext(gpuCore, &deviceSetting);
+		if (!graphicsContext) {
+			// If we don't get the desired context, we DO NOT fall back.
+			fprintf(stderr, "Failed to create a graphics context for GPU core");
+			return 1;
+		}
+#endif
+	}
+
 	// TODO: This whole function should be refactored to set up CoreParameter in one place,
 	// but not now.
 	CoreParameter coreParameter;
 	coreParameter.cpuCore = cpuCore;  // apprently this gets overwritten somehow by g_Config above.
-	coreParameter.gpuCore = glWorking ? gpuCore : GPUCORE_SOFTWARE;
+	coreParameter.gpuCore = gpuCore;
 	coreParameter.graphicsContext = graphicsContext;
 	coreParameter.enableSound = false;
 	coreParameter.mountIso = mountIso.empty() ? Path() : Path(mountIso);
@@ -641,10 +755,12 @@ int main(int argc, const char* argv[]) {
 		nextPath = nextPath.NavigateUp();
 	}
 
-	if (cmdLineOptions.screenshotFilename.has_value())
+	if (cmdLineOptions.screenshotFilename.has_value()) {
 		SetComparisonScreenshot(Path(std::string(cmdLineOptions.screenshotFilename.value())), testOptions.maxScreenshotError);
-	if (cmdLineOptions.screenshotFilenameSave.has_value())
+	}
+	if (cmdLineOptions.screenshotFilenameSave.has_value()) {
 		SetScreenshotSavePath(Path(std::string(cmdLineOptions.screenshotFilenameSave.value())));
+	}
 	SetWriteFailureScreenshot(!getenv("GITHUB_ACTIONS") && !testOptions.bench);
 	SetWriteDebugOutput(!testOptions.compare && !testOptions.bench);
 
@@ -681,67 +797,32 @@ int main(int argc, const char* argv[]) {
 		SaveState::Load(Path(stateToLoad), -1);
 	}
 
-	// Run the tests (or frame dumps), one after another.
-
-	std::vector<std::string> failedTests;
-	std::vector<std::string> passedTests;
-	std::vector<std::string> missingTests;
-
-	for (size_t i = 0; i < testFilenames.size(); ++i) {
-		coreParameter.fileToStart = Path(testFilenames[i]);
-		if (!File::Exists(coreParameter.fileToStart)) {
-			fprintf(stderr, "File not found: %s\n", coreParameter.fileToStart.c_str());
-			missingTests.push_back(testFilenames[i]);
-			continue;
-		}
-		if (testOptions.compare)
-			printf("%s:\n", coreParameter.fileToStart.c_str());
-		bool passed = RunAutoTest(headlessHost, coreParameter, testOptions);
-		if (testOptions.bench) {
-			double st = time_now_d();
-			double deadline = st + testOptions.timeout;
-			double runs = 0.0;
-			for (int i = 0; i < 100; ++i) {
-				RunAutoTest(headlessHost, coreParameter, testOptions);
-				runs++;
-				if (time_now_d() > deadline) {
-					break;
-				}
-			}
-			double et = time_now_d();
-
-			std::string testName = GetTestName(coreParameter.fileToStart);
-			printf("  %s - %f seconds average\n", testName.c_str(), (et - st) / runs);
-		}
-		if (testOptions.compare) {
-			std::string testName = GetTestName(coreParameter.fileToStart);
-			if (passed) {
-				passedTests.push_back(testName);
-				printf("  %s - passed!\n", testName.c_str());
-			} else {
-				failedTests.push_back(testName);
-			}
-		}
+	std::string errorMessage;
+	if (!graphicsContext->InitAPI(windowDesc.data2, deviceSetting, &errorMessage)) {
+		// No fallbacks in headless - if we can't run it, we can't. Let's not get confusing.
+		fprintf(stderr, "Failed to initialize graphics API: %s\n", errorMessage.c_str());
+		return 1;
 	}
 
-	if (testOptions.compare) {
-		printf("%d tests passed, %d tests failed, %d tests missing.\n", (int)passedTests.size(), (int)failedTests.size(), (int)missingTests.size());
-		if (!failedTests.empty()) {
-			printf("Failed tests:\n");
-			for (size_t i = 0; i < failedTests.size(); ++i) {
-				printf("  %s\n", failedTests[i].c_str());
-			}
-		}
-	}
+	int retval = 0;
+	MainThreadFunc(graphicsContext, new HeadlessApplication(), windowDesc, [&retval, &coreParameter, &testOptions, &testFilenames](GraphicsContext *graphicsContext) {
+		retval = RunTests(graphicsContext, coreParameter, testOptions, testFilenames);
+		return false;
+	});
+
+	graphicsContext->ShutdownAPI();
 
 	if (cmdLineOptions.debuggerPort.has_value()) {
 		ShutdownWebServer();
 	}
 
-	headlessHost->ShutdownGraphics();
-	delete headlessHost;
-	headlessHost = nullptr;
-	g_headlessHost = nullptr;
+#if PPSSPP_PLATFORM(ANDROID) || PPSSPP_ARCH(LOONGARCH64)
+	// ... see above
+#else
+	if (window) {
+		DestroyHiddenWindow(window,	windowDesc);
+	}
+#endif
 
 	g_VFS.Clear();
 	g_logManager.Shutdown();
@@ -752,7 +833,5 @@ int main(int argc, const char* argv[]) {
 
 	g_threadManager.Teardown();
 
-	if (!failedTests.empty())
-		return 1;
-	return 0;
+	return retval;
 }

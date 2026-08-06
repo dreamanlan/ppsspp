@@ -31,12 +31,16 @@ public:
 		renderManager_->ThreadStart(draw_);
 	}
 
-	bool ThreadFrame(bool waitIfEmpty) override {
-		return renderManager_->ThreadFrame(waitIfEmpty);
+	bool ThreadFrame() override {
+		return renderManager_->ThreadFrame();
 	}
 
 	void ThreadEnd() override {
 		renderManager_->ThreadEnd();
+	}
+
+	void NotifyEmuThreadExit() override {
+		renderManager_->NotifyEmuThreadExit();
 	}
 
 private:
@@ -46,4 +50,4 @@ private:
 	GLRenderManager *renderManager_ = nullptr;
 };
 
-SDL_Window *CreateSDLGLWindowAndContext(int x, int y, int w, int h, int mode, int forceGLVersion, SDL_GLContext *glContextOut);
+SDL_Window *CreateSDLGLWindowAndContext(int x, int y, int w, int h, int mode, int forceGLVersion, SDL_GLContext *glContextOut, std::string *errorMessage);

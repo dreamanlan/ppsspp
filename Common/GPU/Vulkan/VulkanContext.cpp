@@ -91,6 +91,23 @@ const char *VulkanImageLayoutToString(VkImageLayout imageLayout) {
 	}
 }
 
+const char *WindowSystemToString(WindowSystem winsys) {
+	switch (winsys) {
+	case WINDOWSYSTEM_UNINITIALIZED: return "UNINITIALIZED";
+	case WINDOWSYSTEM_WIN32: return "WIN32";
+	case WINDOWSYSTEM_ANDROID: return "ANDROID";
+	case WINDOWSYSTEM_METAL_EXT: return "METAL_EXT";
+	case WINDOWSYSTEM_XLIB: return "XLIB";
+	case WINDOWSYSTEM_XCB: return "XCB";
+	case WINDOWSYSTEM_WAYLAND: return "WAYLAND";
+	case WINDOWSYSTEM_DISPLAY: return "DISPLAY";
+	case WINDOWSYSTEM_SDL: return "SDL";
+	case WINDOWSYSTEM_NONE: return "NONE";
+	default:
+		return "UNKNOWN";
+	}
+}
+
 VulkanContext::VulkanContext() {
 	// Do nothing here.
 }
@@ -114,16 +131,7 @@ VkResult VulkanContext::CreateInstance(const CreateInfo &info) {
 #endif
 	}
 
-	// Check which Vulkan version we should request.
-	// Our code is fine with any version from 1.0 to 1.2, we don't know about higher versions.
-	vulkanInstanceApiVersion_ = VK_API_VERSION_1_0;
-	if (vkEnumerateInstanceVersion) {
-		vkEnumerateInstanceVersion(&vulkanInstanceApiVersion_);
-		vulkanInstanceApiVersion_ &= 0xFFFFF000;  // Remove patch version.
-		vulkanInstanceApiVersion_ = std::min(VK_API_VERSION_1_4, vulkanInstanceApiVersion_);
-		std::string versionString = FormatAPIVersion(vulkanInstanceApiVersion_);
-		INFO_LOG(Log::G3D, "Detected Vulkan API version: %s", versionString.c_str());
-	}
+	DetectInstanceApiVersion();
 
 	instance_layer_names_.clear();
 
@@ -254,6 +262,42 @@ VkResult VulkanContext::CreateInstance(const CreateInfo &info) {
 		return res;
 	}
 
+	return FinishInstanceInit();
+}
+
+VkResult VulkanContext::CreateInstanceExternal(VkInstance instance) {
+	instance_ = instance;
+	ownsInstance_ = false;
+	DetectInstanceApiVersion();
+
+	// We didn't go through the normal extension-selection dance in CreateInstance() (there's nothing to
+	// enable - the instance already exists), but IsInstanceExtensionAvailable() and the properties2 codepath
+	// below still want these populated, so gather them the same way CreateInstance() does.
+	GetInstanceLayerProperties();
+	GetInstanceLayerExtensionList(nullptr, &instance_extension_properties_);
+
+	// vkGetPhysicalDeviceProperties2/Features2 are core as of Vulkan 1.1, so an adopted 1.1+ instance can
+	// always use them regardless of whether the owning application explicitly enabled the KHR extension.
+	extensionsLookup_.KHR_get_physical_device_properties2 =
+		vulkanInstanceApiVersion_ >= VK_API_VERSION_1_1 || IsInstanceExtensionAvailable(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+
+	return FinishInstanceInit();
+}
+
+void VulkanContext::DetectInstanceApiVersion() {
+	// Check which Vulkan version we should request.
+	// Our code is fine with any version from 1.0 to 1.2, we don't know about higher versions.
+	vulkanInstanceApiVersion_ = VK_API_VERSION_1_0;
+	if (vkEnumerateInstanceVersion) {
+		vkEnumerateInstanceVersion(&vulkanInstanceApiVersion_);
+		vulkanInstanceApiVersion_ &= 0xFFFFF000;  // Remove patch version.
+		vulkanInstanceApiVersion_ = std::min(VK_API_VERSION_1_4, vulkanInstanceApiVersion_);
+		std::string versionString = FormatAPIVersion(vulkanInstanceApiVersion_);
+		INFO_LOG(Log::G3D, "Detected Vulkan API version: %s", versionString.c_str());
+	}
+}
+
+VkResult VulkanContext::FinishInstanceInit() {
 	VulkanLoadInstanceFunctions(instance_, extensionsLookup_, vulkanInstanceApiVersion_);
 	if (!CheckLayers(instance_layer_properties_, instance_layer_names_)) {
 		WARN_LOG(Log::G3D, "CheckLayers for instance failed");
@@ -265,12 +309,14 @@ VkResult VulkanContext::CreateInstance(const CreateInfo &info) {
 #if SIMULATE_VULKAN_FAILURE == 3
 	gpu_count = 0;
 #else
-	res = vkEnumeratePhysicalDevices(instance_, &gpu_count, nullptr);
+	VkResult res = vkEnumeratePhysicalDevices(instance_, &gpu_count, nullptr);
 #endif
 	if (gpu_count <= 0) {
 		ERROR_LOG(Log::G3D, "Vulkan driver found but no supported GPU is available");
 		init_error_ = "No Vulkan physical devices found";
-		vkDestroyInstance(instance_, nullptr);
+		if (ownsInstance_) {
+			vkDestroyInstance(instance_, nullptr);
+		}
 		instance_ = nullptr;
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
@@ -281,7 +327,9 @@ VkResult VulkanContext::CreateInstance(const CreateInfo &info) {
 	res = vkEnumeratePhysicalDevices(instance_, &gpu_count, physical_devices_.data());
 	if (res != VK_SUCCESS) {
 		init_error_ = "Failed to enumerate physical devices";
-		vkDestroyInstance(instance_, nullptr);
+		if (ownsInstance_) {
+			vkDestroyInstance(instance_, nullptr);
+		}
 		instance_ = nullptr;
 		return res;
 	}
@@ -350,7 +398,9 @@ void VulkanContext::DestroyInstance() {
 		}
 	}
 
-	vkDestroyInstance(instance_, nullptr);
+	if (ownsInstance_) {
+		vkDestroyInstance(instance_, nullptr);
+	}
 	VulkanFree();
 	instance_ = VK_NULL_HANDLE;
 }
@@ -383,7 +433,9 @@ void VulkanContext::UpdateInflightFrames(int n) {
 
 void VulkanContext::WaitUntilQueueIdle() {
 	// Should almost never be used
+	LockQueue();
 	vkQueueWaitIdle(gfx_queue_);
+	UnlockQueue();
 }
 
 bool VulkanContext::MemoryTypeFromProperties(uint32_t typeBits, VkFlags requirements_mask, uint32_t *typeIndex) {
@@ -559,6 +611,11 @@ bool VulkanContext::EnableDeviceExtension(const char *extension, uint32_t coreVe
 	if (coreVersion != 0 && vulkanDeviceApiVersion_ >= coreVersion) {
 		return true;
 	}
+	for (const char *alreadyEnabled : device_extensions_enabled_) {
+		if (!strcmp(alreadyEnabled, extension)) {
+			return true;
+		}
+	}
 	for (auto &iter : device_extension_properties_) {
 		if (!strcmp(iter.extensionName, extension)) {
 			device_extensions_enabled_.push_back(extension);
@@ -581,7 +638,7 @@ bool VulkanContext::EnableInstanceExtension(const char *extension, uint32_t core
 	return false;
 }
 
-VkResult VulkanContext::CreateDevice(int physical_device) {
+VkResult VulkanContext::CreateDevice(int physical_device, const std::vector<const char *> &extraDeviceExtensions, const VkPhysicalDeviceFeatures *extraRequiredFeatures) {
 	physical_device_ = physical_device;
 	INFO_LOG(Log::G3D, "Chose physical device %d: %s", physical_device, physicalDeviceProperties_[physical_device].properties.deviceName);
 
@@ -638,6 +695,12 @@ VkResult VulkanContext::CreateDevice(int physical_device) {
 	GetDeviceExtensionList(&device_extension_properties_);
 
 	device_extensions_enabled_.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+
+	// A host application (e.g. a libretro frontend) may require extra device extensions on top of what we'd
+	// normally ask for.
+	for (const char *extraExtension : extraDeviceExtensions) {
+		EnableDeviceExtension(extraExtension, 0);
+	}
 
 	if (!init_error_.empty() || physical_device_ < 0) {
 		ERROR_LOG(Log::G3D, "Vulkan init failed: %s", init_error_.c_str());
@@ -761,7 +824,18 @@ VkResult VulkanContext::CreateDevice(int physical_device) {
 	deviceFeatures_.enabled.standard.shaderCullDistance = deviceFeatures_.available.standard.shaderCullDistance;
 	deviceFeatures_.enabled.standard.geometryShader = deviceFeatures_.available.standard.geometryShader;
 	deviceFeatures_.enabled.standard.sampleRateShading = deviceFeatures_.available.standard.sampleRateShading;
-	
+
+	// A host application (e.g. a libretro frontend) may require some additional features to be enabled.
+	if (extraRequiredFeatures) {
+		VkBool32 *enabled = (VkBool32 *)&deviceFeatures_.enabled.standard;
+		const VkBool32 *required = (const VkBool32 *)extraRequiredFeatures;
+		for (size_t i = 0; i < sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32); i++) {
+			if (required[i]) {
+				enabled[i] = VK_TRUE;
+			}
+		}
+	}
+
 #ifdef _DEBUG
 	// For debugging! Although, it might hide problems, so turning it off. Can be useful to rule out classes of issues.
 	// deviceFeatures_.enabled.standard.robustBufferAccess = deviceFeatures_.available.standard.robustBufferAccess;
@@ -970,9 +1044,9 @@ VkResult VulkanContext::ReinitSurface() {
 		surface_ = VK_NULL_HANDLE;
 	}
 
-	INFO_LOG(Log::G3D, "Creating Vulkan surface for window (data1=%p data2=%p)", winsysData1_, winsysData2_);
+	INFO_LOG(Log::G3D, "Creating Vulkan surface for window (winsys=%s data1=%p data2=%p)", WindowSystemToString(winsys_), winsysData1_, winsysData2_);
 
-	VkResult retval = VK_SUCCESS;
+		VkResult retval = VK_SUCCESS;
 
 	switch (winsys_) {
 #ifdef _WIN32
@@ -1233,7 +1307,7 @@ VkResult VulkanContext::ReinitSurface() {
 #endif
 
 	default:
-		_assert_msg_(false, "Vulkan support for chosen window system not implemented");
+		_assert_msg_(false, "Vulkan support for chosen window system (%s) not implemented", WindowSystemToString(winsys_));
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
 
@@ -1348,6 +1422,23 @@ bool VulkanContext::ChooseQueue() {
 	return true;
 }
 
+bool VulkanContext::ChooseGraphicsQueueWithoutSurface() {
+	uint32_t graphicsQueueNodeIndex = UINT32_MAX;
+	for (uint32_t i = 0; i < queue_count; i++) {
+		if ((queueFamilyProperties_[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
+			graphicsQueueNodeIndex = i;
+			break;
+		}
+	}
+	if (graphicsQueueNodeIndex == UINT32_MAX) {
+		ERROR_LOG(Log::G3D, "Could not find a graphics queue");
+		return false;
+	}
+	graphics_queue_family_index_ = graphicsQueueNodeIndex;
+	vkGetDeviceQueue(device_, graphics_queue_family_index_, 0, &gfx_queue_);
+	return true;
+}
+
 int clamp(int x, int a, int b) {
 	if (x < a)
 		return a;
@@ -1399,6 +1490,20 @@ bool VulkanContext::InitSwapchain(VkPresentModeKHR desiredPresentMode) {
 	VkExtent2D currentExtent{ surfCapabilities_.currentExtent };
 
 	INFO_LOG(Log::G3D, "surfCapabilities_.current: %dx%d", currentExtent.width, currentExtent.height);
+
+	// https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkSurfaceCapabilitiesKHR.html
+	// currentExtent is the current width and height of the surface, or the special value (0xFFFFFFFF, 0xFFFFFFFF) indicating that the surface size will be determined by the extent of a swapchain targeting the surface.
+	if (currentExtent.width == 0xFFFFFFFFu || currentExtent.height == 0xFFFFFFFFu
+		#if PPSSPP_PLATFORM(IOS)
+		|| currentExtent.width == 0 || currentExtent.height == 0
+		#endif
+	) {
+		ERROR_LOG(Log::G3D, "using cbGetDrawSize_ to resolve surface size");
+		_dbg_assert_((bool)cbGetDrawSize_);
+		if (cbGetDrawSize_) {
+			currentExtent = cbGetDrawSize_();
+		}
+	}
 
 	swapChainExtent_.width = clamp(currentExtent.width, surfCapabilities_.minImageExtent.width, surfCapabilities_.maxImageExtent.width);
 	swapChainExtent_.height = clamp(currentExtent.height, surfCapabilities_.minImageExtent.height, surfCapabilities_.maxImageExtent.height);
@@ -1573,6 +1678,10 @@ bool VulkanContext::InitSwapchain(VkPresentModeKHR desiredPresentMode) {
 	return true;
 }
 
+void VulkanContext::SetCbGetDrawSize(std::function<VkExtent2D()> cb) {
+	cbGetDrawSize_ = cb;
+}
+
 VkFence VulkanContext::CreateFence(bool presignalled) {
 	VkFence fence;
 	VkFenceCreateInfo fenceInfo{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
@@ -1606,7 +1715,9 @@ void VulkanContext::DestroyDevice() {
 	vmaDestroyAllocator(allocator_);
 	allocator_ = VK_NULL_HANDLE;
 
-	vkDestroyDevice(device_, nullptr);
+	if (ownsDevice_) {
+		vkDestroyDevice(device_, nullptr);
+	}
 	device_ = nullptr;
 }
 

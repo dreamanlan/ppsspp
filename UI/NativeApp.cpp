@@ -578,46 +578,9 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 	// Apply parsed command line options to config.
 	cmdLineOptions.ApplyToConfig();
 
-	bool gotBootFilename = false;
 	boot_filename.clear();
-
 	if (boot_filename.empty() && cmdLineOptions.bootVSH.has_value() && cmdLineOptions.bootVSH.value()) {
 		boot_filename = g_Config.flash0Directory / "vsh/module/vshmain.prx";
-	}
-
-	// Parse command line
-	LogLevel logLevel = LogLevel::LINFO;
-	bool forceLogLevel = false;
-	const auto setLogLevel = [&logLevel, &forceLogLevel](LogLevel level) {
-		logLevel = level;
-		forceLogLevel = true;
-	};
-
-	if (cmdLineOptions.logLevel.has_value()) {
-		setLogLevel(cmdLineOptions.logLevel.value());
-	}
-
-	std::string fileToLog;
-	for (int i = 1; i < argc; i++) {
-		if (argv[i][0] == '-') {
-#if defined(__APPLE__)
-			// On Apple system debugged executable may get -NSDocumentRevisionsDebugMode YES in argv.
-			if (!strcmp(argv[i], "-NSDocumentRevisionsDebugMode") && argc - 1 > i) {
-				i++;
-				continue;
-			}
-#endif
-			switch (argv[i][1]) {
-			case '-':
-				if (!strncmp(argv[i], "--loglevel=", strlen("--loglevel=")) && strlen(argv[i]) > strlen("--loglevel="))
-					setLogLevel(static_cast<LogLevel>(std::atoi(argv[i] + strlen("--loglevel="))));
-				if (!strncmp(argv[i], "--log=", strlen("--log=")) && strlen(argv[i]) > strlen("--log="))
-					fileToLog = argv[i] + strlen("--log=");
-				break;
-			}
-		} else {
-			// Ignore. Boot filename is extracted in the previous step.
-		}
 	}
 
 	if (cmdLineOptions.appendConfig.has_value()) {
@@ -629,7 +592,6 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 	// don't already have one.
 	if (!cmdLineOptions.bootFilenames.empty()) {
 		std::string bootFilename = cmdLineOptions.bootFilenames[0];
-		gotBootFilename = true;
 		INFO_LOG(Log::System, "Boot filename found in args: '%s'", bootFilename.c_str());
 
 		bool okToLoad = true;
@@ -674,18 +636,13 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 		}
 	}
 
-	if (!fileToLog.empty()) {
+	if (cmdLineOptions.log.has_value() && !cmdLineOptions.log.value().empty()) {
 		// Start logging immediately.
 		g_logManager.EnableOutput(LogOutput::File);
-		g_logManager.SetFileLogPath(Path(fileToLog));
+		g_logManager.SetFileLogPath(Path(cmdLineOptions.log.value()));
 	} else {
 		// Set a default file logging path, in case the user enables it with the checkbox later.
 		g_logManager.SetFileLogPath(GetSysDirectory(DIRECTORY_DUMP) / "log.txt");
-	}
-
-	if (forceLogLevel) {
-		NOTICE_LOG(Log::System, "Setting log level to %d due to command line override", (int)logLevel);
-		g_logManager.SetAllLogLevels(logLevel);
 	}
 
 	PostLoadConfig();
@@ -947,17 +904,19 @@ bool CreateGlobalPipelines() {
 	return true;
 }
 
-void NativeShutdownGraphics(GraphicsContext *graphicContext) {
+void NativeShutdownGraphics(GraphicsContext *graphicsContext) {
 	INFO_LOG(Log::System, "NativeShutdownGraphics begin");
+
+	graphicsContext->NotifyEmuThreadExit();
 
 	if (g_screenManager) {
 		g_screenManager->deviceLost();
 	}
 	g_iconCache.ClearTextures();
 
-	// TODO: This is not really necessary with Vulkan on Android - could keep shaders etc in memory
-	if (gpu)
+	if (gpu) {
 		gpu->DeviceLost();
+	}
 
 #if PPSSPP_PLATFORM(WINDOWS) && !PPSSPP_PLATFORM(UWP)
 	if (winCamera) {
@@ -1724,6 +1683,8 @@ static bool IsWindowSmall(int pixelWidth, int pixelHeight) {
 }
 
 bool Native_UpdateScreenScale(int pixel_width, int pixel_height, float customScale) {
+	INFO_LOG(Log::System, "Native_UpdateScreenScale: %dx%d, customScale=%f", pixel_width, pixel_height, customScale);
+
 	_dbg_assert_(customScale > 0.1f);
 	float g_logical_dpi = System_GetPropertyFloat(SYSPROP_DISPLAY_LOGICAL_DPI);
 	float dpi = System_GetPropertyFloat(SYSPROP_DISPLAY_DPI);
