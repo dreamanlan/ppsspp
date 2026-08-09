@@ -61,10 +61,6 @@ public:
 	void deviceLost() override;
 	void deviceRestored(Draw::DrawContext *draw) override;
 
-	void SendImDebuggerCommand(const ImCommand &command) {
-		imCmd_ = command;
-	}
-
 protected:
 	void darken();
 	void focusChanged(ScreenFocusChange focusChange) override;
@@ -76,6 +72,8 @@ protected:
 	void UpdatePSPButtons(uint32_t buttonMask, uint32_t changedMask) override;
 	void SetPSPAnalog(int rotation, int stick, float x, float y) override;
 	ViewLayoutMode LayoutMode() const override;
+
+	bool AllowFocusMovement() const override;
 
 private:
 	void CreateViews() override;
@@ -89,9 +87,6 @@ private:
 	void bootComplete();
 	bool hasVisibleUI();
 	void renderUI();
-	void runImDebugger();
-	void renderImDebugger();
-
 
 	void AutoLoadSaveState();
 	bool checkPowerDown();
@@ -139,17 +134,8 @@ private:
 
 	std::string extraAssertInfoStr_;
 
-	std::unique_ptr<ImDebugger> imDebugger_;
-	ImCommand imCmd_{};  // needed to buffer commands in case imgui wasn't created yet.
-
-	bool imguiInited_ = false;
-
-	bool lastImguiEnabled_ = false;
-
 	std::mutex queuedVirtKeysLock_;
 	std::vector<std::pair<VirtKey, bool>> queuedVirtKeys_;
-
-	ImGuiContext *ctx_ = nullptr;
 
 	bool frameStep_ = false;
 #ifndef MOBILE_DEVICE

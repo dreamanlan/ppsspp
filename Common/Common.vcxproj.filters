@@ -323,9 +323,6 @@
     <ClInclude Include="Render\Text\draw_text_android.h">
       <Filter>Render\Text</Filter>
     </ClInclude>
-    <ClInclude Include="Render\Text\draw_text_qt.h">
-      <Filter>Render\Text</Filter>
-    </ClInclude>
     <ClInclude Include="Render\Text\draw_text_uwp.h">
       <Filter>Render\Text</Filter>
     </ClInclude>
@@ -798,6 +795,9 @@
     <ClInclude Include="GPU\OpenGL\OpenGLGraphicsContext.h">
       <Filter>GPU\OpenGL</Filter>
     </ClInclude>
+    <ClInclude Include="UI\ScreenManager.h">
+      <Filter>UI</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ABI.cpp" />
@@ -1092,9 +1092,6 @@
       <Filter>Render\Text</Filter>
     </ClCompile>
     <ClCompile Include="Render\Text\draw_text_android.cpp">
-      <Filter>Render\Text</Filter>
-    </ClCompile>
-    <ClCompile Include="Render\Text\draw_text_qt.cpp">
       <Filter>Render\Text</Filter>
     </ClCompile>
     <ClCompile Include="Render\Text\draw_text_uwp.cpp">
@@ -1471,6 +1468,9 @@
     </ClCompile>
     <ClCompile Include="GPU\OpenGL\OpenGLGraphicsContext.cpp">
       <Filter>GPU\OpenGL</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\ScreenManager.cpp">
+      <Filter>UI</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

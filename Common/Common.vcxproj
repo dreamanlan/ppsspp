@@ -503,7 +503,6 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
     </ClInclude>
-    <ClInclude Include="Render\Text\draw_text_qt.h" />
     <ClInclude Include="Render\Text\draw_text_sdl.h" />
     <ClInclude Include="Render\Text\draw_text_uwp.h" />
     <ClInclude Include="Render\Text\draw_text_win.h" />
@@ -562,6 +561,7 @@
     <ClInclude Include="UI\PopupScreens.h" />
     <ClInclude Include="UI\Root.h" />
     <ClInclude Include="UI\Screen.h" />
+    <ClInclude Include="UI\ScreenManager.h" />
     <ClInclude Include="UI\ScrollView.h" />
     <ClInclude Include="UI\TabHolder.h" />
     <ClInclude Include="UI\Tween.h" />
@@ -974,7 +974,6 @@
     <ClCompile Include="Render\TextureAtlas.cpp" />
     <ClCompile Include="Render\Text\draw_text.cpp" />
     <ClCompile Include="Render\Text\draw_text_android.cpp" />
-    <ClCompile Include="Render\Text\draw_text_qt.cpp" />
     <ClCompile Include="Render\Text\draw_text_sdl.cpp" />
     <ClCompile Include="Render\Text\draw_text_uwp.cpp" />
     <ClCompile Include="Render\Text\draw_text_win.cpp" />
@@ -1022,6 +1021,7 @@
     <ClCompile Include="UI\PopupScreens.cpp" />
     <ClCompile Include="UI\Root.cpp" />
     <ClCompile Include="UI\Screen.cpp" />
+    <ClCompile Include="UI\ScreenManager.cpp" />
     <ClCompile Include="UI\ScrollView.cpp" />
     <ClCompile Include="UI\TabHolder.cpp" />
     <ClCompile Include="UI\Tween.cpp" />
