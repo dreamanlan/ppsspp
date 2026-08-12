@@ -632,6 +632,8 @@ static std::wstring MakeWindowsFilter(BrowseFileType type) {
 	switch (type) {
 	case BrowseFileType::BOOTABLE:
 		return FinalizeFilter(L"All supported file types (*.iso *.cso *.chd *.pbp *.elf *.prx *.zip *.ppdmp)|*.pbp;*.elf;*.iso;*.cso;*.chd;*.prx;*.zip;*.ppdmp|PSP ROMs (*.iso *.cso *.chd *.pbp *.elf *.prx)|*.pbp;*.elf;*.iso;*.cso;*.chd;*.prx|Homebrew/Demos installers (*.zip)|*.zip|All files (*.*)|*.*||");
+	case BrowseFileType::SAVE_STATE:
+		return FinalizeFilter(L"Save state files (*.ppst)|*.ppst|All files (*.*)|*.*||");
 	case BrowseFileType::INI:
 		return FinalizeFilter(L"Ini files (*.ini)|*.ini|All files (*.*)|*.*||");
 	case BrowseFileType::ZIP:
@@ -887,9 +889,6 @@ static std::string GetDefaultLangRegion() {
 		return "en_US";
 	}
 }
-
-bool System_SendDebugOutput(std::string_view data) { return false; }
-void System_SendDebugScreenshot(const uint8_t *data, int width, int height) {}
 
 static const int EXIT_CODE_VULKAN_WORKS = 42;
 

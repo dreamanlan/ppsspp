@@ -665,7 +665,7 @@ static u32 sceSasGetAllEnvelopeHeights(u32 core, u32 heightsAddr) {
 	__SasDrain();
 	for (int i = 0; i < PSP_SAS_VOICES_MAX; i++) {
 		int voiceHeight = sas->voices[i].envelope.GetHeight();
-		Memory::Write_U32(voiceHeight, heightsAddr + i * 4);
+		Memory::WriteOrException_U32(voiceHeight, heightsAddr + i * 4);
 	}
 
 	return hleLogDebug(Log::sceSas, 0);
@@ -686,6 +686,12 @@ static u32 __sceSasSetVoiceATRAC3(u32 core, int voiceNum, u32 atrac3Context) {
 		return hleLogWarning(Log::sceSas, SCE_SAS_ERROR_INVALID_VOICE, "invalid voicenum");
 	}
 
+	// Not sure what an appropriate range length check is. It's at least 256 though.
+	if (!Memory::IsValid4AlignedRange(atrac3Context, 256)) {
+		// Untested
+		return hleLogError(Log::sceSas, SCE_SAS_ERROR_INVALID_PARAMETER, "invalid ATRAC3 context address");
+	}
+
 	__SasDrain();
 	SasVoice &v = sas->voices[voiceNum];
 	if (v.type == VOICETYPE_ATRAC3) {
@@ -695,7 +701,7 @@ static u32 __sceSasSetVoiceATRAC3(u32 core, int voiceNum, u32 atrac3Context) {
 	v.loop = false;
 	v.playing = true;
 	v.atrac3.SetContext(atrac3Context);
-	Memory::Write_U32(atrac3Context, core + 56 * voiceNum + 20);
+	Memory::WriteUnchecked_U32(atrac3Context, core + 56 * voiceNum + 20);
 	return hleLogDebug(Log::sceSas, 0);
 }
 
@@ -729,7 +735,7 @@ static u32 __sceSasUnsetATRAC3(u32 core, int voiceNum) {
 	v.on = false;
 	// This unpauses.  Some games, like Sol Trigger, depend on this.
 	v.paused = false;
-	Memory::Write_U32(0, core + 56 * voiceNum + 20);
+	Memory::WriteOrException_U32(0, core + 56 * voiceNum + 20);
 
 	return hleLogDebug(Log::sceSas, 0);
 }

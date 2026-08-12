@@ -490,9 +490,10 @@ Opcode ReadUnchecked_Instruction(u32 address, bool resolveReplacements) {
 	return Read_Instruction(address, resolveReplacements, inst);
 }
 
-Opcode Read_Opcode_JIT(u32 address)
-{
-	Opcode inst = Opcode(Read_U32(address));
+// WARNING! Caller checks that address is valid!
+Opcode Read_Opcode_JIT(u32 address) {
+	_dbg_assert_(Memory::IsValid4AlignedAddress(address));
+	Opcode inst = Opcode(ReadUnchecked_U32(address));
 	// No mutex around jit access here, but we assume caller has if necessary.
 	if (MIPS_IS_RUNBLOCK(inst.encoding) && MIPSComp::jit) {
 		return MIPSComp::jit->GetOriginalOp(inst);
@@ -518,10 +519,10 @@ void Memset(const u32 addr, const u8 value, const u32 size, const char *tag) {
 		memset(ptr, value, size);
 	} else {
 		// TODO: This mainly seems to be produced by GPUCommon::PerformMemorySet, called from
-		// Replace_memset_jak(). Strangely, this managed to crash in Write_U8().
-		for (size_t i = 0; i < size; i++) {
-			if (Memory::IsValidAddress(addr + (u32)i)) {
-				WriteUnchecked_U8(value, (u32)(addr + i));
+		// Replace_memset_jak().
+		if (Memory::IsValidRange(addr, size)) {
+			for (size_t i = 0; i < size; i++) {
+				Memory::WriteUnchecked_U8(value, (u32)(addr + i));
 			}
 		}
 	}

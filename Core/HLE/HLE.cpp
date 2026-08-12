@@ -429,36 +429,41 @@ u32 GetSyscallOp(std::string_view moduleName, u32 nib) {
 	}
 }
 
-void WriteFuncStub(u32 stubAddr, u32 symAddr)
-{
+// It's assumed that stubAddr and symAddr are valid.
+void WriteFuncStub(u32 stubAddr, u32 symAddr) {
+	_dbg_assert_(Memory::IsValid4AlignedAddress(stubAddr));
+	_dbg_assert_(Memory::IsValid4AlignedAddress(symAddr));
+
 	// Note that this should be J not JAL, as otherwise control will return to the stub..
-	Memory::Write_U32(MIPS_MAKE_J(symAddr), stubAddr);
+	Memory::WriteUnchecked_U32(MIPS_MAKE_J(symAddr), stubAddr);
 	// Note: doing that, we can't trace external module calls, so maybe something else should be done to debug more efficiently
 	// Perhaps a syscall here (and verify support in jit), marking the module by uid (debugIdentifier)?
-	Memory::Write_U32(MIPS_MAKE_NOP(), stubAddr + 4);
+	Memory::WriteUnchecked_U32(MIPS_MAKE_NOP(), stubAddr + 4);
 }
 
-void WriteFuncMissingStub(u32 stubAddr, u32 nid)
-{
+// It's assumed that stubAddr is valid.
+void WriteFuncMissingStub(u32 stubAddr, u32 nid) {
+	_dbg_assert_(Memory::IsValid4AlignedAddress(stubAddr));
 	// Write a trap so we notice this func if it's called before resolving.
-	Memory::Write_U32(MIPS_MAKE_JR_RA(), stubAddr); // jr ra
-	Memory::Write_U32(GetSyscallOp("", nid), stubAddr + 4);
+	Memory::WriteUnchecked_U32(MIPS_MAKE_JR_RA(), stubAddr); // jr ra
+	Memory::WriteUnchecked_U32(GetSyscallOp("", nid), stubAddr + 4);
 }
 
-bool WriteHLESyscall(std::string_view moduleName, u32 nib, u32 address)
-{
+// It's assumed that address is valid.
+bool WriteHLESyscall(std::string_view moduleName, u32 nib, u32 address) {
+	_dbg_assert_(Memory::IsValid4AlignedAddress(address));
 	if (nib == 0)
 	{
 		WARN_LOG_REPORT(Log::HLE, "Wrote patched out nid=0 syscall (%.*s)", (int)moduleName.size(), moduleName.data());
-		Memory::Write_U32(MIPS_MAKE_JR_RA(), address); //patched out?
-		Memory::Write_U32(MIPS_MAKE_NOP(), address+4); //patched out?
+		Memory::WriteUnchecked_U32(MIPS_MAKE_JR_RA(), address); //patched out?
+		Memory::WriteUnchecked_U32(MIPS_MAKE_NOP(), address+4); //patched out?
 		return true;
 	}
 	int modindex = GetHLEModuleIndex(moduleName);
 	if (modindex != -1)
 	{
-		Memory::Write_U32(MIPS_MAKE_JR_RA(), address); // jr ra
-		Memory::Write_U32(GetSyscallOp(moduleName, nib), address + 4);
+		Memory::WriteUnchecked_U32(MIPS_MAKE_JR_RA(), address); // jr ra
+		Memory::WriteUnchecked_U32(GetSyscallOp(moduleName, nib), address + 4);
 		return true;
 	}
 	else
@@ -640,7 +645,7 @@ void hleFlushCalls() {
 		}
 		stackData->argc = (int)info.args.size();
 		for (int j = 0; j < (int)info.args.size(); ++j) {
-			Memory::Write_U32(info.args[j], sp + sizeof(HLEMipsCallStack) + j * sizeof(u32));
+			Memory::WriteUnchecked_U32(info.args[j], sp + sizeof(HLEMipsCallStack) + j * sizeof(u32));
 		}
 	}
 	enqueuedMipsCalls.clear();
@@ -721,7 +726,8 @@ void HLEReturnFromMipsCall() {
 	currentMIPS->pc = stackData->func;
 	currentMIPS->r[MIPS_REG_RA] = HLEMipsCallReturnAddress();
 	for (int i = 0; i < (int)stackData->argc; i++) {
-		currentMIPS->r[MIPS_REG_A0 + i] = Memory::Read_U32(sp + sizeof(HLEMipsCallStack) + i * sizeof(u32));
+		// The check at the start of the function should be enough to use an unchecked read (well, kinda..)
+		currentMIPS->r[MIPS_REG_A0 + i] = Memory::ReadUnchecked_U32(sp + sizeof(HLEMipsCallStack) + i * sizeof(u32));
 	}
 	DEBUG_LOG(Log::HLE, "Executing next HLE mips call at %08x, sp=%08x", currentMIPS->pc, sp);
 	hleNoLogVoid();
@@ -1009,7 +1015,7 @@ void hlePushFuncDesc(std::string_view module, std::string_view funcName) {
 }
 
 // TODO: Also add support for argument names.
-size_t hleFormatLogArgs(char *message, size_t sz, const char *argmask) {
+size_t HLEFormatLogArgs(const MIPSState *mips, char *message, size_t sz, const char *argmask) {
 	char *p = message;
 	size_t used = 0;
 
@@ -1026,26 +1032,31 @@ size_t hleFormatLogArgs(char *message, size_t sz, const char *argmask) {
 	for (size_t i = 0, n = strlen(argmask); i < n; ++i, ++reg) {
 		u32 regval;
 		if (reg < 8) {
-			regval = PARAM(reg);
+			regval = PARAM_MIPS(mips, reg);
 		} else {
-			u32 sp = currentMIPS->r[MIPS_REG_SP];
+			u32 sp = mips->r[MIPS_REG_SP];
 			// Goes upward on stack.
 			// NOTE: Currently we only support > 8 for 32-bit integer args.
-			regval = Memory::Read_U32(sp + (reg - 8) * 4);
+			if (Memory::IsValid4AlignedAddress(sp)) {
+				regval = Memory::ReadUnchecked_U32(sp + (reg - 8) * 4);
+			} else {
+				// This should basically never happen.
+				ERROR_LOG(Log::HLE, "Couldn't read sp=%08x for arg %zu", sp, i);
+			}
 		}
 
 		switch (argmask[i]) {
 		case 'p':
-			if (Memory::IsValidAddress(regval)) {
-				APPEND_FMT("%08x[%08x]", regval, Memory::Read_U32(regval));
+			if (Memory::IsValidRange(regval, 4)) {
+				APPEND_FMT("%08x[%08x]", regval, Memory::ReadUnchecked_U32(regval));
 			} else {
 				APPEND_FMT("%08x[invalid]", regval);
 			}
 			break;
 
 		case 'P':
-			if (Memory::IsValidAddress(regval)) {
-				APPEND_FMT("%08x[%016llx]", regval, Memory::Read_U64(regval));
+			if (Memory::IsValidRange(regval, 8)) {
+				APPEND_FMT("%08x[%016llx]", regval, Memory::ReadUnchecked_U64(regval));
 			} else {
 				APPEND_FMT("%08x[invalid]", regval);
 			}
@@ -1088,6 +1099,7 @@ size_t hleFormatLogArgs(char *message, size_t sz, const char *argmask) {
 			--reg;
 			break;
 
+
 		// TODO: Double?  Does it ever happen?
 
 		default:
@@ -1118,6 +1130,14 @@ void hleLeave() {
 	}  // else warn?
 }
 
+const HLEFunction *HLEGetFunctionBeingCalled() {
+	int stackSize = g_stackSize;
+	if (stackSize > 0) {
+		return g_stack[stackSize - 1];
+	}
+	return nullptr;
+}
+
 void hleDoLogInternal(Log t, LogLevel level, u64 res, const char *file, int line, const char *reportTag, const char *reason, const char *formatted_reason) {
 	char formatted_args[2048];
 	const char *funcName = "?";
@@ -1139,7 +1159,7 @@ void hleDoLogInternal(Log t, LogLevel level, u64 res, const char *file, int line
 		// Need to do something smart in hleCall. But it's better than printing function name and args from the wrong function.
 		
 		if (stackSize == 1) {
-			hleFormatLogArgs(formatted_args, sizeof(formatted_args), hleFunc->argmask);
+			HLEFormatLogArgs(currentMIPS, formatted_args, sizeof(formatted_args), hleFunc->argmask);
 		} else {
 			truncate_cpy(formatted_args, "...N/A...");
 		}

@@ -223,6 +223,8 @@ class GlobalListener : public ControlListener {
 				g_Config.bShowImDebugger = !g_Config.bShowImDebugger;
 			}
 			break;
+		default:
+			break;
 		}
 	}
 };
@@ -801,7 +803,6 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 
 	ApplyAchievementsHostOverride();
 
-	DEBUG_LOG(Log::System, "ScreenManager!");
 	g_screenManager = new ScreenManager();
 	if (g_Config.memStickDirectory.empty()) {
 		INFO_LOG(Log::System, "No memstick directory! Asking for one to be configured.");
@@ -1203,6 +1204,8 @@ void NativeFrame(GraphicsContext *graphicsContext) {
 			case QueuedEventType::TOUCH:
 				ImGui_ImplPlatform_TouchEvent(event.touch);
 				break;
+			default:
+				break;
 			}
 		}
 	}
@@ -1285,15 +1288,14 @@ void NativeFrame(GraphicsContext *graphicsContext) {
 		Core_ProcessCPUQueue();
 
 		// All actual rendering (and also emulation) happens in this render() call.
-		renderFlags = g_screenManager->render();
+		renderFlags = g_screenManager->Render([]() {
+			runImDebugger(g_draw);
+		});
+		renderImDebugger(g_draw);
 		if (g_screenManager->getUIContext()->Text()) {
 			g_screenManager->getUIContext()->Text()->OncePerFrame();
 		}
-
 		ui_draw2d.PopDrawMatrix();
-
-		runImDebugger(g_draw);
-		renderImDebugger(g_draw);
 	}
 	g_draw->EndFrame();
 

@@ -114,7 +114,7 @@ void ServerRequest::WriteHttpResponseHeader(const char *ver, int status, int64_t
 		buffer->Push("Connection: close\r\n");
 	}
 	if (size >= 0) {
-		buffer->Printf("Content-Length: %llu\r\n", size);
+		buffer->Printf("Content-Length: %llu\r\n", (unsigned long long)size);
 	}
 	if (otherHeaders) {
 		buffer->Push(otherHeaders, strlen(otherHeaders));
@@ -352,7 +352,7 @@ void Server::HandleRequestDefault(const ServerRequest &request) {
 }
 
 void Server::Handle404(const ServerRequest &request) {
-	INFO_LOG(Log::HTTP, "No handler for '%.*s', falling back to 404.", (int)request.resource().size(), request.resource().data());
+	INFO_LOG(Log::HTTP, "No handler for '%.*s', falling back to 404.", STR_VIEW(request.resource()));
 	const char *payload = "<html><body>404 not found</body></html>\r\n";
 	request.WriteHttpResponseHeader("1.0", 404, strlen(payload));
 	request.Out()->Push(payload);

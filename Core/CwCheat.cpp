@@ -751,6 +751,8 @@ void CWCheatEngine::ApplyMemoryOperator(const CheatOperation &op, uint32_t(*oper
 			Memory::WriteUnchecked_U16((u16)oper(Memory::ReadUnchecked_U16(op.addr), op.val),op. addr);
 		else if (op.sz == 4)
 			Memory::WriteUnchecked_U32((u32)oper(Memory::ReadUnchecked_U32(op.addr), op.val), op.addr);
+	} else {
+		// Report memory error
 	}
 }
 
@@ -919,7 +921,7 @@ void CWCheatEngine::ExecuteOp(const CheatOperation &op, const CheatCode &cheat, 
 					float f;
 					uint32_t u;
 				} value;
-				value.u = Memory::Read_U32(op.addr);
+				value.u = Memory::ReadUnchecked_U32(op.addr);  // we check the range above
 				std::string shaderName = shaderChain[op.PostShaderUniform.shader]->section;
 				switch (op.PostShaderUniform.format) {
 				case 0:
@@ -1035,18 +1037,21 @@ void CWCheatEngine::ExecuteOp(const CheatOperation &op, const CheatCode &cheat, 
 
 	case CheatOp::CwCheatPointerCommands:
 		{
+			if (!Memory::IsValidAddress(op.addr + op.pointerCommands.baseOffset)) {
+				break;
+			}
 			InvalidateICache(op.addr + op.pointerCommands.baseOffset, 4);  // See note at top of file
-			u32 base = Memory::Read_U32(op.addr + op.pointerCommands.baseOffset);
+			u32 base = Memory::ReadUnchecked_U32(op.addr + op.pointerCommands.baseOffset);
 			u32 val = op.val;
 			int type = op.pointerCommands.type;
 			for (int a = 0; a < op.pointerCommands.count; ++a) {
 				const CheatLine &line = cheat.lines[i++];
 				switch (line.part1 >> 28) {
 				case 0x1: // type copy byte
-					{
+					if (Memory::IsValidRange(op.addr, 4) && Memory::IsValidRange(op.addr + op.pointerCommands.baseOffset, 4)) {
 						InvalidateICache(op.addr, 4);  // See note at top of file
-						u32 srcAddr = Memory::Read_U32(op.addr) + op.pointerCommands.offset;
-						u32 dstAddr = Memory::Read_U32(op.addr + op.pointerCommands.baseOffset) + (line.part1 & 0x0FFFFFFF);
+						u32 srcAddr = Memory::ReadUnchecked_U32(op.addr) + op.pointerCommands.offset;
+						u32 dstAddr = Memory::ReadUnchecked_U32(op.addr + op.pointerCommands.baseOffset) + (line.part1 & 0x0FFFFFFF);
 						if (Memory::IsValidRange(dstAddr, val) && Memory::IsValidRange(srcAddr, val)) {
 							InvalidateICache(dstAddr, val);
 							InvalidateICache(srcAddr, val);  // See note at top of file
@@ -1064,23 +1069,27 @@ void CWCheatEngine::ExecuteOp(const CheatOperation &op, const CheatCode &cheat, 
 						if ((line.part1 >> 28) == 0x3) {
 							walkOffset = -walkOffset;
 						}
-						// TODO: I've seen crashes here. Presumably an unaligned pointer just off the edge of memory.
-						// We should probably check pointer validity and invalidate the cheat if this happens.
-						base = Memory::Read_U32(base + walkOffset);
-						switch (line.part2 >> 28) {
-						case 0x2:
-						case 0x3: // type pointer walk
-							walkOffset = line.part2 & 0x0FFFFFFF;
-							if ((line.part2 >> 28) == 0x3) {
-								walkOffset = -walkOffset;
-							}
-							InvalidateICache(base + walkOffset, 4);  // See note at top of file
-							base = Memory::Read_U32(base + walkOffset);
-							break;
+						if (Memory::IsValidRange(base + walkOffset, 4)) {
+							// TODO: I've seen crashes here. Presumably an unaligned pointer just off the edge of memory.
+							// We should probably check pointer validity and invalidate the cheat if this happens.
+							base = Memory::ReadUnchecked_U32(base + walkOffset);
+							switch (line.part2 >> 28) {
+							case 0x2:
+							case 0x3: // type pointer walk
+								walkOffset = line.part2 & 0x0FFFFFFF;
+								if ((line.part2 >> 28) == 0x3) {
+									walkOffset = -walkOffset;
+								}
+								if (Memory::IsValidRange(base + walkOffset, 4)) {
+									InvalidateICache(base + walkOffset, 4);  // See note at top of file
+									base = Memory::ReadUnchecked_U32(base + walkOffset);
+								}
+								break;
 
-						default:
-							// Unexpected value in cheat line?
-							break;
+							default:
+								// Unexpected value in cheat line?
+								break;
+							}
 						}
 					}
 					break;

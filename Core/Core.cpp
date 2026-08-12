@@ -32,6 +32,7 @@
 #include "Common/GPU/GraphicsContext.h"
 #include "Common/Thread/ThreadUtil.h"
 #include "Common/Log.h"
+#include "Common/StringUtils.h"
 #include "Core/Core.h"
 #include "Core/Config.h"
 #include "Core/HLE/HLE.h"
@@ -154,6 +155,28 @@ static MIPSExceptionInfo g_exceptionInfo;
 
 // This is called on EmuThread before RunLoop.
 static bool Core_ProcessStepping(MIPSDebugInterface *cpu);
+
+static std::function<void(std::string_view)> g_debugOutputListener;
+static std::function<void(const DebugScreenshotDesc &)> g_debugScreenshotListener;
+
+void Core_RegisterDebugOutputListeners(std::function<void(std::string_view)> listener, std::function<void(const DebugScreenshotDesc &)> screenshotListener) {
+	g_debugOutputListener = std::move(listener);
+	g_debugScreenshotListener = std::move(screenshotListener);
+}
+
+void Core_SendDebugOutput(LogLevel level, std::string_view string) {
+	if (g_debugOutputListener) {
+		g_debugOutputListener(string);
+	} else {
+		GENERIC_LOG(Log::sceIo, level, "%.*s", STR_VIEW(string));
+	}
+}
+
+void Core_SendDebugScreenshot(const DebugScreenshotDesc &desc) {
+	if (g_debugScreenshotListener) {
+		g_debugScreenshotListener(desc);
+	}
+}
 
 BreakReason Core_BreakReason() {
 	return g_breakReason;
@@ -602,9 +625,11 @@ const char *MemoryExceptionTypeAsString(MemoryExceptionType type) {
 	switch (type) {
 	case MemoryExceptionType::UNKNOWN: return "Unknown";
 	case MemoryExceptionType::READ_WORD: return "Read Word";
-	case MemoryExceptionType::WRITE_WORD: return "Write Word";
 	case MemoryExceptionType::READ_BLOCK: return "Read Block";
+	case MemoryExceptionType::WRITE_WORD: return "Write Word";
 	case MemoryExceptionType::WRITE_BLOCK: return "Read/Write Block";
+	case MemoryExceptionType::HLE_READ: return "HLE Read";
+	case MemoryExceptionType::HLE_WRITE: return "HLE Write";
 	case MemoryExceptionType::ALIGNMENT: return "Alignment";
 	default:
 		return "N/A";
@@ -638,14 +663,27 @@ static std::string ModuleAddressSuffix(u32 address) {
 	}
 }
 
-void Core_MemoryException(u32 address, u32 accessSize, u32 pc, MemoryExceptionType type, std::string_view additionalInfo, bool forceReport) {
-	const char *desc = MemoryExceptionTypeAsString(type);
+void Core_MemoryException(u32 address, u32 accessSize, u32 pc, MemoryExceptionType type, std::string_view additionalInfo) {
 	// In jit, we only flush PC when bIgnoreBadMemAccess is off.
-
 	char pcDetails[128];
 	pcDetails[0] = 0;
-	if ((CPUCore)g_Config.iCpuCore == CPUCore::INTERPRETER) {
-		snprintf(pcDetails, sizeof(pcDetails), " PC %08x%s LR %08x%s", currentMIPS->pc, ModuleAddressSuffix(currentMIPS->pc).c_str(), currentMIPS->r[MIPS_REG_RA], ModuleAddressSuffix(currentMIPS->r[MIPS_REG_RA]).c_str());
+	switch ((CPUCore)g_Config.iCpuCore) {
+	case CPUCore::INTERPRETER:
+		snprintf(pcDetails, sizeof(pcDetails), "Interpreter: PC %08x%s RA %08x%s",
+			currentMIPS->pc, ModuleAddressSuffix(currentMIPS->pc).c_str(),
+			currentMIPS->r[MIPS_REG_RA], ModuleAddressSuffix(currentMIPS->r[MIPS_REG_RA]).c_str());
+		break;
+	case CPUCore::JIT:
+		snprintf(pcDetails, sizeof(pcDetails), "JIT: (PC approximate)=%08x%s", pc, ModuleAddressSuffix(pc).c_str());
+		break;
+	case CPUCore::JIT_IR:
+		snprintf(pcDetails, sizeof(pcDetails), "JIT_IR: (PC approximate)=%08x%s", pc, ModuleAddressSuffix(pc).c_str());
+		break;
+	case CPUCore::IR_INTERPRETER:
+		snprintf(pcDetails, sizeof(pcDetails), "IR_INTERPRETER: (PC approximate)=%08x%s", pc, ModuleAddressSuffix(pc).c_str());
+		break;
+	default:
+		break;
 	}
 
 	const std::string addressSuffix = ModuleAddressSuffix(address);
@@ -663,15 +701,83 @@ void Core_MemoryException(u32 address, u32 accessSize, u32 pc, MemoryExceptionTy
 		break;
 	}
 
+	const char *desc = MemoryExceptionTypeAsString(type);
+	char msg[512];
+	snprintf(msg, sizeof(msg), "%s: SIGSEGV at %08x%s (size: %d bytes) %s\nHost:%.*s", desc, address, addressSuffix.c_str(), accessSize, pcDetails, STR_VIEW(additionalInfo));
+	if (action == ExceptionAction::Ignore) {
+		Core_SendDebugOutput(LogLevel::LWARNING, msg);
+		return;
+	}
+	const std::string stackTrace = FormatStackTrace(WalkCurrentStack(-1));
+	// Do the most detailed logging we can.
+	Core_SendDebugOutput(LogLevel::LERROR, StringFromFormat("%sMIPS call stack:\n%s", msg, stackTrace.c_str()));
+	if (action == ExceptionAction::Break) {
+		MIPSExceptionInfo &e = g_exceptionInfo;
+		e = {};
+		e.type = MIPSExceptionType::MEMORY;
+		e.info.clear();
+		e.memory_type = type;
+		e.address = address;
+		e.accessSize = accessSize;
+		e.stackTrace = stackTrace;
+		e.pc = pc;
+		Core_Break(BreakReason::MemoryException, address);
+	}
+}
+
+void Core_MemoryExceptionHLE(MIPSState *mips, u32 address, u32 accessSize, MemoryExceptionType type) {
+	ExceptionAction action;
+	switch (type) {
+	case MemoryExceptionType::HLE_WRITE:
+		action = ResolveExceptionAction((ExceptionAction)g_Config.iExceptionActionMemWrite);
+		break;
+	case MemoryExceptionType::HLE_READ:
+		action = ResolveExceptionAction((ExceptionAction)g_Config.iExceptionActionMemRead);
+		break;
+	default:
+		_dbg_assert_(false);
+		action = ExceptionAction::Break;
+		break;
+	}
+
+	const HLEFunction *func = HLEGetFunctionBeingCalled();
+	const char *funcName = func ? func->name : "unknown";
+
+	char args[256] = "";
+	if (func) {
+		HLEFormatLogArgs(mips, args, sizeof(args), func->argmask);
+	}
+
+	const char *extra = "";
+	// We do report some unaligned addresses. There are probably more that should report.
+	// We try to derive the reason here, though maybe it should be passed in explicitly?
+	// TODO: This check should probably be added to regular memory accesses too.
+	if (Memory::IsValidAddress(address)) {
+		if (accessSize == 2 || accessSize == 4 || accessSize == 8 || (address & (accessSize - 1))) {
+			extra = " (unaligned)";
+		} else if (accessSize > 8 && (accessSize & 3)) {
+			extra = " (unaligned struct)";
+		}
+	}
+
+	const u32 pc = mips->pc;
+	const char *desc = MemoryExceptionTypeAsString(type);
+
+	char msg[512];
+	snprintf(msg, sizeof(msg), "%s: Invalid access %s in %s(%s) at %08x%s (size %08x) PC %08x%s RA %08x%s",
+		desc, extra, funcName, args,
+		address, ModuleAddressSuffix(address).c_str(), accessSize,
+		pc, ModuleAddressSuffix(pc).c_str(),
+		mips->r[MIPS_REG_RA], ModuleAddressSuffix(mips->r[MIPS_REG_RA]).c_str());
+
 	if (action == ExceptionAction::Ignore) {
 		// Simplest logging and continue.
-		WARN_LOG(Log::MemMap, "%s: Invalid access at %08x%s (size %08x) %s%.*s", desc, address, addressSuffix.c_str(), accessSize, pcDetails, (int)additionalInfo.length(), additionalInfo.data());
+		Core_SendDebugOutput(LogLevel::LWARNING, msg);
 		return;
 	}
 
 	const std::string stackTrace = FormatStackTrace(WalkCurrentStack(-1));
-	// Do the most detailed logging we can.
-	ERROR_LOG(Log::MemMap, "%s: Invalid access at %08x%s (size %08x) %s%.*s\n%s", desc, address, addressSuffix.c_str(), accessSize, pcDetails, (int)additionalInfo.length(), additionalInfo.data(), stackTrace.c_str());
+	Core_SendDebugOutput(LogLevel::LERROR, StringFromFormat("%s\n%s", msg, stackTrace.c_str()));
 	if (action == ExceptionAction::Break) {
 		MIPSExceptionInfo &e = g_exceptionInfo;
 		e = {};
@@ -689,7 +795,10 @@ void Core_MemoryException(u32 address, u32 accessSize, u32 pc, MemoryExceptionTy
 // Can't be ignored, must break. Not sure we can get a meaningful stack trace here (since the PC is invalid).
 void Core_ExecException(u32 address, u32 pc, ExecExceptionType type) {
 	const char *desc = ExecExceptionTypeAsString(type);
-	WARN_LOG(Log::MemMap, "%s: Invalid exec address %08x%s pc=%08x%s ra=%08x%s", desc, address, ModuleAddressSuffix(address).c_str(), pc, ModuleAddressSuffix(pc).c_str(), currentMIPS->r[MIPS_REG_RA], ModuleAddressSuffix(currentMIPS->r[MIPS_REG_RA]).c_str());
+
+	char msg[512];
+	snprintf(msg, sizeof(msg), "%s: Invalid exec address %08x%s pc=%08x%s ra=%08x%s", desc, address, ModuleAddressSuffix(address).c_str(), pc, ModuleAddressSuffix(pc).c_str(), currentMIPS->r[MIPS_REG_RA], ModuleAddressSuffix(currentMIPS->r[MIPS_REG_RA]).c_str());
+	Core_SendDebugOutput(LogLevel::LERROR, msg);
 
 	MIPSExceptionInfo &e = g_exceptionInfo;
 	e = {};
@@ -713,15 +822,18 @@ void Core_BreakException(u32 pc) {
 
 	const std::string pcSuffix = ModuleAddressSuffix(pc);
 
+	char msg[512];
+	snprintf(msg, sizeof(msg), "CPU exception: break instruction hit at %08x%s. Ignoring (use --break=log for more details or --break=break to break)", pc, pcSuffix.c_str());
+
 	const ExceptionAction action = ResolveExceptionAction((ExceptionAction)g_Config.iExceptionActionBreak);
 	if (action == ExceptionAction::Ignore) {
 		// Simplest logging and continue.
-		WARN_LOG(Log::CPU, "CPU exception: break instruction hit at %08x%s. Ignoring (use --break=log for more details or --break=break to break)", pc, pcSuffix.c_str());
+		Core_SendDebugOutput(LogLevel::LINFO, StringFromFormat("Ignoring CPU exception: break instruction hit at %08x%s", pc, pcSuffix.c_str()));
 		return;
 	}
 
 	const std::string stackTrace = FormatStackTrace(WalkCurrentStack(-1));
-	ERROR_LOG(Log::CPU, "CPU exception: break instruction hit at %08x%s (ra=%08x%s)\n%s", pc, pcSuffix.c_str(), currentMIPS->r[MIPS_REG_RA], ModuleAddressSuffix(currentMIPS->r[MIPS_REG_RA]).c_str(), stackTrace.c_str());
+	Core_SendDebugOutput(LogLevel::LERROR, StringFromFormat("%s\n%s", msg, stackTrace.c_str()));
 	if (action == ExceptionAction::Break) {
 		Core_Break(BreakReason::BreakInstruction, currentMIPS->pc);
 	}

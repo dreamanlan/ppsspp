@@ -28,9 +28,9 @@
 #include "Core/CoreTiming.h"
 #include "Core/Config.h"
 #include "Core/HLE/HLE.h"
+#include "Core/HLE/HLEUtil.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/HLE/sceNp.h"
-
 
 bool npAuthInited = false;
 int npSigninState = NP_SIGNIN_STATUS_NONE;
@@ -173,8 +173,8 @@ static int sceNpGetContentRatingFlag(u32 parentalControlAddr, u32 userAgeAddr)
 	INFO_LOG(Log::sceNet, "%s - Parental Control: %d", __FUNCTION__, npParentalControl);
 	INFO_LOG(Log::sceNet, "%s - User Age: %d", __FUNCTION__, npUserAge);
 
-	Memory::Write_U32(npParentalControl, parentalControlAddr);
-	Memory::Write_U32(npUserAge, userAgeAddr);
+	Memory::WriteOrException_U32(npParentalControl, parentalControlAddr);
+	Memory::WriteOrException_U32(npUserAge, userAgeAddr);
 
 	return hleLogWarning(Log::sceNet, 0, "UNTESTED");
 }
@@ -184,7 +184,7 @@ static int sceNpGetChatRestrictionFlag(u32 flagAddr)
 	if (!Memory::IsValidAddress(flagAddr))
 		return hleLogError(Log::sceNet, SCE_NP_ERROR_INVALID_ARGUMENT, "invalid arg");
 
-	Memory::Write_U32(npChatRestriction, flagAddr);
+	Memory::WriteOrException_U32(npChatRestriction, flagAddr);
 
 	return hleLogWarning(Log::sceNet, 0, "Chat restriction: %d", npChatRestriction);
 }
@@ -354,14 +354,12 @@ param seems to be a struct where offset:
 	+20: 32-bit a pointer to a random data (4 to 8-bytes data max? both 2x 32-bit seems to be a valid pointer). optional handler args?
 return value >= 0 and <0 seems to be stored at a different location by the game (valid result vs error code?)
 */
-int sceNpAuthCreateStartRequest(u32 paramAddr)
-{
-	if (!Memory::IsValidAddress(paramAddr))
-		return hleLogError(Log::sceNet, SCE_NP_AUTH_ERROR_INVALID_ARGUMENT, "invalid arg");
-
+int sceNpAuthCreateStartRequest(u32 paramAddr) {
 	SceNpAuthRequestParameter params = {};
-	int size = Memory::Read_U32(paramAddr);
-	Memory::Memcpy(&params, paramAddr, size);
+	if (!ReadVariableSizedStruct(paramAddr, &params)) {
+		return hleLogError(Log::sceNet, SCE_NP_AUTH_ERROR_INVALID_ARGUMENT, "invalid arg");
+	}
+
 	npServiceId = Memory::GetCharPointer(params.serviceIdAddr);
 
 	INFO_LOG(Log::sceNet, "%s - Max Version: %u.%u", __FUNCTION__, params.version.major, params.version.minor);

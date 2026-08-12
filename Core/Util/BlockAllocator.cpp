@@ -134,7 +134,7 @@ u32 BlockAllocator::AllocAligned(u32 &size, u32 sizeGrain, u32 grain, bool fromT
 	}
 
 	//Out of memory :(
-	ListBlocks();
+	ListBlocks(LogLevel::LINFO);
 	ERROR_LOG(Log::sceKernel, "Block Allocator (%08x-%08x) failed to allocate %i (%08x) bytes of contiguous memory", rangeStart_, rangeStart_ + rangeSize_, size, size);
 	return -1;
 }
@@ -215,7 +215,7 @@ u32 BlockAllocator::AllocAt(u32 position, u32 size, const char *tag)
 
 
 	//Out of memory :(
-	ListBlocks();
+	ListBlocks(LogLevel::LINFO);
 	ERROR_LOG(Log::sceKernel, "Block Allocator (%08x-%08x) failed to allocate %i (%08x) bytes of contiguous memory", rangeStart_, rangeStart_ + rangeSize_, alignedSize, alignedSize);
 	return -1;
 }
@@ -338,7 +338,13 @@ void BlockAllocator::CheckBlocks() const
 
 const char *BlockAllocator::GetBlockTag(u32 addr) const {
 	const Block *b = GetBlockFromAddress(addr);
-	return b->tag;
+	// Unlike the other accessors here, this used to dereference a possibly-null
+	// block unconditionally. Callers (e.g. NetAdhocCommon.cpp) pass the result
+	// straight into strcmp() against an expected tag as part of recovering from a
+	// stale address left over from an old/corrupt savestate, so return "" rather
+	// than nullptr - it simply won't match, correctly triggering their recovery
+	// path instead of crashing in strcmp().
+	return b ? b->tag : "";
 }
 
 inline BlockAllocator::Block *BlockAllocator::GetBlockFromAddress(u32 addr)
@@ -387,15 +393,14 @@ u32 BlockAllocator::GetBlockSizeFromAddress(u32 addr) const
 		return -1;
 }
 
-void BlockAllocator::ListBlocks() const
-{
-	DEBUG_LOG(Log::sceKernel,"-----------");
+void BlockAllocator::ListBlocks(LogLevel level) const {
+	GENERIC_LOG(Log::sceKernel, level, "-----------");
 	for (const Block *bp = bottom_; bp != NULL; bp = bp->next)
 	{
 		const Block &b = *bp;
-		DEBUG_LOG(Log::sceKernel, "Block: %08x - %08x size %08x taken=%i tag=%s", b.start, b.start+b.size, b.size, b.taken ? 1:0, b.tag);
+		GENERIC_LOG(Log::sceKernel, level, "Block: %08x - %08x size %08x taken=%i tag=%s", b.start, b.start+b.size, b.size, b.taken ? 1:0, b.tag);
 	}
-	DEBUG_LOG(Log::sceKernel,"-----------");
+	GENERIC_LOG(Log::sceKernel, level, "-----------");
 }
 
 u32 BlockAllocator::GetLargestFreeBlockSize() const
@@ -451,6 +456,18 @@ void BlockAllocator::DoState(PointerWrap &p)
 		bottom_ = new Block(0, 0, false, NULL, NULL);
 		bottom_->DoState(p, compact);
 		--count;
+
+		// A corrupt/malicious savestate could claim an enormous block count. Each
+		// block needs at least sizeof(start)+sizeof(size)+sizeof(taken)+sizeof(tag)
+		// bytes in the stream. Reject totally outlandish values, and also if count is now sub-zero.
+		size_t maxRemainingBlocks = p.Remaining() / (sizeof(u32) + sizeof(u32) + 1 + 32);
+		if (count < 0) {
+			count = 0;
+			p.SetError(PointerWrap::ERROR_FAILURE);
+		} else if ((size_t)count > maxRemainingBlocks) {
+			count = (int)maxRemainingBlocks;
+			p.SetError(PointerWrap::ERROR_FAILURE);
+		}
 
 		top_ = bottom_;
 		for (int i = 0; i < count; ++i)

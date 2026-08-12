@@ -49,8 +49,6 @@ bool RequestHeader::GetOther(const char *name, std::string *value) const {
 	return false;
 }
 
-// Intended to be a mad fast parser. It's not THAT fast currently, there's still
-// things to optimize, but meh.
 int RequestHeader::ParseHttpHeader(const char *buffer) {
 	if (first_header_) {
 		// Step 1: Method
@@ -74,12 +72,24 @@ int RequestHeader::ParseHttpHeader(const char *buffer) {
 		// Step 2: Resource, params (what's after the ?, if any)
 		const char *endptr = strchr(buffer, ' ');
 		const char *q_ptr = strchr(buffer, '?');
+		if (!endptr) {
+			// No trailing space. Fall back to
+			// the end of the line instead of leaving endptr null.
+			// Nemo's repro (python):
+			// import socket
+			// SERVER_IP = "127.0.0.1"
+			// PORT = 65199  # my port
+			// message = "GET /\n"
+			// client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			// client_socket.connect((SERVER_IP, PORT)); client_socket.sendall(message.encode('utf-8'))
+			endptr = buffer + strlen(buffer);
+		}
 
 		int resource_name_len;
 		if (q_ptr)
-			resource_name_len = q_ptr - buffer;
+			resource_name_len = (int)(q_ptr - buffer);
 		else
-			resource_name_len = endptr - buffer;
+			resource_name_len = (int)(endptr - buffer);
 		if (!resource_name_len) {
 			status = 400;
 			return -1;
@@ -88,7 +98,9 @@ int RequestHeader::ParseHttpHeader(const char *buffer) {
 		memcpy(resource, buffer, resource_name_len);
 		resource[resource_name_len] = '\0';
 		if (q_ptr) {
-			int param_length = endptr - q_ptr - 1;
+			int param_length = (int)(endptr - q_ptr - 1);
+			if (param_length < 0)  // This is likely just paranoia.
+				param_length = 0;
 			params = new char[param_length + 1];
 			memcpy(params, q_ptr + 1, param_length);
 			params[param_length] = '\0';

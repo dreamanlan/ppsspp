@@ -181,7 +181,9 @@ static const CommandLineParam g_autoParams[] = {
 	{POFF(log), CmdParamType::String, "log", '\0', "Output log to FILE", CmdLineMode::Application},
 	{POFF(enableLogging), CmdParamType::Bool, "log", '\0', "Full log output, not just emulated printfs", CmdLineMode::Headless},
 	{POFF(screenshotFilename), CmdParamType::String, "screenshot", '\0', "Compare rendered output against a reference screenshot FILE", CmdLineMode::Headless},
-	{POFF(screenshotFilenameSave), CmdParamType::String, "screenshot-save", '\0', "Save rendered screenshot to specified path", CmdLineMode::Headless},
+	{POFF(screenshotFilenameSave), CmdParamType::String, "screenshot-save", '\0', "Save rendered screenshot to specified path (PNG if the path ends in .png, BMP otherwise)", CmdLineMode::Headless},
+	{POFF(screenshotFilenameDiff), CmdParamType::String, "screenshot-diff", '\0', "Save a visual comparison image to FILE when comparing screenshots", CmdLineMode::Headless},
+	{POFF(screenshotSaveKeepAlpha), CmdParamType::Bool, "screenshot-keep-alpha", '\0', "Preserve the alpha channel when saving PNG screenshots (default: alpha is forced to 255)", CmdLineMode::Headless},
 	{POFF(timeout), CmdParamType::Double, "timeout", '\0', "Set the timeout value", CmdLineMode::Headless},
 	{POFF(maxScreenshotError), CmdParamType::Double, "max-mse", '\0', "Maximum allowed MSE error for screenshot comparison", CmdLineMode::Headless},
 	{POFF(mountIso), CmdParamType::String, "mount", 'm', "Mount ISO/CSO on umd1:", CmdLineMode::Headless},
@@ -240,10 +242,11 @@ int CommandLineOptions::PrintUsage(const char *progname, const char *situationTe
 	PRINT_STDOUT("  -v                    set the log level to verbose\n");
 	PRINT_STDOUT("  --loglevel=INTEGER    set the log level to specified value\n");
 	if (mode == CmdLineMode::Application) {
-		PRINT_STDOUT("  --log=FILE            output log to FILE\n");
+		PRINT_STDOUT("  --log=FILE        output log to FILE\n");
 	}
 	PRINT_STDOUT("  --state=FILE          load state from FILE\n");
 
+	PRINT_STDOUT("  --cpu=CPU             use the specified CPU core (interpreter, ir, jit, jit-ir)\n");
 	PRINT_STDOUT("  -i                    use the interpreter\n");
 	PRINT_STDOUT("  -r                    use IR interpreter\n");
 	PRINT_STDOUT("  -j                    use JIT\n");
@@ -288,14 +291,11 @@ int CommandLineOptions::PrintUsage(const char *progname, const char *situationTe
 // Actually might want to reconsider given Android...
 CommandLineParseResult CommandLineOptions::Parse(int argc, const char *argv[], CmdLineMode mode) {
 	this->mode = mode;
+	constexpr std::string_view cpuBackendStr = "--cpu=";
 	constexpr std::string_view gpuBackendStr = "--graphics=";
 	constexpr std::string_view configOption = "--config=";
 	constexpr std::string_view controlsOption = "--controlconfig=";
 	constexpr std::string_view logLevelOption = "--loglevel=";
-
-#ifdef _DEBUG
-	enableLogging = true;
-#endif
 
 	// The rest is handled in NativeInit().
 	// NOTE: We don't increment i here, as we'll sometimes handle options that read the next argument.
@@ -415,7 +415,27 @@ CommandLineParseResult CommandLineOptions::Parse(int argc, const char *argv[], C
 			} else {
 				// Bad value, report error and exit.
 				PRINT_STDERR("Invalid value for --graphics=: %s", restOfOption.c_str());
-				return CommandLineParseResult::Exit;
+				return CommandLineParseResult::Error;
+			}
+		} else if (startsWith(argv[i], cpuBackendStr)) {
+			const std::string restOfOption = argv[i] + cpuBackendStr.size();
+			// Force software rendering off, as picking gles implies HW acceleration.
+			// We could add more options for software such as "software-gles",
+			// "software-vulkan" and "software-d3d11", or something similar.
+			// For now, software rendering force-activates OpenGL.
+			double glVersionTemp = 0.0f;
+			if (restOfOption == "interpreter") {
+				cpuCore = CPUCore::INTERPRETER;
+			} else if (restOfOption == "jit") {
+				cpuCore = CPUCore::JIT;
+			} else if (restOfOption == "jit-ir") {
+				cpuCore = CPUCore::JIT_IR;
+			} else if (restOfOption == "ir") {
+				cpuCore = CPUCore::IR_INTERPRETER;
+			} else {
+				// Bad value, report error and exit.
+				PRINT_STDERR("Invalid value for --cpu=: %s", restOfOption.c_str());
+				return CommandLineParseResult::Error;
 			}
 		} else if (startsWith(argv[i], configOption)) {
 			configFilename = std::string(argv[i] + configOption.size());
@@ -431,10 +451,11 @@ CommandLineParseResult CommandLineOptions::Parse(int argc, const char *argv[], C
 				continue;
 			} else {
 				PRINT_STDERR("Error: --ignore requires an argument.\n");
-				return CommandLineParseResult::Exit;
+				return CommandLineParseResult::Error;
 			}
-		} else {
-			// Report unknown argument later once this is complete.
+		} else if (startsWith(argv[i], "--")) {
+			PRINT_STDERR("Error: Unknown parameter: %s\n", argv[i]);
+			return CommandLineParseResult::Error;
 		}
 		// To the next argument.
 		i++;
@@ -458,6 +479,9 @@ void CommandLineOptions::ApplyToConfig() const {
 		g_Config.iGPUBackend = (int)gpuBackend.value();
 		g_Config.DoNotSaveSetting(&g_Config.iGPUBackend);
 	}
+	if (cpuCore.has_value()) {
+		g_Config.iCpuCore = (int)cpuCore.value();
+	}
 	if (softwareRendering.has_value()) {
 		g_Config.bSoftwareRendering = softwareRendering.value();
 		g_Config.DoNotSaveSetting(&g_Config.bSoftwareRendering);
@@ -469,9 +493,6 @@ void CommandLineOptions::ApplyToConfig() const {
 	if (optionS) {
 		g_Config.bAutoRun = false;
 		g_Config.bSaveSettings = false;
-	}
-	if (cpuCore.has_value()) {
-		g_Config.iCpuCore = (int)cpuCore.value();
 	}
 	if (escapeExit.has_value()) {
 		g_Config.bPauseExitsEmulator = escapeExit.value();

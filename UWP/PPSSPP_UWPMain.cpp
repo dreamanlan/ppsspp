@@ -143,19 +143,9 @@ void PPSSPP_UWPMain::UpdateScreenState() {
 	g_display.pixel_xres = viewport.Width;
 	g_display.pixel_yres = viewport.Height;
 
-	if (g_display.rotation == DisplayRotation::ROTATE_90 || g_display.rotation == DisplayRotation::ROTATE_270) {
-		// We need to swap our width/height.
-		// TODO: This is most likely dead code, since we no longer support Windows Phone.
-		std::swap(g_display.pixel_xres, g_display.pixel_yres);
-	}
-
 	// TODO: The below stuff is probably completely redundant since the UWP app elsewhere calls Native_UpdateScreenScale.
 
 	float dpi = m_deviceResources->GetActualDpi();
-	if (System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_MOBILE) {
-		// Boost DPI a bit to look better.
-		dpi *= 96.0f / 136.0f;
-	}
 
 	g_display.dpi_scale_real_x = 96.0f / dpi;
 	g_display.dpi_scale_real_y = 96.0f / dpi;
@@ -257,17 +247,18 @@ void PPSSPP_UWPMain::OnMouseWheel(float delta) {
 	// KeyInputFlags::UP is now sent automatically afterwards for mouse wheel events, see NativeKey.
 }
 
-bool PPSSPP_UWPMain::OnHardwareButton(HardwareButton button) {
-	KeyInput keyInput{};
-	keyInput.deviceId = DEVICE_ID_KEYBOARD;
-	keyInput.flags = KeyInputFlags::DOWN | KeyInputFlags::UP;
-	switch (button) {
-	case HardwareButton::BACK:
-		keyInput.keyCode = NKCODE_BACK;
-		return NativeKey(keyInput);
-	default:
+bool PPSSPP_UWPMain::OnBackRequested() {
+	if (NativeIsAtTopLevel())
 		return false;
-	}
+
+	KeyInput key{};
+	key.deviceId = DEVICE_ID_DEFAULT;
+	key.keyCode = NKCODE_BACK;
+	key.flags = KeyInputFlags::DOWN;
+	NativeKey(key);
+	key.flags = KeyInputFlags::UP;
+	NativeKey(key);
+	return true;
 }
 
 void PPSSPP_UWPMain::OnTouchEvent(TouchInputFlags flags, int touchId, float x, float y, double timestamp) {
@@ -321,11 +312,6 @@ void UWPGraphicsContext::ShutdownAPI() {
 bool IsXBox() {
 	auto deviceInfo = winrt::Windows::System::Profile::AnalyticsInfo::VersionInfo();
 	return deviceInfo.DeviceFamily() == L"Windows.Xbox";
-}
-
-bool IsMobile() {
-	auto deviceInfo = winrt::Windows::System::Profile::AnalyticsInfo::VersionInfo();
-	return deviceInfo.DeviceFamily() == L"Windows.Mobile";
 }
 
 void GetVersionInfo(uint32_t& major, uint32_t& minor, uint32_t& build, uint32_t& revision) {
@@ -416,9 +402,6 @@ std::vector<std::string> System_GetPropertyStringVec(SystemProperty prop) {
 	}
 }
 
-bool System_SendDebugOutput(std::string_view data) { return false; }
-void System_SendDebugScreenshot(const uint8_t *data, int width, int height) {}
-
 extern AudioBackend *g_audioBackend;
 
 int64_t System_GetPropertyInt(SystemProperty prop) {
@@ -428,9 +411,7 @@ int64_t System_GetPropertyInt(SystemProperty prop) {
 
 	case SYSPROP_DEVICE_TYPE:
 	{
-		if (IsMobile()) {
-			return DEVICE_TYPE_MOBILE;
-		} else if (IsXBox()) {
+		if (IsXBox()) {
 			return DEVICE_TYPE_TV;
 		} else {
 			return DEVICE_TYPE_DESKTOP;
@@ -487,9 +468,9 @@ bool System_GetPropertyBool(SystemProperty prop) {
 	case SYSPROP_HAS_IMAGE_BROWSER:
 		return true;  // we just use the file browser
 	case SYSPROP_HAS_BACK_BUTTON:
-		return true;
+		return false;
 	case SYSPROP_HAS_ACCELEROMETER:
-		return IsMobile();
+		return false;
 	case SYSPROP_APP_GOLD:
 #ifdef GOLD
 		return true;
@@ -564,6 +545,9 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 		switch ((BrowseFileType)param3) {
 		case BrowseFileType::BOOTABLE:
 			supportedExtensions = { ".cso", ".iso", ".chd", ".elf", ".pbp", ".zip", ".prx", ".bin" };  // should .bin even be here?
+			break;
+		case BrowseFileType::SAVE_STATE:
+			supportedExtensions = { ".ppst" };
 			break;
 		case BrowseFileType::INI:
 			supportedExtensions = { ".ini" };
@@ -683,19 +667,6 @@ std::vector<std::string> System_GetCameraDeviceList() {
 }
 
 void System_Vibrate(int length_ms) {
-#if _M_ARM
-	if (length_ms == -1 || length_ms == -3)
-		length_ms = 50;
-	else if (length_ms == -2)
-		length_ms = 25;
-	else
-		return;
-
-	winrt::Windows::Foundation::TimeSpan timeSpan;
-	timeSpan.count = length_ms * 10000;
-	// TODO: Can't use this?
-	// winrt::Windows::Phone::Devices::Notification::VibrationDevice::GetDefault().Vibrate(timeSpan);
-#endif
 }
 
 void System_AskForPermission(SystemPermission permission) {

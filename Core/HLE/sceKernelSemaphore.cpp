@@ -132,7 +132,7 @@ static bool __KernelUnlockSemaForThread(PSPSemaphore *s, SceUID threadID, u32 &e
 		s64 cyclesLeft = CoreTiming::UnscheduleEvent(semaWaitTimer, threadID);
 		if (cyclesLeft < 0)
 			cyclesLeft = 0;
-		Memory::Write_U32((u32) cyclesToUs(cyclesLeft), timeoutPtr);
+		Memory::WriteOrException_U32((u32) cyclesToUs(cyclesLeft), timeoutPtr);
 	}
 
 	__KernelResumeThreadFromWait(threadID, result);
@@ -184,7 +184,7 @@ int sceKernelCancelSema(SceUID id, int newCount, u32 numWaitThreadsPtr)
 
 		s->ns.numWaitThreads = (int) s->waitingThreads.size();
 		if (Memory::IsValidAddress(numWaitThreadsPtr))
-			Memory::Write_U32(s->ns.numWaitThreads, numWaitThreadsPtr);
+			Memory::WriteOrException_U32(s->ns.numWaitThreads, numWaitThreadsPtr);
 
 		if (newCount < 0)
 			s->ns.currentCount = s->ns.initCount;
@@ -224,10 +224,11 @@ int sceKernelCreateSema(const char* name, u32 attr, int initVal, int maxVal, u32
 	}
 
 	// Many games pass garbage into optionPtr, it doesn't have any options.
+	// TODO: Presumably that means that this function simply doesn't have an option parameter?
 	if (optionPtr != 0) {
 		if (!Memory::IsValidRange(optionPtr, 4))
 			return hleLogWarning(Log::sceKernel, id, "invalid options parameter");
-		else if (Memory::Read_U32(optionPtr) > 4)
+		else if (Memory::ReadUnchecked_U32(optionPtr) > 4)
 			return hleLogDebug(Log::sceKernel, id, "invalid options parameter size");
 	}
 	return hleLogDebug(Log::sceKernel, id);
@@ -332,7 +333,7 @@ static void __KernelSetSemaTimeout(PSPSemaphore *s, u32 timeoutPtr) {
 	if (timeoutPtr == 0 || semaWaitTimer == -1)
 		return;
 
-	int micro = (int) Memory::Read_U32(timeoutPtr);
+	int micro = (int)Memory::ReadOrException_U32(timeoutPtr);
 
 	// This happens to be how the hardware seems to time things.
 	if (micro <= 3)
