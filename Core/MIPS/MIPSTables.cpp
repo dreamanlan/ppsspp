@@ -15,6 +15,8 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include <vector>
+
 #include "Common/StringUtils.h"
 
 #include "Core/Core.h"
@@ -22,8 +24,9 @@
 #include "Core/MIPS/MIPS.h"
 #include "Core/MIPS/MIPSDis.h"
 #include "Core/MIPS/MIPSDisVFPU.h"
-#include "Core/MIPS/MIPSInt.h"
-#include "Core/MIPS/MIPSIntVFPU.h"
+#include "Core/MIPS/Interpreter.h"
+#include "Core/MIPS/InterpreterDispatch.h"
+#include "Core/MIPS/InterpreterVFPU.h"
 #include "Core/MIPS/MIPSCodeUtils.h"
 #include "Core/MIPS/MIPSTables.h"
 #include "Core/CoreTiming.h"
@@ -72,6 +75,7 @@ struct MIPSInstruction {
 	MIPSComp::MIPSCompileFunc compile;
 	MIPSDisFunc disasm;
 	MIPSInterpretFunc interpret;
+	const char *interpretName;
 	//MIPSInstructionInfo information;
 	MIPSInfo flags;
 };
@@ -80,7 +84,7 @@ struct MIPSInstruction {
 #define INVALID_X_8 INVALID,INVALID,INVALID,INVALID,INVALID,INVALID,INVALID,INVALID
 
 #define ENCODING(a) {a}
-#define INSTR(name, comp, dis, inter, flags) {Instruc, name, comp, dis, inter, MIPSInfo(flags)}
+#define INSTR(name, comp, dis, inter, flags) {Instruc, name, comp, dis, inter, #inter, MIPSInfo(flags)}
 
 #define JITFUNC(f) (&MIPSFrontendInterface::f)
 
@@ -899,6 +903,145 @@ const MIPSInstruction *MIPSGetInstruction(MIPSOpcode op) {
 	return instr;
 }
 
+// Emits one level of the dispatch tree as a switch statement, recursing into nested
+// switches for ENCODING() redirects. Mirrors the traversal MIPSGetInstruction() does at
+// runtime, but resolves it into source text once instead of walking it on every call.
+static void EmitDispatchLevel(std::string &out, MipsEncoding encoding, int indent) {
+	const MIPSInstruction *table = mipsTables[encoding];
+	const EncodingBitsInfo &bits = encodingBits[encoding];
+	_dbg_assert_(table != nullptr);
+
+	std::string ind(indent * 4, ' ');
+	std::string ind2((indent + 1) * 4, ' ');
+
+	// Group indices that share identical behavior (same leaf interpret function, or same
+	// redirect target) so they can share one case block instead of duplicating it.
+	u32 size = bits.mask + 1;
+	std::vector<bool> handled(size, false);
+	bool anyCases = false;
+	for (u32 i = 0; i < size; i++) {
+		const MIPSInstruction &probe = table[i];
+		bool isInvalid = probe.altEncoding == Inval || (probe.altEncoding == Instruc && probe.interpret == nullptr);
+		if (!isInvalid) {
+			anyCases = true;
+			break;
+		}
+	}
+	if (!anyCases) {
+		// Every slot in this level is invalid (or unimplemented) - no point emitting an
+		// empty switch (MSVC warns C4065 on a switch with only a default label).
+		out += ind + "return -1;\n";
+		return;
+	}
+
+	out += ind + StringFromFormat("switch ((op.encoding >> %d) & 0x%x) {\n", bits.shift, bits.mask);
+
+	for (u32 i = 0; i < size; i++) {
+		if (handled[i])
+			continue;
+		const MIPSInstruction &instr = table[i];
+		if (instr.altEncoding == Inval)
+			continue; // Falls through to default (slow path).
+		if (instr.altEncoding == Instruc && instr.interpret == nullptr)
+			continue; // No interpreter implemented for this one (e.g. tge/tlt/teq/...) - slow path.
+		handled[i] = true;
+
+		std::vector<u32> group{ i };
+		for (u32 j = i + 1; j < size; j++) {
+			if (handled[j])
+				continue;
+			const MIPSInstruction &other = table[j];
+			bool same;
+			if (instr.altEncoding == Instruc && other.altEncoding == Instruc)
+				// Cycle count must match too - it's baked into the generated "return N;",
+				// so two leaves sharing a handler but not a cycle count can't be merged.
+				same = instr.interpret == other.interpret && instr.flags.cycles == other.flags.cycles;
+			else if (instr.altEncoding != Instruc && other.altEncoding != Instruc)
+				same = instr.altEncoding == other.altEncoding;
+			else
+				same = false;
+			if (same) {
+				group.push_back(j);
+				handled[j] = true;
+			}
+		}
+
+		if (instr.altEncoding == Instruc) {
+			std::string names;
+			for (u32 idx : group) {
+				if (!names.empty())
+					names += ", ";
+				names += table[idx].name;
+			}
+			out += ind + StringFromFormat("// %s\n", names.c_str());
+			for (u32 idx : group)
+				out += ind + StringFromFormat("case %d:\n", idx);
+			out += ind2 + StringFromFormat("MIPSInt::%s(mips, op);\n", instr.interpretName);
+			out += ind2 + StringFromFormat("return %d;\n", (int)instr.flags.cycles);
+		} else {
+			for (u32 idx : group)
+				out += ind + StringFromFormat("case %d:\n", idx);
+			out += ind + "{\n";
+			EmitDispatchLevel(out, instr.altEncoding, indent + 1);
+			out += ind + "}\n";
+			// No trailing return here - the nested switch above always either returns
+			// a value directly from a case, or falls to its own default's "return -1;".
+		}
+	}
+
+	out += ind + "default:\n";
+	out += ind2 + "return -1;\n";
+	out += ind + "}\n";
+}
+
+// Generates a full, compilable Core/MIPS/InterpreterDispatch.cpp: a fast
+// int ExecInstruction(MIPSState *mips, MIPSOpcode op) dispatcher, built by resolving the
+// tables above into a nested switch tree at generation time, so each real instruction is
+// reached by a direct call instead of MIPSGetInstruction()'s per-instruction table walk plus
+// indirect call through instr->interpret. Leaves call straight into the existing
+// MIPSInt::Int_* handlers - the tables only record which handler an opcode maps to, not the
+// handler's behavior, so that's the only thing there is to call - and return that
+// instruction's fixed cycle count (baked in at generation time, same value
+// MIPSGetInstructionCycleEstimate() would have returned) so the caller can still track
+// downcount.
+//
+// The generated function is deliberately not total: most of the 32-bit opcode space doesn't
+// decode to anything (either a genuinely invalid encoding, or a real-but-uninterpreted
+// instruction like tge/tlt/teq/...), and any such case returns -1 instead of embedding a
+// fallback. The generator has no more information about those cases than "not one of the
+// ~305 known leaves" - what to actually do about that (log it, disassemble it, whatever) is
+// a policy decision that belongs to the caller, not to a mechanically generated dispatch
+// tree. Callers must check for a negative return and fall back to MIPSInterpret() themselves.
+//
+// Regenerate by running `PPSSPPHeadless --generate-interpreter-dispatch > Core/MIPS/InterpreterDispatch.cpp`
+// after the tables above change. Do not hand-edit the generated file.
+std::string GenerateInterpreterDispatch() {
+	std::string out;
+	out += "// Copyright (c) 2012- PPSSPP Project.\n\n";
+	out += "// This program is free software: you can redistribute it and/or modify\n";
+	out += "// it under the terms of the GNU General Public License as published by\n";
+	out += "// the Free Software Foundation, version 2.0 or later versions.\n\n";
+	out += "// This program is distributed in the hope that it will be useful,\n";
+	out += "// but WITHOUT ANY WARRANTY; without even the implied warranty of\n";
+	out += "// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n";
+	out += "// GNU General Public License 2.0 for more details.\n\n";
+	out += "// A copy of the GPL 2.0 should have been included with the program.\n";
+	out += "// If not, see http://www.gnu.org/licenses/\n\n";
+	out += "// Official git repository and contact information can be found at\n";
+	out += "// https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.\n\n";
+	out += "// AUTO-GENERATED by `PPSSPPHeadless --generate-interpreter-dispatch` from the\n";
+	out += "// tables in MIPSTables.cpp - do not hand-edit, regenerate instead.\n\n";
+	out += "#include \"Core/MIPS/MIPS.h\"\n";
+	out += "#include \"Core/MIPS/Interpreter.h\"\n";
+	out += "#include \"Core/MIPS/InterpreterVFPU.h\"\n\n";
+	out += "// Returns the cycle count consumed, or -1 if op isn't a recognized instruction -\n";
+	out += "// callers must fall back to MIPSInterpret() themselves in that case.\n";
+	out += "int ExecInstruction(MIPSState *mips, MIPSOpcode op) {\n";
+	EmitDispatchLevel(out, Imme, 1);
+	out += "}\n";
+	return out;
+}
+
 void MIPSCompileOp(MIPSOpcode op, MIPSComp::MIPSFrontendInterface *jit) {
 	if (op == 0)
 		return;
@@ -939,16 +1082,11 @@ void MIPSDisAsm(MIPSOpcode op, u32 pc, char *out, size_t outSize, bool tabsToSpa
 	}
 }
 
-static inline void Interpret(const MIPSInstruction *instr, MIPSOpcode op) {
+static inline void Interpret(MIPSState *mips, const MIPSInstruction *instr, MIPSOpcode op) {
 	if (instr && instr->interpret) {
-		instr->interpret(op);
+		instr->interpret(mips, op);
 	} else {
-		ERROR_LOG_REPORT(Log::CPU, "Unknown instruction %08x at %08x", op.encoding, currentMIPS->pc);
-		// Try to disassemble it
-		char disasm[256];
-		MIPSDisAsm(op, currentMIPS->pc, disasm, sizeof(disasm));
-		_dbg_assert_msg_(0, "%s", disasm);
-		currentMIPS->pc += 4;
+		Core_ExecException(mips->pc, mips->pc, ExecExceptionType::ILLEGAL);
 	}
 }
 
@@ -958,111 +1096,118 @@ inline int GetInstructionCycleEstimate(const MIPSInstruction *instr) {
 	return 1;
 }
 
-void MIPSInterpret(MIPSOpcode op) {
+void MIPSInterpret(MIPSState *mips, MIPSOpcode op) {
 	const MIPSInstruction *instr = MIPSGetInstruction(op);
-	Interpret(instr, op);
+	Interpret(mips, instr, op);
 }
 
-#define _RS   ((op>>21) & 0x1F)
-#define _RT   ((op>>16) & 0x1F)
-#define _RD   ((op>>11) & 0x1F)
-#define R(i)   (curMips->r[i])
+// See the declaration comment in MIPSTables.h.
+void CDECL MIPSInterpretTrampoline(MIPSOpcode op) {
+	MIPSInterpret(currentMIPS, op);
+}
 
-static inline void RunUntilFast() {
-	MIPSState *curMips = currentMIPS;
-	// NEVER stop in a delay slot!
-	while (curMips->downcount >= 0 && coreState == CORE_RUNNING_CPU) {
+static void RunUntilDowncountZeroFast(MIPSState *mips) {
+	while (mips->downcount >= 0 && coreState == CORE_RUNNING_CPU) {
+		// Don't stop in a delay slot!
+		int cycleCount = 0;
 		do {
-			if (!Memory::IsValid4AlignedAddress(curMips->pc)) {
-				Core_ExecException(curMips->pc, curMips->pc, ExecExceptionType::JUMP);
+			if (!Memory::IsValid4AlignedAddress(mips->pc)) {
+				Core_ExecException(mips->pc, mips->pc, ExecExceptionType::JUMP);
 				return;
 			}
-			MIPSOpcode op = MIPSOpcode(Memory::ReadUnchecked_U32(curMips->pc));
+			MIPSOpcode op = MIPSOpcode(Memory::ReadUnchecked_U32(mips->pc));
 
-			bool wasInDelaySlot = curMips->inDelaySlot;
-			const MIPSInstruction *instr = MIPSGetInstruction(op);
-			Interpret(instr, op);
-			curMips->downcount -= GetInstructionCycleEstimate(instr);
+			bool wasInDelaySlot = mips->inDelaySlot;
+			int cycles = ExecInstruction(mips, op);
+			if (cycles < 0) {
+				// Not a recognized instruction (invalid encoding, or an unimplemented kernel-mode only instruction
+				// with no interpreter implementation, e.g. tge/tlt/teq/).
+				Core_ExecException(mips->pc, mips->pc, ExecExceptionType::ILLEGAL);
+				break;
+			}
+			cycleCount += cycles;
 
 			// The reason we have to check this is the delay slot hack in Int_Syscall.
-			if (curMips->inDelaySlot && wasInDelaySlot) {
-				curMips->pc = curMips->nextPC;
-				curMips->inDelaySlot = false;
+			if (mips->inDelaySlot && wasInDelaySlot) {
+				mips->pc = mips->nextPC;
+				mips->inDelaySlot = false;
 			}
-		} while (curMips->inDelaySlot);
+		} while (mips->inDelaySlot);
+		mips->downcount -= cycleCount;
 	}
 }
 
-static void RunUntilWithChecks(u64 globalTicks) {
-	MIPSState *curMips = currentMIPS;
-	// NEVER stop in a delay slot!
+#define _RS(op)   ((op>>21) & 0x1F)
+static void RunUntilDowncountZeroWithChecks(MIPSState *mips, u64 globalTicks) {
 	bool hasBPs = g_breakpoints.HasBreakPoints();
 	bool hasMCs = g_breakpoints.HasMemChecks();
-	while (curMips->downcount >= 0 && coreState == CORE_RUNNING_CPU) {
+	while (mips->downcount >= 0 && coreState == CORE_RUNNING_CPU) {
+		// Don't stop in a delay slot! Well, unless we hit a memcheck in one, of course.
 		do {
-			if (!Memory::IsValid4AlignedAddress(curMips->pc)) {
-				Core_ExecException(curMips->pc, curMips->pc, ExecExceptionType::JUMP);
+			if (!Memory::IsValid4AlignedAddress(mips->pc)) {
+				Core_ExecException(mips->pc, mips->pc, ExecExceptionType::JUMP);
 				return;
 			}
-			MIPSOpcode op = MIPSOpcode(Memory::ReadUnchecked_U32(curMips->pc));
+			MIPSOpcode op = MIPSOpcode(Memory::ReadUnchecked_U32(mips->pc));
 			// Replacements and similar are processed here, intentionally.
 			const MIPSInstruction *instr = MIPSGetInstruction(op);
 
 			// Check for breakpoint
-			if (hasBPs && g_breakpoints.IsAddressBreakPoint(curMips->pc) && g_breakpoints.CheckSkipFirst() != curMips->pc) {
-				auto cond = g_breakpoints.GetBreakPointCondition(currentMIPS->pc);
+			if (hasBPs && g_breakpoints.IsAddressBreakPoint(mips->pc) && g_breakpoints.CheckSkipFirst() != mips->pc) {
+				auto cond = g_breakpoints.GetBreakPointCondition(mips->pc);
 				if (!cond || cond->Evaluate()) {
-					Core_Break(BreakReason::CpuBreakpoint, curMips->pc);
-					if (g_breakpoints.IsTempBreakPoint(curMips->pc))
-						g_breakpoints.RemoveBreakPoint(curMips->pc);
+					Core_Break(BreakReason::CpuBreakpoint, mips->pc);
+					if (g_breakpoints.IsTempBreakPoint(mips->pc))
+						g_breakpoints.RemoveBreakPoint(mips->pc);
 					break;
 				}
 			}
-			if (hasMCs && (instr->flags & (IN_MEM | OUT_MEM)) != 0 && g_breakpoints.CheckSkipFirst() != curMips->pc && instr->interpret != &Int_Syscall) {
+			if (hasMCs && (instr->flags & (IN_MEM | OUT_MEM)) != 0 && g_breakpoints.CheckSkipFirst() != mips->pc && instr->interpret != &Int_Syscall) {
 				// This is common for all IN_MEM/OUT_MEM funcs.
 				int offset = (instr->flags & IS_VFPU) != 0 ? SignExtend16ToS32(op & 0xFFFC) : SignExtend16ToS32(op);
-				u32 addr = (R(_RS) + offset) & 0xFFFFFFFC;
+				u32 addr = (mips->r[_RS(op)] + offset) & 0xFFFFFFFC;
 				int sz = MIPSGetMemoryAccessSize(op);
 
 				if ((instr->flags & IN_MEM) != 0)
-					g_breakpoints.ExecMemCheck(addr, false, sz, curMips->pc, "interpret");
+					g_breakpoints.ExecMemCheck(addr, false, sz, mips->pc, "interpret");
 				if ((instr->flags & OUT_MEM) != 0)
-					g_breakpoints.ExecMemCheck(addr, true, sz, curMips->pc, "interpret");
+					g_breakpoints.ExecMemCheck(addr, true, sz, mips->pc, "interpret");
 
 				// If it tripped, bail without running.
 				if (coreState == CORE_STEPPING_CPU)
 					break;
 			}
 
-			bool wasInDelaySlot = curMips->inDelaySlot;
-			Interpret(instr, op);
-			curMips->downcount -= GetInstructionCycleEstimate(instr);
+			bool wasInDelaySlot = mips->inDelaySlot;
+			Interpret(mips, instr, op);
+			mips->downcount -= GetInstructionCycleEstimate(instr);
 
 			// The reason we have to check this is the delay slot hack in Int_Syscall.
-			if (curMips->inDelaySlot && wasInDelaySlot) {
-				curMips->pc = curMips->nextPC;
-				curMips->inDelaySlot = false;
+			if (mips->inDelaySlot && wasInDelaySlot) {
+				mips->pc = mips->nextPC;
+				mips->inDelaySlot = false;
 			}
-		} while (curMips->inDelaySlot);
+		} while (mips->inDelaySlot);
 
-		if (CoreTiming::GetTicks() > globalTicks)
+		if (CoreTiming::GetTicks(currentMIPS) > globalTicks)
 			return;
 	}
 }
+#undef _RS
 
-int MIPSInterpret_RunUntil(u64 globalTicks) {
-	MIPSState *curMips = currentMIPS;
+int MIPSInterpret_RunUntil(MIPSState *mips, u64 globalTicks) {
 	while (coreState == CORE_RUNNING_CPU) {
-		CoreTiming::Advance();
+		CoreTiming::Advance(mips);
 
-		uint64_t ticksLeft = globalTicks - CoreTiming::GetTicks();
-		if (g_breakpoints.HasBreakPoints() || g_breakpoints.HasMemChecks() || ticksLeft <= curMips->downcount)
-			RunUntilWithChecks(globalTicks);
-		else
-			RunUntilFast();
+		uint64_t ticksLeft = globalTicks - CoreTiming::GetTicks(mips);
+		if (g_breakpoints.HasBreakPoints() || g_breakpoints.HasMemChecks() || ticksLeft <= mips->downcount) {
+			RunUntilDowncountZeroWithChecks(mips, globalTicks);
+		} else {
+			RunUntilDowncountZeroFast(mips);
+		}
 
-		if (CoreTiming::GetTicks() > globalTicks) {
-			// DEBUG_LOG(Log::CPU, "Hit the max ticks, bailing 1 : %llu, %llu", globalTicks, CoreTiming::GetTicks());
+		if (CoreTiming::GetTicks(mips) > globalTicks) {
+			// DEBUG_LOG(Log::CPU, "Hit the max ticks, bailing 1 : %llu, %llu", globalTicks, CoreTiming::GetTicks(mips));
 			return 1;
 		}
 	}
@@ -1070,28 +1215,26 @@ int MIPSInterpret_RunUntil(u64 globalTicks) {
 	return 1;
 }
 
-const char *MIPSGetName(MIPSOpcode op)
-{
+const char *MIPSGetName(MIPSOpcode op) {
 	static const char * const noname = "unk";
 	const MIPSInstruction *instr = MIPSGetInstruction(op);
-	if (!instr)
+	if (!instr) {
 		return noname;
-	else
+	} else {
 		return instr->name;
+	}
 }
 
-MIPSInfo MIPSGetInfo(MIPSOpcode op)
-{
-	//	int crunch = CRUNCH_MIPS_OP(op);
+MIPSInfo MIPSGetInfo(MIPSOpcode op) {
 	const MIPSInstruction *instr = MIPSGetInstruction(op);
-	if (instr)
+	if (instr) {
 		return instr->flags;
-	else
+	} else {
 		return MIPSInfo(BAD_INSTRUCTION);
+	}
 }
 
-MIPSInterpretFunc MIPSGetInterpretFunc(MIPSOpcode op)
-{
+MIPSInterpretFunc MIPSGetInterpretFunc(MIPSOpcode op) {
 	const MIPSInstruction *instr = MIPSGetInstruction(op);
 	if (instr->interpret)
 		return instr->interpret;
@@ -1100,8 +1243,7 @@ MIPSInterpretFunc MIPSGetInterpretFunc(MIPSOpcode op)
 }
 
 // TODO: Do something that makes sense here.
-int MIPSGetInstructionCycleEstimate(MIPSOpcode op)
-{
+int MIPSGetInstructionCycleEstimate(MIPSOpcode op) {
 	const MIPSInstruction *instr = MIPSGetInstruction(op);
 	return GetInstructionCycleEstimate(instr);
 }

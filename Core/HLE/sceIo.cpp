@@ -446,9 +446,9 @@ static void __IoAsyncNotify(u64 userdata, int cyclesLate) {
 		__IoCompleteAsyncIO(f);
 	} else if (ioTimingMethod == IOTIMING_REALISTIC) {
 		u64 finishTicks = __IoCompleteAsyncIO(f);
-		if (finishTicks > CoreTiming::GetTicks()) {
+		if (finishTicks > CoreTiming::GetTicks(currentMIPS)) {
 			// Reschedule for later, since we now know how long it ought to take.
-			CoreTiming::ScheduleEvent(finishTicks - CoreTiming::GetTicks(), asyncNotifyEvent, userdata);
+			CoreTiming::ScheduleEvent(finishTicks - CoreTiming::GetTicks(currentMIPS), asyncNotifyEvent, userdata);
 			return;
 		}
 	} else {
@@ -502,9 +502,9 @@ static void __IoSyncNotify(u64 userdata, int cyclesLate) {
 		}
 	} else if (ioTimingMethod == IOTIMING_REALISTIC) {
 		u64 finishTicks = ioManager.ResultFinishTicks(f->handle);
-		if (finishTicks > CoreTiming::GetTicks()) {
+		if (finishTicks > CoreTiming::GetTicks(currentMIPS)) {
 			// Reschedule for later when the result should finish.
-			CoreTiming::ScheduleEvent(finishTicks - CoreTiming::GetTicks(), syncNotifyEvent, userdata);
+			CoreTiming::ScheduleEvent(finishTicks - CoreTiming::GetTicks(currentMIPS), syncNotifyEvent, userdata);
 			return;
 		}
 	}
@@ -587,7 +587,7 @@ static void __IoManagerThread() {
 	INFO_LOG(Log::sceIo, "Entering __IoManagerThread");
 	AndroidJNIThreadContext jniContext;
 	while (ioManagerThreadEnabled) {
-		ioManager.RunEventsUntil(CoreTiming::GetTicks() + msToCycles(1000));
+		ioManager.RunEventsUntil(CoreTiming::GetTicks(currentMIPS) + msToCycles(1000));
 	}
 	INFO_LOG(Log::sceIo, "Leaving __IoManagerThread");
 }
@@ -651,42 +651,6 @@ void __IoInit() {
 	asyncNotifyEvent = CoreTiming::RegisterEvent("IoAsyncNotify", __IoAsyncNotify);
 	syncNotifyEvent = CoreTiming::RegisterEvent("IoSyncNotify", __IoSyncNotify);
 
-	// TODO(scoped): This won't work if memStickDirectory points at the contents of /PSP...
-#if defined(USING_WIN_UI) || defined(APPLE)
-	auto flash0System = std::make_shared<DirectoryFileSystem>(&pspFileSystem, g_Config.flash0Directory, FileSystemFlags::FLASH);
-#else
-	auto flash0System = std::make_shared<VFSFileSystem>(&pspFileSystem, "flash0");
-#endif
-	FileSystemFlags memstickFlags = FileSystemFlags::SIMULATE_FAT32 | FileSystemFlags::CARD;
-
-	Path pspDir = GetSysDirectory(DIRECTORY_PSP);
-	if (pspDir == g_Config.memStickDirectory) {
-		// Initially tried to do this with dual mounts, but failed due to save state compatibility issues.
-		INFO_LOG(Log::sceIo, "Enabling /PSP compatibility mode");
-		memstickFlags |= FileSystemFlags::STRIP_PSP;
-	}
-
-	auto memstickSystem = std::make_shared<DirectoryFileSystem>(&pspFileSystem, g_Config.memStickDirectory, memstickFlags);
-
-	pspFileSystem.Mount("ms0:", memstickSystem);
-	pspFileSystem.Mount("fatms0:", memstickSystem);
-	pspFileSystem.Mount("fatms:", memstickSystem);
-	pspFileSystem.Mount("pfat0:", memstickSystem);
-
-	pspFileSystem.Mount("flash0:", flash0System);
-
-	if (g_RemasterMode) {
-		const std::string gameId = g_paramSFO.GetDiscID();
-		const Path exdataPath = GetSysDirectory(DIRECTORY_EXDATA) / gameId;
-		if (File::Exists(exdataPath)) {
-			auto exdataSystem = std::make_shared<DirectoryFileSystem>(&pspFileSystem, exdataPath, FileSystemFlags::SIMULATE_FAT32 | FileSystemFlags::CARD);
-			pspFileSystem.Mount("exdata0:", exdataSystem);
-			INFO_LOG(Log::sceIo, "Mounted exdata/%s/ under memstick for exdata0:/", gameId.c_str());
-		} else {
-			INFO_LOG(Log::sceIo, "Did not find exdata/%s/ under memstick for exdata0:/", gameId.c_str());
-		}
-	}
-	
 	__KernelListenThreadEnd(&TellFsThreadEnded);
 
 	memset(fds, 0, sizeof(fds));
@@ -701,6 +665,30 @@ void __IoInit() {
 	MemoryStick_Init();
 	lastMemStickState = MemoryStick_State();
 	lastMemStickFatState = MemoryStick_FatState();
+}
+
+void __IoShutdown() {
+	ioManagerThreadEnabled = false;
+	ioManager.SyncThread();
+	ioManager.FinishEventLoop();
+	if (ioManagerThread.joinable()) {
+		ioManagerThread.join();
+		ioManager.Shutdown();
+	}
+
+	for (int i = 0; i < PSP_COUNT_FDS; ++i) {
+		asyncParams[i].op = IoAsyncOp::NONE;
+		asyncParams[i].priority = -1;
+		if (asyncThreads[i])
+			asyncThreads[i]->Forget();
+		delete asyncThreads[i];
+		asyncThreads[i] = nullptr;
+	}
+	asyncDefaultPriority = -1;
+
+	MemoryStick_Shutdown();
+	memStickCallbacks.clear();
+	memStickFatCallbacks.clear();
 }
 
 void __IoDoState(PointerWrap &p) {
@@ -769,37 +757,6 @@ void __IoDoState(PointerWrap &p) {
 	} else {
 		asyncDefaultPriority = -1;
 	}
-}
-
-void __IoShutdown() {
-	ioManagerThreadEnabled = false;
-	ioManager.SyncThread();
-	ioManager.FinishEventLoop();
-	if (ioManagerThread.joinable()) {
-		ioManagerThread.join();
-		ioManager.Shutdown();
-	}
-
-	for (int i = 0; i < PSP_COUNT_FDS; ++i) {
-		asyncParams[i].op = IoAsyncOp::NONE;
-		asyncParams[i].priority = -1;
-		if (asyncThreads[i])
-			asyncThreads[i]->Forget();
-		delete asyncThreads[i];
-		asyncThreads[i] = nullptr;
-	}
-	asyncDefaultPriority = -1;
-
-	pspFileSystem.Unmount("ms0:");
-	pspFileSystem.Unmount("fatms0:");
-	pspFileSystem.Unmount("fatms:");
-	pspFileSystem.Unmount("pfat0:");
-	pspFileSystem.Unmount("flash0:");
-	pspFileSystem.Unmount("exdata0:");
-
-	MemoryStick_Shutdown();
-	memStickCallbacks.clear();
-	memStickFatCallbacks.clear();
 }
 
 static std::string IODetermineFilename(const FileNode *f) {
@@ -887,7 +844,7 @@ u64 __IoCompleteAsyncIO(FileNode *f) {
 	int ioTimingMethod = GetIOTimingMethod();
 	if (ioTimingMethod == IOTIMING_REALISTIC) {
 		u64 finishTicks = ioManager.ResultFinishTicks(f->handle);
-		if (finishTicks > CoreTiming::GetTicks()) {
+		if (finishTicks > CoreTiming::GetTicks(currentMIPS)) {
 			return finishTicks;
 		}
 	}
@@ -1196,7 +1153,7 @@ static bool __IoWrite(int &result, int id, u32 data_addr, int size, int &us) {
 		us = 100;
 	}
 
-	const void *data_ptr = Memory::GetPointer(data_addr);
+	const void *data_ptr = Memory::GetPointerOrException(data_addr);
 	const u32 validSize = Memory::ClampValidSizeAt(data_addr, size);
 	// Let's handle stdout/stderr specially.
 	if (id == PSP_STDOUT || id == PSP_STDERR) {
@@ -2522,7 +2479,7 @@ static u32 sceIoDread(int id, u32 dirent_addr) {
 			Core_MemoryException(dirent_addr, sizeof(SceIoDirEnt), currentMIPS->pc, MemoryExceptionType::WRITE_BLOCK, "sceIoDread");
 			return hleLogError(Log::sceIo, SCE_KERNEL_ERROR_ILLEGAL_ADDR, "invalid address");
 		}
-		SceIoDirEnt *entry = (SceIoDirEnt*) Memory::GetPointer(dirent_addr);
+		SceIoDirEnt *entry = (SceIoDirEnt*) Memory::GetPointerOrException(dirent_addr);
 
 		if (dir->index == (int) dir->listing.size()) {
 			entry->d_name[0] = '\0';

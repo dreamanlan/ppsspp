@@ -26,7 +26,7 @@
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Core/ConfigValues.h"
 #include "Core/MIPS/MIPS.h"
-#include "Core/MIPS/MIPSInt.h"
+#include "Core/MIPS/Interpreter.h"
 #include "Core/MIPS/MIPSTables.h"
 #include "Core/MIPS/MIPSDebugInterface.h"
 #include "Core/MIPS/MIPSVFPUUtils.h"
@@ -323,9 +323,9 @@ void MIPSState::DoState(PointerWrap &p) {
 }
 
 void MIPSState::SingleStep() {
-	int cycles = MIPS_SingleStep();
-	currentMIPS->downcount -= cycles;
-	CoreTiming::Advance();
+	int cycles = MIPS_SingleStep(this);
+	downcount -= cycles;
+	CoreTiming::Advance(currentMIPS);
 }
 
 // returns 1 if reached ticks limit
@@ -347,7 +347,7 @@ int MIPSState::RunLoopUntil(u64 globalTicks) {
 		break;
 
 	case CPUCore::INTERPRETER:
-		return MIPSInterpret_RunUntil(globalTicks);
+		return MIPSInterpret_RunUntil(this, globalTicks);
 	}
 	return 1;
 }
@@ -382,7 +382,7 @@ void MIPSState::ClearJitCache() {
 		if (coreState == CORE_RUNNING_CPU || insideJit) {
 			pendingClears.emplace_back(0, 0);
 			hasPendingClears = true;
-			CoreTiming::ForceCheck();
+			CoreTiming::ForceCheck(this);
 		} else {
 			MIPSComp::jit->ClearCache();
 		}

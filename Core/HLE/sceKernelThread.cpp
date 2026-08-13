@@ -664,7 +664,7 @@ static void __KernelDelayEndCallback(SceUID threadID, SceUID prevCallbackId) {
 
 	// TODO: Don't wake up if __KernelCurHasReadyCallbacks()?
 
-	s64 cyclesLeft = delayDeadline - CoreTiming::GetTicks();
+	s64 cyclesLeft = delayDeadline - CoreTiming::GetTicks(currentMIPS);
 	if (cyclesLeft < 0) {
 		__KernelResumeThreadFromWait(threadID, 0);
 	} else {
@@ -884,7 +884,7 @@ void __KernelThreadingDoState(PointerWrap &p)
 	Do(p, pausedDelays);
 
 	__SetCurrentThread(kernelObjects.GetFast<PSPThread>(currentThread), currentThread, __KernelGetThreadName(currentThread));
-	lastSwitchCycles = CoreTiming::GetTicks();
+	lastSwitchCycles = CoreTiming::GetTicks(currentMIPS);
 
 	if (s >= 2)
 		Do(p, threadEventHandlers);
@@ -1037,7 +1037,7 @@ void __KernelIdle()
 	// Don't skip 0xDEADBEEF here, this is called directly bypassing CallSyscall().
 	// That means the hle flag would stick around until the next call.
 
-	CoreTiming::Idle();
+	CoreTiming::Idle(currentMIPS);
 	// We Advance within __KernelReSchedule(), so anything that has now happened after idle
 	// will be triggered properly upon reschedule.
 	__KernelReSchedule("idle");
@@ -1638,7 +1638,7 @@ void __KernelReSchedule(const char *reason)
 	__KernelCheckCallbacks();
 
 	// Execute any pending events while we're doing scheduling.
-	CoreTiming::Advance();
+	CoreTiming::Advance(currentMIPS);
 	if (__IsInInterrupt() || !__KernelIsDispatchEnabled()) {
 		// Threads don't get changed within interrupts or while dispatch is disabled.
 		reason = "In Interrupt Or Callback";
@@ -2943,7 +2943,7 @@ void __KernelSwitchContext(PSPThread *target, const char *reason) {
 #if DEBUG_LEVEL <= MAX_LOGLEVEL || DEBUG_LOG == NOTICE_LOG
 	if (!(fromIdle && toIdle))
 	{
-		u64 nowCycles = CoreTiming::GetTicks();
+		u64 nowCycles = CoreTiming::GetTicks(currentMIPS);
 		s64 consumedCycles = nowCycles - lastSwitchCycles;
 		lastSwitchCycles = nowCycles;
 

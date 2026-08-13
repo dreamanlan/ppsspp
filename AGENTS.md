@@ -40,8 +40,19 @@ necessarily after every edit), run these too:
 - Windows: build the `UnitTest` project (unittest/UnitTests.vcxproj), then run `Windows/x64/Debug/UnitTest.exe all`
 - Linux/Mac: configure with `-DUNITTEST=ON`, then run `build/PPSSPPUnitTest all`
 
-This runs all tests in `availableTests` in unittest/UnitTest.cpp. You can run a single test by
-passing its name instead of `all`; no arguments lists the available tests.
+This runs all tests in `availableTests` in unittest/UnitTest.cpp. You can run one or more
+specific tests by passing their names instead of `all` (space-separated, e.g. `UnitTest.exe
+CmdLine Path Utf8`); no arguments lists the available tests.
+
+Known environment-specific issue: in at least one sandboxed dev environment, the `Jit` test
+(`unittest/JitHarness.cpp`) hangs indefinitely specifically during the `CPUCore::JIT_IR`
+phase - confirmed unrelated to source changes (reproduces identically on unmodified checkouts)
+and not a memory-access fault (`Memory::HandleFault` is never entered). Root cause wasn't
+pinned down further (would need a native debugger attached to the hung process, not available
+in that environment) but is very likely specific to that sandbox rather than a real PPSSPP
+bug, since CI runs the equivalent of `UnitTest.exe all` on every commit across multiple
+platforms without apparent issue. If `all`/`Jit` hangs in your environment, run every other
+test by name instead (skip `Jit`) to still get real coverage.
 
 ## Multiplatform considerations
 
@@ -180,12 +191,26 @@ small examples to copy from). A module is a `const HLEFunction <name>[]` table o
   the `// add new modules here.` comment near the end of that function) - not inserted alphabetically/logically among
   the existing `Register_*()` calls. Module registration order affects numeric IDs used in savestates, so inserting a
   new module earlier in that list would break save-state compatibility for saves made with older builds.
-- Remember to add any new `.cpp`/`.c` file to **five** places: `Core/CMakeLists.txt`, `Core/Core.vcxproj`,
-  `Core/Core.vcxproj.filters`, `android/jni/Android.mk`, and `libretro/Makefile.common`. New `.h` files only need the
-  first three (`Android.mk`/`Makefile.common` are plain compiled-source lists so headers
-  don't go in them). Only the CMakeLists.txt change can be verified from a Linux/Mac build - the rest can't be
-  build-tested here, so double check them by hand against how an existing neighboring file (e.g. `sceVaudio.cpp`) is
-  listed in each. Note: New files in the unittest project have to be updated in the unittest part in android/jni/Android.mk.
+- Remember to add any new `.cpp`/`.c` file to **seven** places: `Core/CMakeLists.txt`, `Core/Core.vcxproj`,
+  `Core/Core.vcxproj.filters`, `UWP/CoreUWP/CoreUWP.vcxproj`, `UWP/CoreUWP/CoreUWP.vcxproj.filters`,
+  `android/jni/Android.mk`, and `libretro/Makefile.common`. New `.h` files need the first five (everything except
+  `Android.mk`/`Makefile.common`, which are plain compiled-source lists so headers don't go in them). Double check
+  each by hand against how an existing neighboring file (e.g. `sceVaudio.cpp`) is listed. Forgetting the UWP entries
+  is easy to miss - the CMake and MSBuild (`Core.vcxproj`) builds both succeed silently, and it only surfaces as a
+  UWP-only build failure (this has happened for real: `Core/MIPS/InterpreterDispatch.cpp` landed without its UWP
+  entries, and the omission wasn't caught until someone actually built the UWP project). Note: New files in the
+  unittest project have to be updated in the unittest part in android/jni/Android.mk.
+
+  Both the CMakeLists.txt change (via a Linux/Mac build) and the `Core.vcxproj`/UWP changes (via MSBuild on Windows)
+  can actually be build-tested, not just eyeballed - see "Build and Validation" above for the main Windows solution,
+  and for UWP specifically:
+  ```powershell
+  $installPath = & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+  $msbuild = "$installPath\MSBuild\Current\Bin\MSBuild.exe"
+  & $msbuild "UWP\PPSSPP_UWP.sln" /t:CoreUWP /p:Configuration=Debug /p:Platform=x64 /m
+  ```
+  (only `android/jni/Android.mk` and `libretro/Makefile.common` genuinely can't be build-tested here - see their
+  respective sections above for what verification is possible for those.)
 
 ## WebSocket debugger
 
