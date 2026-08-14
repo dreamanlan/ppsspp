@@ -65,8 +65,13 @@ struct CPUStepCommand {
 	void clear() {
 		type = CPUStepType::None;
 		stepSize = 0;
-		reason = BreakReason::None;
-		relatedAddr = 0;
+		// Deliberately NOT resetting reason/relatedAddr here: they describe why we're
+		// currently paused (not whether a step is pending), and for CPUStepType::Into this
+		// clear() runs immediately after finishing the step, before SteppingBroadcaster gets
+		// a chance to read them via Core_GetSteppingReason(). Over/Out/Frame instead call
+		// Core_Resume() before reaching here, so a stale reason left behind is harmless -
+		// it'll be overwritten by the next Core_Break()/Core_RequestCPUStep() before anything
+		// re-enters stepping.
 	}
 };
 
@@ -213,6 +218,7 @@ const char *BreakReasonToString(BreakReason reason) {
 	case BreakReason::SavestateCrash: return "savestate.crash";
 	case BreakReason::MemoryBreakpoint: return "memory.breakpoint";
 	case BreakReason::CpuBreakpoint: return "cpu.breakpoint";
+	case BreakReason::RegBreakpoint: return "cpu.regBreakpoint";
 	case BreakReason::MemoryAccess: return "memory.access";  // ???
 	case BreakReason::JitBranchDebug: return "jit.branchdebug";
 	case BreakReason::RABreak: return "ra.break";
@@ -363,7 +369,8 @@ bool Core_RequestCPUStep(CPUStepType type, int stepSize) {
 		_dbg_assert_(stepSize != 0);
 		break;
 	}
-	g_cpuStepCommand = { type, stepSize };
+	BreakReason reason = type == CPUStepType::Into ? BreakReason::DebugStepInto : BreakReason::DebugStep;
+	g_cpuStepCommand = { type, stepSize, reason, 0 };
 	return true;
 }
 
@@ -605,10 +612,15 @@ int Core_GetSteppingCounter() {
 SteppingReason Core_GetSteppingReason() {
 	SteppingReason r{};
 	std::lock_guard<std::mutex> lock(g_stepMutex);
-	if (!g_cpuStepCommand.empty()) {
-		r.reason = g_cpuStepCommand.reason;
-		r.relatedAddress = g_cpuStepCommand.relatedAddr;
-	}
+	// Deliberately not gated on g_cpuStepCommand.empty(): that's true whenever there's no
+	// pending step *type* to execute, which is also the normal state right after Core_Break()
+	// records a reason (it sets type = CPUStepType::None on purpose - there's no step operation
+	// to perform, just a pause). Gating on empty() here used to throw the reason away in
+	// exactly that case, i.e. for every breakpoint/exception/savestate-load/etc break, which
+	// covers the vast majority of stepping events. .reason is already None whenever there's
+	// genuinely nothing to report.
+	r.reason = g_cpuStepCommand.reason;
+	r.relatedAddress = g_cpuStepCommand.relatedAddr;
 	return r;
 }
 
@@ -657,7 +669,7 @@ static ExceptionAction ResolveExceptionAction(ExceptionAction action) {
 // straight after an address in a log line, e.g. " [EBOOT.BIN.text+1234]". Empty if no match.
 static std::string ModuleAddressSuffix(u32 address) {
 	char desc[96];
-	if (DescribeKernelModuleAddress(address, desc, sizeof(desc))) {
+	if (DescribeModuleAddress(address, desc, sizeof(desc))) {
 		return std::string(" [") + desc + "]";
 	} else {
 		return std::string();
@@ -793,12 +805,45 @@ void Core_MemoryExceptionHLE(MIPSState *mips, u32 address, u32 accessSize, Memor
 	}
 }
 
-// Can't be ignored, must break. Not sure we can get a meaningful stack trace here (since the PC is invalid).
+// Can't be ignored, must break. If JUMP, not sure we can get a meaningful stack trace here (since the PC is invalid).
+// address != pc when this is called for a jump instruction. pc then is the source address of the jump.
 void Core_ExecException(u32 address, u32 pc, ExecExceptionType type) {
 	const char *desc = ExecExceptionTypeAsString(type);
 
+	char pcStr[32] = "(invalid)";
+	if (Memory::IsValid4AlignedAddress(pc)) {
+		snprintf(pcStr, sizeof(pcStr), "[%08x]", Memory::ReadUnchecked_U32(pc));
+	}
+
 	char msg[512];
-	snprintf(msg, sizeof(msg), "%s: Invalid exec address %08x%s pc=%08x%s ra=%08x%s", desc, address, ModuleAddressSuffix(address).c_str(), pc, ModuleAddressSuffix(pc).c_str(), currentMIPS->r[MIPS_REG_RA], ModuleAddressSuffix(currentMIPS->r[MIPS_REG_RA]).c_str());
+	switch (type) {
+	case ExecExceptionType::JUMP:
+	{
+		snprintf(msg, sizeof(msg), "%s: Invalid jump to %08x%s from PC %08x%s %s RA %08x%s", desc, address, ModuleAddressSuffix(address).c_str(),
+			pc, pcStr, ModuleAddressSuffix(pc).c_str(), currentMIPS->r[MIPS_REG_RA], ModuleAddressSuffix(currentMIPS->r[MIPS_REG_RA]).c_str());
+		Core_SendDebugOutput(LogLevel::LERROR, msg);
+		break;
+	}
+	case ExecExceptionType::THREAD:
+	{
+		snprintf(msg, sizeof(msg), "%s: Invalid thread switch to %08x%s from PC %08x%s RA %08x%s", desc, address, ModuleAddressSuffix(address).c_str(),
+			pc, ModuleAddressSuffix(pc).c_str(), currentMIPS->r[MIPS_REG_RA], ModuleAddressSuffix(currentMIPS->r[MIPS_REG_RA]).c_str());
+		Core_SendDebugOutput(LogLevel::LERROR, msg);
+		break;
+	}
+	case ExecExceptionType::ILLEGAL:
+	{
+		snprintf(msg, sizeof(msg), "%s: Illegal instruction at %08x%s %s RA %08x%s", desc,
+			pc, pcStr, ModuleAddressSuffix(pc).c_str(), currentMIPS->r[MIPS_REG_RA], ModuleAddressSuffix(currentMIPS->r[MIPS_REG_RA]).c_str());
+		// For illegal instructions, there might be a useful stack trace.
+		const std::string stackTrace = FormatStackTrace(WalkCurrentStack(-1));
+		Core_SendDebugOutput(LogLevel::LERROR, StringFromFormat("%s\n%s", msg, stackTrace.c_str()));
+		break;
+	}
+	default:
+		truncate_cpy(msg, sizeof(msg), "Unknown exec exception");
+		break;
+	}
 	Core_SendDebugOutput(LogLevel::LERROR, msg);
 
 	MIPSExceptionInfo &e = g_exceptionInfo;
