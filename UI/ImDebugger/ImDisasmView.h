@@ -44,7 +44,7 @@ public:
 	void ScanVisibleFunctions();
 	void clearFunctions() { g_disassemblyManager.clear(); };
 
-	void getOpcodeText(u32 address, char *dest, int bufsize);
+	void getOpcodeText(u32 address, char *dest, int bufsize, bool insertSymbols);
 	u32 yToAddress(float y);
 
 	void setDebugger(MIPSDebugInterface *deb) {
@@ -126,7 +126,17 @@ private:
 	};
 
 	void ProcessKeyboardShortcuts(bool focused);
-	void assembleOpcode(u32 address, const std::string &defaultText);
+	// Plants the one-shot "run to cursor" breakpoint and resumes. With nextFrame, hits are ignored
+	// until the next vblank, so the rest of the current frame is skipped over.
+	void RunToAddress(u32 address, bool nextFrame);
+	// Requests the assemble popup - the actual input happens in PopupMenu(), since ImGui popups
+	// can only be opened and drawn from inside the frame that owns them.
+	void assembleOpcode(u32 address, std::string_view defaultText, bool selectAll = false);
+	// Same, prefilled with the instruction that's already there, selected so typing replaces it.
+	void assembleCurrentOpcode(u32 address);
+	// Applies what was typed into that popup. Returns false and fills in assembleError_ if it
+	// couldn't be assembled, so the popup can stay open and show why.
+	bool applyAssembly(u32 address, std::string_view op);
 	std::string disassembleRange(u32 start, u32 size);
 	void disassembleToFile();
 	void FollowBranch();
@@ -174,6 +184,12 @@ private:
 	std::string statusBarText_;
 	u32 funcBegin_ = 0;
 	char funcNameTemp_[128]{};
+
+	bool assemblePopup_ = false;
+	u32 assembleAddress_ = 0;
+	char assembleTemp_[256]{};
+	bool assembleSelectAll_ = false;
+	std::string assembleError_;
 };
 
 // Corresponds to the CDisasm dialog
@@ -207,6 +223,12 @@ private:
 	bool symsDirty_ = true;
 	int selectedSymbol_ = -1;
 	char selectedSymbolName_[128];
+
+	// Filter over symCache_. Held as indices into it rather than a filtered copy, so
+	// selectedSymbol_ keeps meaning the same thing whether or not a filter is active.
+	char symFilter_[64]{};
+	std::vector<int> symMatches_;
+	bool symMatchesDirty_ = true;
 
 	ImDisasmView disasmView_;
 	char searchTerm_[64]{};

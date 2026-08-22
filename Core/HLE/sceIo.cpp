@@ -1041,7 +1041,7 @@ static bool __IoRead(int &result, int id, u32 data_addr, int size, int &us) {
 			u32 validSize = Memory::ClampValidSizeAt(data_addr, size);
 			if (f->npdrm) {
 				result = npdrmRead(f, data, validSize);
-				currentMIPS->InvalidateICache(data_addr, validSize);
+				currentMIPS->InvalidateICacheRangeDeferred(data_addr, validSize);
 				return true;
 			}
 
@@ -1067,7 +1067,7 @@ static bool __IoRead(int &result, int id, u32 data_addr, int size, int &us) {
 				} else {
 					result = (int)pspFileSystem.ReadFile(f->handle, data, validSize, us);
 				}
-				currentMIPS->InvalidateICache(data_addr, validSize);
+				currentMIPS->InvalidateICacheRangeDeferred(data_addr, validSize);
 				return true;
 			}
 		} else {
@@ -1849,6 +1849,9 @@ static u32 sceIoDevctl(const char *name, int cmd, u32 argAddr, int argLen, u32 o
 				return hleLogError(Log::sceIo, -1, "Failed 0x02425824 fat");
 			}
 			break;
+		case 0x02425856:
+			// Used by VSH, no clue what it should do. Let's just return 0.
+			return hleLogError(Log::sceIo, 0, "Unknown memstick devctl: %08x", cmd);
 		}
 	}
 

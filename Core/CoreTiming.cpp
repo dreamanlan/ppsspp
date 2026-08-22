@@ -60,6 +60,11 @@ alignas(16) static s64 globalTimer;
 static s64 idledCycles;
 static s64 lastGlobalTimeTicks;
 static s64 lastGlobalTimeUs;
+// See SetBreakDeadlineUs. 0 = none. Deliberately not saved in savestates - it belongs to a
+// debugger session, not to the emulated machine.
+static s64 breakDeadlineUs;
+static s64 breakDeadlineTicks;
+static void RecomputeBreakDeadline();
 
 bool SetClockFrequencyHz(int cpuHz) {
 	if (cpuHz <= 0) {
@@ -78,6 +83,9 @@ bool SetClockFrequencyHz(int cpuHz) {
 	lastGlobalTimeTicks = GetTicks(currentMIPS);
 
 	CPU_HZ = cpuHz;
+
+	// The remaining time to a debugger deadline is now a different number of ticks.
+	RecomputeBreakDeadline();
 
 	// TODO: Rescale times of scheduled events?
 	__AudioCPUMHzChange();
@@ -103,6 +111,34 @@ u64 GetGlobalTimeUs() {
 		usSinceLast = 0;
 	}
 	return lastGlobalTimeUs + usSinceLast;
+}
+
+// Turns the microsecond deadline into the tick count Advance() compares against. Has to be redone
+// whenever the clock frequency changes, since that changes how many ticks the remaining time is.
+static void RecomputeBreakDeadline() {
+	if (!breakDeadlineUs) {
+		breakDeadlineTicks = 0;
+		return;
+	}
+	const s64 remainingUs = breakDeadlineUs - (s64)GetGlobalTimeUs();
+	breakDeadlineTicks = (s64)GetTicks(currentMIPS) + (remainingUs > 0 ? usToCycles(remainingUs) : 0);
+}
+
+void SetBreakDeadlineUs(u64 us) {
+	breakDeadlineUs = (s64)us;
+	RecomputeBreakDeadline();
+}
+
+u64 GetBreakDeadlineUs() {
+	return (u64)breakDeadlineUs;
+}
+
+u64 PeekGlobalTimeUs() {
+	// Same sum as above without the rebasing, so this stays callable from a thread that isn't the
+	// CPU thread. The rebasing exists purely to keep the multiply below from overflowing, and it
+	// happens often enough on the CPU thread that ticksSinceLast stays small here.
+	const s64 ticksSinceLast = GetTicks(currentMIPS) - lastGlobalTimeTicks;
+	return lastGlobalTimeUs + ticksSinceLast * 1000000 / GetClockFrequencyHz();
 }
 
 const Event *GetFirstEvent() {
@@ -185,6 +221,8 @@ void Init(MIPSState *mips) {
 	idledCycles = 0;
 	lastGlobalTimeTicks = 0;
 	lastGlobalTimeUs = 0;
+	breakDeadlineUs = 0;
+	breakDeadlineTicks = 0;
 	CPU_HZ = initialHz;
 }
 
@@ -385,6 +423,14 @@ void Advance(MIPSState *mips) {
 	globalTimer += cyclesExecuted;
 	mips->downcount = slicelength;
 
+	// Debugger deadline - see SetBreakDeadlineTicks. Checked before the events so the break lands
+	// on the requested tick rather than after whatever the events do.
+	if (breakDeadlineTicks && globalTimer >= breakDeadlineTicks) {
+		breakDeadlineTicks = 0;
+		breakDeadlineUs = 0;
+		Core_Break(BreakReason::RunUntilTime, mips->pc);
+	}
+
 	ProcessEvents();
 
 	if (!first) {
@@ -402,6 +448,17 @@ void Advance(MIPSState *mips) {
 		const int diff = target - slicelength;
 		slicelength += diff;
 		mips->downcount += diff;
+	}
+
+	// Shorten the slice so we come back exactly on the deadline instead of up to a whole slice
+	// past it - the point of cpu.runUntilTime is that it stops at a reproducible place.
+	if (breakDeadlineTicks) {
+		const s64 remaining = breakDeadlineTicks - globalTimer;
+		if (remaining > 0 && remaining < slicelength) {
+			const int diff = (int)remaining - slicelength;
+			slicelength += diff;
+			mips->downcount += diff;
+		}
 	}
 }
 

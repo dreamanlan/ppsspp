@@ -26,6 +26,8 @@
 #include "Core/MemMap.h"
 #include "Core/System.h"
 
+// sceImpose handles overlays like low-battery icons, and some other popup/UI related things.
+
 const int PSP_UMD_POPUP_DISABLE = 0;
 const int PSP_UMD_POPUP_ENABLE = 1;
 
@@ -105,7 +107,7 @@ static u32 sceImposeGetBacklightOffTime() {
 	return hleLogDebug(Log::sceUtility, backlightOffTime);
 }
 
-//OSD stuff? home button?
+// OSD stuff? home button?
 const HLEFunction sceImpose[] = {
 	{0X36AA6E91, &WrapU_UU<sceImposeSetLanguageMode>,      "sceImposeSetLanguageMode",      'i', "ii"},
 	{0X381BD9E7, nullptr,                                  "sceImposeHomeButton",           '?', ""  },
@@ -126,4 +128,19 @@ const HLEFunction sceImpose[] = {
 
 void Register_sceImpose() {
 	RegisterHLEModule("sceImpose", ARRAY_SIZE(sceImpose), sceImpose);
+}
+
+static int sceImpose_driver_B497314D(int param, u32 resultAddr) {
+	auto result = PSPPointer<u64_le>::Create(resultAddr);
+	if (result.IsValid())
+		*result = 0;
+	return hleLogDebug(Log::sceUtility, 0, "UNTESTED");
+}
+
+const HLEFunction sceImpose_driver[] = {
+	{0XB497314D, &WrapI_IU<sceImpose_driver_B497314D>,     "sceImpose_driver_B497314D",     'i', "ix"},
+};
+
+void Register_sceImpose_driver() {
+	RegisterHLEModule("sceImpose_driver", ARRAY_SIZE(sceImpose_driver), sceImpose_driver);
 }

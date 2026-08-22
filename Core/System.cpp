@@ -15,6 +15,7 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include <atomic>
 #include "ppsspp_config.h"
 
 #ifdef _WIN32
@@ -49,6 +50,7 @@
 #include "Core/MIPS/MIPS.h"
 #include "Core/MIPS/MIPSAnalyst.h"
 #include "Core/MIPS/MIPSVFPUUtils.h"
+#include "Core/Debugger/LineInfo.h"
 #include "Core/Debugger/SymbolMap.h"
 #include "Core/System.h"
 #include "Core/HLE/HLE.h"
@@ -93,8 +95,8 @@ static FileLoader *g_loadedFile;
 static std::mutex loadingLock;
 static std::thread g_loadingThread;
 
-bool coreCollectDebugStats = false;
-static int coreCollectDebugStatsCounter = 0;
+bool g_coreCollectDebugStats = false;
+static int g_coreCollectDebugStatsCounter = 0;
 
 static volatile CPUThreadState cpuThreadState = CPU_THREAD_NOT_RUNNING;
 
@@ -102,7 +104,9 @@ static GPUBackend gpuBackend;
 static std::string gpuBackendDevice;
 static bool g_fileLoggingWasEnabled;
 
-static BootState g_bootState = BootState::Off;
+// Atomic because it's read as a fast-fail from the WebSocket debugger's own thread while the
+// CPU and loader threads move it along.
+static std::atomic<BootState> g_bootState = BootState::Off;
 
 BootState PSP_GetBootState() {
 	return g_bootState;
@@ -183,6 +187,25 @@ static bool SaveSymbolMapIfSupported() {
 		return g_symbolMap->SaveSymbolMap(SymbolMapFilename(PSP_CoreParameter().fileToStart, ".ppmap"));
 	}
 	return false;
+}
+
+// The counterparts to the per-module symbol auto-load/save in Core/HLE/sceKernelModule.cpp, for
+// the symbols that don't belong to any module - see SymbolMap::GetGameSymbolsPath. Gated on the
+// same config setting as the module ones and, like them, deliberately not on SYSPROP_HAS_DEBUGGER
+// (which only the Windows port reports true for, so LoadSymbolsIfSupported above does nothing at
+// all on headless).
+static void LoadGameSymbolsIfEnabled() {
+	if (!g_symbolMap || !g_Config.bAutoSaveLoadSymbols)
+		return;
+	g_symbolMap->LoadModuleSymbols(0, SymbolMap::GetGameSymbolsPath(g_paramSFO.GetDiscID()));
+}
+
+static void SaveGameSymbolsIfEnabled() {
+	if (!g_symbolMap || !g_Config.bAutoSaveLoadSymbols)
+		return;
+	// Writes nothing (and cleans up any previous file) if there are no such symbols.
+	g_symbolMap->SaveModuleSymbols(0, SymbolMap::GetGameSymbolsPath(g_paramSFO.GetDiscID()),
+		g_paramSFO.GetDiscID(), g_paramSFO.GetValueString("TITLE"));
 }
 
 bool DiscIDFromGEDumpPath(const Path &path, FileLoader *fileLoader, std::string *id) {
@@ -277,8 +300,8 @@ static void ShowCompatWarnings(const Compatibility &compat) {
 extern const std::string INDEX_FILENAME;
 
 static void MountFileSystems() {
-	// TODO(scoped): This won't work if memStickDirectory points at the contents of /PSP...
-#if defined(USING_WIN_UI) || defined(APPLE)
+	// TODO: Revisit this flash0 configurability. It was added for 
+#if PPSSPP_PLATFORM(WINDOWS) || PPSSPP_PLATFORM(MACOS)
 	auto flash0System = std::make_shared<DirectoryFileSystem>(&pspFileSystem, g_Config.flash0Directory, FileSystemFlags::FLASH);
 #else
 	auto flash0System = std::make_shared<VFSFileSystem>(&pspFileSystem, "flash0");
@@ -334,7 +357,7 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 	case IdentifiedFileType::PSP_ISO:
 	case IdentifiedFileType::PSP_ISO_NP:
 	case IdentifiedFileType::PSP_DISC_DIRECTORY:
-		// Doesn't seem to take ownership of fileLoader?
+		// Doesn't take ownership of fileLoader. We store it in g_loadedFile later.
 		if (!MountGameISO(fileLoader, errorString)) {
 			*errorString = "Failed to mount ISO file: " + *errorString;
 			return false;
@@ -472,6 +495,7 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 	InitVFPU();
 
 	LoadSymbolsIfSupported();
+	LoadGameSymbolsIfEnabled();
 
 	mipsr4k.Reset();
 
@@ -565,12 +589,21 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 }
 
 void CPU_Shutdown(bool success) {
+	// Held across the whole teardown, not just Memory::Shutdown() further down. Everything below
+	// frees state the debugger UIs read from other threads - kernel objects, the symbol map, the
+	// memory map - and this is the lock they take to be sure none of it goes away mid-read. See
+	// Core_LockAgainstShutdown(); it's recursive, so the nested acquire in Memory::Shutdown() is fine.
+	CoreShutdownLock coreLock = Core_LockAgainstShutdown();
+
 	UninstallExceptionHandler();
 
 	GPURecord::Replay_Unload();
 
 	if (g_Config.bAutoSaveSymbolMap && success) {
 		SaveSymbolMapIfSupported();
+	}
+	if (success) {
+		SaveGameSymbolsIfEnabled();
 	}
 
 	Replacement_Shutdown();
@@ -594,6 +627,9 @@ void CPU_Shutdown(bool success) {
 	g_CoreParameter.mountIsoLoader = nullptr;
 	delete g_symbolMap;
 	g_symbolMap = nullptr;
+	// Line info outlives individual modules on purpose (see ~PSPModule), so the game going away is
+	// what ends it.
+	g_lineInfo.Clear();
 
 	g_lua.Shutdown();
 
@@ -607,10 +643,10 @@ void UpdateLoadedFile(FileLoader *fileLoader) {
 }
 
 void PSP_UpdateDebugStats(bool collectStats) {
-	bool newState = collectStats || coreCollectDebugStatsCounter > 0;
-	if (coreCollectDebugStats != newState) {
-		coreCollectDebugStats = newState;
-		mipsr4k.ClearJitCache();
+	bool newState = collectStats || g_coreCollectDebugStatsCounter > 0;
+	if (g_coreCollectDebugStats != newState) {
+		g_coreCollectDebugStats = newState;
+		mipsr4k.ClearJitCacheDeferred();
 	}
 
 	if (!PSP_CoreParameter().frozen && !Core_IsStepping()) {
@@ -621,11 +657,11 @@ void PSP_UpdateDebugStats(bool collectStats) {
 
 void PSP_ForceDebugStats(bool enable) {
 	if (enable) {
-		coreCollectDebugStatsCounter++;
+		g_coreCollectDebugStatsCounter++;
 	} else {
-		coreCollectDebugStatsCounter--;
+		g_coreCollectDebugStatsCounter--;
 	}
-	_assert_(coreCollectDebugStatsCounter >= 0);
+	_assert_(g_coreCollectDebugStatsCounter >= 0);
 }
 
 static void InitGPU(std::string *error_string) {

@@ -42,6 +42,24 @@
 // Global declarations
 class PointerWrap;
 
+// The PPGe font atlas doesn't live in emulated RAM, but the GE still needs an address to texture
+// from, so we hand it this fake one and translate it back to a host pointer where it's used.
+// NOTE: The top 4 bits must be zero due to how the address is stored in the gstate.
+constexpr u32 PPGE_ATLAS_FAKE_ADDRESS = 0x03000000;
+// The size of the atlas, or 0 when PPGe isn't initialized. Set up by PPGeDraw.cpp.
+extern u32 g_ppgeAtlasFakeSize;
+
+inline bool IsPPGEAtlasFakeAddress(u32 addr, u32 *offset) {
+	if (addr >= PPGE_ATLAS_FAKE_ADDRESS && addr < PPGE_ATLAS_FAKE_ADDRESS + g_ppgeAtlasFakeSize) {
+		if (offset) {
+			*offset = addr - PPGE_ATLAS_FAKE_ADDRESS;
+		}
+		return true;
+	} else {
+		return false;
+	}
+}
+
 typedef void (*writeFn8 )(const u8, const u32);
 typedef void (*writeFn16)(const u16,const u32);
 typedef void (*writeFn32)(const u32,const u32);
@@ -117,16 +135,6 @@ void DoState(PointerWrap &p);
 
 // False when shutdown has already been called.
 bool IsActive();
-
-class MemoryInitedLock {
-public:
-	MemoryInitedLock();
-	~MemoryInitedLock();
-};
-
-// This doesn't lock memory access or anything, it just makes sure memory isn't freed.
-// Use it when accessing PSP memory from external threads.
-MemoryInitedLock Lock();
 
 // used by JIT to read instructions. Does not resolve replacements.
 Opcode Read_Opcode_JIT(const u32 _Address);
@@ -296,6 +304,10 @@ inline void MemcpyUnchecked(const u32 to_address, const u32 from_address, const 
 	MemcpyUnchecked(GetPointerWriteUnchecked(to_address), from_address, len);
 }
 
+inline bool AddressesEqualAfterMask(const u32 address1, const u32 address2) {
+	return (address1 & 0x3FFFFFFF) == (address2 & 0x3FFFFFFF);
+}
+
 // Applies to user mode.
 // Without a length, IsValidAddress is generally semi-meaningless, unless it's about a single byte access. For larger accesses, use IsValid4AlignedAddress
 // etc when appropriate, or for longer sizes, use IsValidRange or IsValid4AlignedRange for example. Checking aligned-ness helps avoid the problem
@@ -303,8 +315,8 @@ inline void MemcpyUnchecked(const u32 to_address, const u32 from_address, const 
 inline bool IsValidAddress(const u32 address) {
 	if ((address & 0x3E000000) == 0x08000000) {
 		return true;
-	} else if ((address & 0x3F800000) == 0x04000000) {
-		return address < 0x80000000;  // Let's disallow kernel-flagged VRAM. We don't have it mapped and I am not sure if it's accessible.
+	} else if ((address & 0xBF800000) == 0x04000000) {
+		return true;  // 0xBxx above: Let's disallow kernel-flagged VRAM. We don't have it mapped and I am not sure if it's accessible.
 	} else if ((address & 0x3FFFC000) == 0x00010000) {
 		return true;
 	} else if ((address & 0x3F000000) >= 0x08000000 && (address & 0x3F000000) < 0x08000000 + g_MemorySize) {
@@ -317,8 +329,8 @@ inline bool IsValidAddress(const u32 address) {
 inline bool IsValid2AlignedAddress(const u32 address) {
 	if ((address & 0x3E000001) == 0x08000000) {
 		return true;
-	} else if ((address & 0x3F800001) == 0x04000000) {
-		return address < 0x80000000;  // Let's disallow kernel-flagged VRAM. We don't have it mapped and I am not sure if it's accessible.
+	} else if ((address & 0xBF800001) == 0x04000000) {
+		return true;  // 0xBxx above: Let's disallow kernel-flagged VRAM. We don't have it mapped and I am not sure if it's accessible.
 	} else if ((address & 0x3FFFC001) == 0x00010000) {
 		return true;
 	} else if ((address & 0x3F000000) >= 0x08000000 && (address & 0x3F000000) < 0x08000000 + g_MemorySize) {
@@ -331,8 +343,8 @@ inline bool IsValid2AlignedAddress(const u32 address) {
 inline bool IsValid4AlignedAddress(const u32 address) {
 	if ((address & 0x3E000003) == 0x08000000) {
 		return true;
-	} else if ((address & 0x3F800003) == 0x04000000) {
-		return address < 0x80000000;  // Let's disallow kernel-flagged VRAM. We don't have it mapped and I am not sure if it's accessible.
+	} else if ((address & 0xBF800003) == 0x04000000) {
+		return true;  // 0xBxx above: Let's disallow kernel-flagged VRAM. We don't have it mapped and I am not sure if it's accessible.
 	} else if ((address & 0x3FFFC003) == 0x00010000) {
 		return true;
 	} else if ((address & 0x3F000000) >= 0x08000000 && (address & 0x3F000000) < 0x08000000 + g_MemorySize) {
@@ -342,15 +354,26 @@ inline bool IsValid4AlignedAddress(const u32 address) {
 	}
 }
 
+template<int A>
+inline bool IsValidNAlignedAddress(const u32 address) {
+	if ((address & (0x3E000000 | (A - 1))) == 0x08000000) {
+		return true;
+	} else if ((address & (0xBF800000 | (A - 1))) == 0x04000000) {
+		return true;  // 0xBxx above: Let's disallow kernel-flagged VRAM. We don't have it mapped and I am not sure if it's accessible.
+	} else if ((address & (0x3FFFC000 | (A - 1))) == 0x00010000) {
+		return true;
+	} else if ((address & 0x3F000000) >= 0x08000000 && (address & 0x3F000000) < 0x08000000 + g_MemorySize) {
+		return (address & (A - 1)) == 0;
+	} else {
+		return false;
+	}
+}
+
 inline u32 MaxSizeAtAddress(const u32 address) {
 	if ((address & 0x3E000000) == 0x08000000) {
 		return 0x08000000 + g_MemorySize - (address & 0x3FFFFFFF);
-	} else if ((address & 0x3F800000) == 0x04000000) {
-		if (address & 0x80000000) {
-			return 0;
-		} else {
-			return 0x04800000 - (address & 0x3FFFFFFF);
-		}
+	} else if ((address & 0xBF800000) == 0x04000000) {
+		return 0x04800000 - (address & 0x3FFFFFFF);  // VRAM. Same 0xBxx trick as above, modified for this use case.
 	} else if ((address & 0x3FFFC000) == 0x00010000) {
 		return 0x00014000 - (address & 0x3FFFFFFF);
 	} else if ((address & 0x3F000000) >= 0x08000000 && (address & 0x3F000000) < 0x08000000 + g_MemorySize) {
@@ -362,6 +385,34 @@ inline u32 MaxSizeAtAddress(const u32 address) {
 
 inline const char *GetCharPointerUnchecked(const u32 address) {
 	return (const char *)GetPointerUnchecked(address);
+}
+
+// Differences from the above functions: Check for 16-byte alignment, disallow scratchpad (can't texture from there, I don't think).
+inline bool IsValidTextureAddress(const u32 address) {
+	if ((address & 0x3E00000F) == 0x08000000) {
+		return true;  // Can texture from RAM (not sure if kernel RAM too, but let's allow it).
+	} else if ((address & 0xBF80000F) == 0x04000000) {
+		return true;  // 0xBxx above: Let's disallow kernel-flagged VRAM. We don't have it mapped and I am not sure if it's accessible.
+	} else if ((address & 0x3E00000F) == 0x08000000 && (address & 0x3F000000) >= 0x08000000 && ((address & 0x3F000000) < 0x08000000 + g_MemorySize)) {
+		return true;  // Extended RAM.
+	} else if (IsPPGEAtlasFakeAddress(address, nullptr)) {
+		return true;  // PPGe atlas texture
+	} else {
+		// Can't texture from scratchpad or other kinds of memory.
+		return false;
+	}
+}
+
+// This is a bit of a hack, to let the JITs and interpreters know where to apply kernel
+// mode restrictions on instruction emulation (and where to use slow memory handlers that can handle MMIO).
+inline bool IsKernelCodeAddress(u32 address) {
+	address &= 0x3FFFFFFF;
+	return ((address & 0x0F800003) == 0x08000000) && address >= 0x08000100;
+}
+
+// I believe this is the same, but let's keep a separate function.
+inline bool IsValidCLUTAddress(const u32 address) {
+	return IsValidTextureAddress(address);
 }
 
 // NOTE: Unlike the similar IsValidRange/IsValidAddress functions, this one is linear cost vs the size of the string,

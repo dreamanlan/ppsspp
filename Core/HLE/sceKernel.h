@@ -91,6 +91,8 @@ bool __KernelLoadExec(const char *filename, SceKernelLoadExecParam *param);
 // For crash reporting.
 std::string __KernelStateSummary();
 
+// These HLE functions are declared here to be included in tables that are in other files.
+
 int sceKernelLoadExec(const char *filename, u32 paramPtr);
 
 void sceKernelExitGame();
@@ -220,6 +222,20 @@ public:
 				if (!func(i + handleOffset, t))
 					break;
 			}
+		}
+	}
+
+	// Like Iterate<T>(), but every live object regardless of type - only the base KernelObject
+	// interface (GetUID/GetTypeName/GetName/GetQuickInfo/...) is available on each. Used for a
+	// coarse "what's alive right now" overview across every kernel object kind at once, e.g. the
+	// WebSocket debugger's hle.object.list.
+	template <typename F>
+	void IterateAll(F func) {
+		for (int i = 0; i < maxCount; i++) {
+			if (!occupied[i])
+				continue;
+			if (!func(i + handleOffset, pool[i]))
+				break;
 		}
 	}
 

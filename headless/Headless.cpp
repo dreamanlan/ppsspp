@@ -38,6 +38,7 @@
 #include <csignal>
 #endif
 #include "Common/CPUDetect.h"
+#include "Common/ExceptionHandlerSetup.h"
 #include "Common/File/VFS/VFS.h"
 #include "Common/File/VFS/ZipFileReader.h"
 #include "Common/File/VFS/DirectoryReader.h"
@@ -56,6 +57,7 @@
 #include "Core/EmuThread.h"
 #include "Core/MIPS/MIPSTables.h"
 #include "Core/System.h"
+#include "Core/Util/PSARUnpack.h"
 #include "Core/WebServer.h"
 #include "Core/HLE/sceUtility.h"
 #include "Core/SaveState.h"
@@ -109,12 +111,10 @@ int64_t System_GetPropertyInt(SystemProperty prop) {
 float System_GetPropertyFloat(SystemProperty prop) { return -1.0f; }
 bool System_GetPropertyBool(SystemProperty prop) {
 	switch (prop) {
-		case SYSPROP_CAN_JIT:
-			return true;
-		case SYSPROP_SKIP_UI:
-			return true;
-		default:
-			return false;
+	case SYSPROP_IS_HEADLESS: return true;
+	case SYSPROP_CAN_JIT: return true;
+	default:
+		return false;
 	}
 }
 void System_Notify(SystemNotification notification) {}
@@ -522,35 +522,6 @@ public:
 	}
 };
 
-// Has a parameter because we might start using this from the main build.
-void SetupCRT(bool headless) {
-#if defined(_MSC_VER)
-	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
-
-	if (headless) {
-		// Suppress abort dialogs and similar.
-		// 1. Redirect CRT Assertions/Errors/Warnings to stdout/stderr
-
-		const _HFILE reportTarget = _CRTDBG_FILE_STDERR;
-
-		_CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-		_CrtSetReportFile(_CRT_ASSERT, reportTarget);
-
-		_CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-		_CrtSetReportFile(_CRT_ERROR, reportTarget);
-
-		_CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_FILE);
-		_CrtSetReportFile(_CRT_WARN, reportTarget);
-
-		// 2. Suppress the abort() message box & crash reporting dialogs
-		_set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
-
-		// 3. Suppress Windows OS-level "Program has stopped working" modal dialogs
-		SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
-	}
-#endif
-}
-
 int main(int argc, const char* argv[]) {
 	PROFILE_INIT();
 	TimeInit();
@@ -640,6 +611,40 @@ int main(int argc, const char* argv[]) {
 	if (fullLog) {
 		// Only with --log, add the printfLogger.
 		g_logManager.EnableOutput(LogOutput::Printf);
+	}
+
+	// Unpacking an updater is a standalone action - no emulation involved, so do it here and exit
+	// before any of the setup below.
+	if (cmdLineOptions.unpackUpdater.has_value()) {
+		if (cmdLineOptions.bootFilenames.size() != 1) {
+			fprintf(stderr, "--unpack-updater takes exactly one updater, disc image or PSAR\n");
+			return 1;
+		}
+
+		PSARUnpackOptions unpackOptions;
+		unpackOptions.verbose = testOptions.verbose;
+		if (cmdLineOptions.unpackUpdaterModel.has_value() &&
+			!PSPModelGenerationFromString(cmdLineOptions.unpackUpdaterModel.value(), &unpackOptions.model)) {
+			fprintf(stderr, "Unknown PSP model '%s' - expected 01g..12g or any\n", cmdLineOptions.unpackUpdaterModel.value().c_str());
+			return 1;
+		}
+		PSARUnpackStats stats;
+		std::string unpackError;
+		const bool ok = UnpackUpdater(Path(cmdLineOptions.bootFilenames[0]), Path(cmdLineOptions.unpackUpdater.value()), unpackOptions, &stats, &unpackError);
+		if (!ok) {
+			fprintf(stderr, "Unpacking failed: %s\n", unpackError.c_str());
+		}
+		printf("Firmware %s (model %s): %d entries, %d files written, %d directories, %d unresolved names, %d for other models, %d failed\n",
+			stats.firmwareVersion.c_str(), PSPModelGenerationToString(unpackOptions.model), stats.entries, stats.written,
+			stats.directories, stats.unnamed, stats.otherModel, stats.failed);
+		printf("Compression: none=%d zlib=%d KL4E=%d KL3E=%d LZR=%d unknown=%d\n",
+			stats.compressionCounts[(int)PSARCompression::None],
+			stats.compressionCounts[(int)PSARCompression::Zlib],
+			stats.compressionCounts[(int)PSARCompression::KL4E],
+			stats.compressionCounts[(int)PSARCompression::KL3E],
+			stats.compressionCounts[(int)PSARCompression::LZR],
+			stats.compressionCounts[(int)PSARCompression::Unknown]);
+		return ok ? 0 : 1;
 	}
 
 	g_Config.RestoreDefaults(RestoreSettingsBits::SETTINGS | RestoreSettingsBits::CONTROLS | RestoreSettingsBits::RECENT, false);
@@ -779,14 +784,18 @@ int main(int argc, const char* argv[]) {
 	Path exePath = File::GetExeDirectory();
 	g_Config.flash0Directory = exePath / "assets/flash0";
 
+	// --memstick, applied by ApplyToConfig() further up, wins. This runs after it, so without the
+	// check the default below would silently overwrite whatever was asked for.
+	if (!cmdLineOptions.memStick.has_value()) {
 #if PPSSPP_PLATFORM(WINDOWS)
-	// Mount a filesystem
-	g_Config.memStickDirectory = exePath / "memstick";
-	File::CreateDir(g_Config.memStickDirectory, true);
-	CreateSysDirectories();
+		// Mount a filesystem
+		g_Config.memStickDirectory = exePath / "memstick";
+		File::CreateDir(g_Config.memStickDirectory, true);
+		CreateSysDirectories();
 #elif !PPSSPP_PLATFORM(ANDROID)
-	g_Config.memStickDirectory = Path(std::string(getenv("HOME"))) / ".ppsspp";
+		g_Config.memStickDirectory = Path(std::string(getenv("HOME"))) / ".ppsspp";
 #endif
+	}
 
 	// Try to find the flash0 directory.  Often this is from a subdirectory.
 	Path nextPath = exePath;
@@ -847,6 +856,16 @@ int main(int argc, const char* argv[]) {
 	if (cmdLineOptions.debuggerPort.has_value()) {
 		coreParameter.startBreak = true;
 		StartWebServer(WebServerFlags::DEBUGGER);
+		// We break at start and wait for a debugger to drive us, so coming up without one just
+		// hangs until the timeout. Better to say why and bail - see WebServerSetRequireExactPort().
+		if (!WebServerWaitForStartup()) {
+			fprintf(stderr, "Failed to start the debugger web server on port %d\n", cmdLineOptions.debuggerPort.value());
+			// The server thread has exited but is still joinable - without this, its std::thread
+			// destructor would call std::terminate() on the way out and we'd abort instead of
+			// returning a useful exit code.
+			ShutdownWebServer();
+			return 1;
+		}
 	}
 
 	if (stateToLoad) {

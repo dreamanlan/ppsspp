@@ -107,56 +107,23 @@ enum ThreadEventType {
 
 bool __KernelThreadTriggerEvent(bool isKernel, SceUID threadID, ThreadEventType type);
 
-struct NativeCallback
+// NativeCallback/PSPCallback itself now live in sceKernelThread.h - see the comment on the class
+// there for why.
+void PSPCallback::DoState(PointerWrap &p)
 {
-	SceUInt_le size;
-	char name[32];
-	SceUID_le threadId;
-	u32_le entrypoint;
-	u32_le commonArgument;
+	auto s = p.Section("Callback", 1);
+	if (!s)
+		return;
 
-	s32_le notifyCount;
-	s32_le notifyArg;
-};
-
-class PSPCallback : public KernelObject {
-public:
-	const char *GetName() override { return nc.name; }
-	const char *GetTypeName() override { return GetStaticTypeName(); }
-	static const char *GetStaticTypeName() { return "CallBack"; }
-
-	void GetQuickInfo(char *ptr, int size) override {
-		snprintf(ptr, size, "thread=%i, argument= %08x",
-			//hackAddress,
-			nc.threadId,
-			nc.commonArgument);
-	}
-
-	~PSPCallback() {
-	}
-
-	static u32 GetMissingErrorCode() { return SCE_KERNEL_ERROR_UNKNOWN_CBID; }
-	static int GetStaticIDType() { return SCE_KERNEL_TMID_Callback; }
-	int GetIDType() const override { return SCE_KERNEL_TMID_Callback; }
-
-	void DoState(PointerWrap &p) override
-	{
-		auto s = p.Section("Callback", 1);
-		if (!s)
-			return;
-
-		Do(p, nc);
-		// Saved values were moved to mips call, ignoring here.
-		u32 legacySaved = 0;
-		Do(p, legacySaved);
-		Do(p, legacySaved);
-		Do(p, legacySaved);
-		Do(p, legacySaved);
-		Do(p, legacySaved);
-	}
-
-	NativeCallback nc;
-};
+	Do(p, nc);
+	// Saved values were moved to mips call, ignoring here.
+	u32 legacySaved = 0;
+	Do(p, legacySaved);
+	Do(p, legacySaved);
+	Do(p, legacySaved);
+	Do(p, legacySaved);
+	Do(p, legacySaved);
+}
 
 // Owns outstanding MIPS calls and provides a way to get them by ID.
 class MipsCallManager {
@@ -223,12 +190,8 @@ private:
 	u32 idGen_;
 };
 
-class ActionAfterMipsCall : public PSPAction
-{
-	ActionAfterMipsCall()
-	{
-		chainedAction = NULL;
-	}
+class ActionAfterMipsCall : public PSPAction {
+	ActionAfterMipsCall() = default;
 
 public:
 	void run(MipsCall &call) override;
@@ -264,17 +227,17 @@ public:
 		}
 	}
 
-	SceUID threadID;
+	SceUID threadID = 0;
 
 	// Saved thread state
-	int status;
-	WaitType waitType;
-	int waitID;
-	ThreadWaitInfo waitInfo;
-	bool isProcessingCallbacks;
-	SceUID currentCallbackId;
+	int status = 0;
+	WaitType waitType{};
+	int waitID = 0;
+	ThreadWaitInfo waitInfo{};
+	bool isProcessingCallbacks = false;
+	SceUID currentCallbackId = 0;
 
-	PSPAction *chainedAction;
+	PSPAction *chainedAction = nullptr;
 };
 
 class ActionAfterCallback : public PSPAction {
@@ -1891,7 +1854,12 @@ int __KernelCreateThread(const char *threadName, SceUID moduleID, u32 entry, u32
 	}
 
 	if (optionAddr != 0) {
-		WARN_LOG_REPORT(Log::sceKernel, "sceKernelCreateThread(name=%s): unsupported options parameter %08x", threadName, optionAddr);
+		if (Memory::IsValid4AlignedAddress(optionAddr)) {
+			u32 structSize = Memory::ReadUnchecked_U32(optionAddr);
+			WARN_LOG(Log::sceKernel, "sceKernelCreateThread(name=%s): unsupported options parameter %08x", threadName, optionAddr);
+		} else {
+			ERROR_LOG(Log::sceKernel, "sceKernelCreateThread(name=%s): bad options parameter %08x", threadName, optionAddr);
+		}
 	}
 
 	// Creating a thread resumes dispatch automatically.  Probably can't create without it.
@@ -2152,6 +2120,23 @@ u32 sceKernelResumeDispatchThread(u32 enabled) {
 bool __KernelIsDispatchEnabled() {
 	// Dispatch can never be enabled when interrupts are disabled.
 	return dispatchEnabled && __InterruptsEnabled();
+}
+
+// PPSSPP doesn't track a real per-module "user level" (set via the owning module's
+// PSP_MODULE_INFO attribute on real firmware, e.g. 0 for kernel-mode modules like the VSH's
+// bridge driver, 4 for a regular user-mode game). Approximate it from the calling thread's
+// kernel/user attr instead - the two levels VSH code actually seems to check for are "kernel"
+// vs "not kernel", so this is enough to avoid it treating itself as an ordinary user thread.
+int sceKernelGetUserLevel() {
+	PSPThread *t = __GetCurrentThread();
+	int level = (t && (t->nt.attr & PSP_THREAD_ATTR_KERNEL)) ? 0 : 4;
+	return hleLogDebug(Log::sceKernel, level);
+}
+
+int sceKernelIsUserModeThread() {
+	PSPThread *t = __GetCurrentThread();
+	int isUser = (t && (t->nt.attr & PSP_THREAD_ATTR_KERNEL)) ? 0 : 1;
+	return hleLogDebug(Log::sceKernel, isUser);
 }
 
 int KernelRotateThreadReadyQueue(int priority) {

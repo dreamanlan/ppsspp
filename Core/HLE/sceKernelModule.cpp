@@ -56,6 +56,7 @@
 #include "Core/PSPLoaders.h"
 #include "Core/System.h"
 #include "Core/MemMapHelpers.h"
+#include "Core/Debugger/LineInfo.h"
 #include "Core/Debugger/SymbolMap.h"
 #include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceKernelModule.h"
@@ -190,6 +191,19 @@ struct PspLibStubEntry {
 
 PSPModule::~PSPModule() {
 	if (memoryBlockAddr) {
+		if (g_Config.bAutoSaveLoadSymbols) {
+			// Must happen before UnloadModule() below, while this module's symbols are still
+			// active (SaveModuleSymbols itself doesn't care, but GetModuleIndexByName's
+			// active-module lookup does).
+			char moduleName[29] = { 0 };
+			truncate_cpy(moduleName, nm.name);
+			int idx = g_symbolMap->GetModuleIndexByName(moduleName);
+			if (idx > 0) {
+				Path path = SymbolMap::GetModuleSymbolsPath(moduleName, g_symbolMap->GetModuleCrc(idx));
+				g_symbolMap->SaveModuleSymbols(idx, path, g_paramSFO.GetDiscID(), g_paramSFO.GetValueString("TITLE"));
+			}
+		}
+
 		// If it's either below user memory, or using a high kernel bit, it's in kernel.
 		if (memoryBlockAddr < PSP_GetUserMemoryBase() || memoryBlockAddr > PSP_GetUserMemoryEnd()) {
 			kernelMemory.Free(memoryBlockAddr);
@@ -197,6 +211,11 @@ PSPModule::~PSPModule() {
 			userMemory.Free(memoryBlockAddr);
 		}
 		g_symbolMap->UnloadModule(memoryBlockAddr, memoryBlockSize);
+		// Deliberately *not* dropping this module's line info here. Loading a savestate deletes
+		// every kernel object and rebuilds it (KernelObjectPool::Clear), so removing on destruction
+		// threw the line table away every time a state was loaded - and for an ELF launched
+		// directly there's no file left to read it back from. Same as SymbolMap: keep what you have,
+		// and let the module that next claims the address range replace it.
 	}
 
 	if (modulePtr.ptr) {
@@ -292,7 +311,17 @@ void PSPModule::DoState(PointerWrap &p) {
 		char moduleName[29] = { 0 };
 		truncate_cpy(moduleName, nm.name);
 		if (memoryBlockAddr != 0) {
-			g_symbolMap->AddModule(moduleName, memoryBlockAddr, memoryBlockSize);
+			// Re-registering is enough to bring both back: SymbolMap keeps every symbol it has ever
+			// seen and just rebuilds its active view from the loaded modules, and line info is no
+			// longer dropped when a module is destroyed (see ~PSPModule). So there's nothing to
+			// re-read here, and a state load doesn't pay for re-parsing the companion ELF.
+			g_symbolMap->AddModule(moduleName, memoryBlockAddr, memoryBlockSize, crc);
+			if (g_Config.bAutoSaveLoadSymbols) {
+				int idx = g_symbolMap->GetModuleIndexByName(moduleName);
+				if (idx > 0) {
+					g_symbolMap->LoadModuleSymbols(idx, SymbolMap::GetModuleSymbolsPath(moduleName, crc));
+				}
+			}
 		}
 	}
 
@@ -578,7 +607,7 @@ static void WriteVarSymbol(WriteVarSymbolState &state, u32 exportAddress, u32 re
 					// We add 1 in that case so that it ends up the right value.
 					u16 high = (full >> 16) + ((full & 0x8000) ? 1 : 0);
 					Memory::WriteUnchecked_U32((reloc.data & ~0xFFFF) | high, reloc.addr);
-					currentMIPS->InvalidateICache(reloc.addr, 4);
+					currentMIPS->InvalidateICacheRangeDeferred(reloc.addr, 4);
 				}
 				state.lastHI16Processed = true;
 			}
@@ -593,7 +622,7 @@ static void WriteVarSymbol(WriteVarSymbolState &state, u32 exportAddress, u32 re
 	}
 
 	Memory::WriteUnchecked_U32(relocData, relocAddress);
-	currentMIPS->InvalidateICache(relocAddress, 4);
+	currentMIPS->InvalidateICacheRangeDeferred(relocAddress, 4);
 }
 
 void ImportVarSymbol(WriteVarSymbolState &state, const VarSymbolImport &var) {
@@ -692,7 +721,7 @@ void ImportFuncSymbol(const FuncSymbolImport &func, bool reimporting, const char
 		}
 		// TODO: There's some double lookup going on here (we already did the lookup in GetHLEFunc above).
 		WriteHLESyscall(func.moduleName, func.nid, func.stubAddr);
-		currentMIPS->InvalidateICache(func.stubAddr, 8);
+		currentMIPS->InvalidateICacheRangeDeferred(func.stubAddr, 8);
 		return;
 	}
 
@@ -710,7 +739,7 @@ void ImportFuncSymbol(const FuncSymbolImport &func, bool reimporting, const char
 					WARN_LOG_REPORT(Log::Loader, "Reimporting: func import %s/%08x changed", func.moduleName, func.nid);
 				}
 				WriteFuncStub(func.stubAddr, it->symAddr);
-				currentMIPS->InvalidateICache(func.stubAddr, 8);
+				currentMIPS->InvalidateICacheRangeDeferred(func.stubAddr, 8);
 				return;
 			}
 		}
@@ -726,7 +755,7 @@ void ImportFuncSymbol(const FuncSymbolImport &func, bool reimporting, const char
 
 	if (shouldHLE || !reimporting) {
 		WriteFuncMissingStub(func.stubAddr, func.nid);
-		currentMIPS->InvalidateICache(func.stubAddr, 8);
+		currentMIPS->InvalidateICacheRangeDeferred(func.stubAddr, 8);
 	}
 }
 
@@ -750,7 +779,7 @@ void ExportFuncSymbol(const FuncSymbolExport &func) {
 			if (func.Matches(*it)) {
 				INFO_LOG(Log::Loader, "Resolving function %s/%08x", func.moduleName, func.nid);
 				WriteFuncStub(it->stubAddr, func.symAddr);
-				currentMIPS->InvalidateICache(it->stubAddr, 8);
+				currentMIPS->InvalidateICacheRangeDeferred(it->stubAddr, 8);
 			}
 		}
 	}
@@ -774,13 +803,13 @@ void UnexportFuncSymbol(const FuncSymbolExport &func) {
 			if (func.Matches(*it)) {
 				INFO_LOG(Log::Loader, "Unresolving function %s/%08x", func.moduleName, func.nid);
 				WriteFuncMissingStub(it->stubAddr, it->nid);
-				currentMIPS->InvalidateICache(it->stubAddr, 8);
+				currentMIPS->InvalidateICacheRangeDeferred(it->stubAddr, 8);
 			}
 		}
 	}
 }
 
-// Used to add detail to the "Unknown syscall" log in HLE.cpp's GetSyscallFuncPointer - a call
+// Used to add detail to the "Unknown syscall" log in HLE.cpp's GetSyscallFunctionData - a call
 // through a still-unresolved import ends up as a generic "invalid syscall" opcode that no
 // longer carries the original module name/NID, but the (fixed, unique) address of the syscall
 // instruction itself does - it's exactly the stubAddr every pending FuncSymbolImport recorded
@@ -793,7 +822,7 @@ bool KernelFindImportByStubAddr(u32 stubAddr, std::string *importModuleName, u32
 			continue;
 		}
 		for (const auto &func : module->importedFuncs) {
-			if (func.stubAddr == stubAddr) {
+			if (Memory::AddressesEqualAfterMask(func.stubAddr, stubAddr)) {
 				*importModuleName = func.moduleName;
 				*nid = func.nid;
 				*importingModuleName = module->GetName();
@@ -826,7 +855,7 @@ void PSPModule::Cleanup() {
 		Memory::Memset(nm.text_addr + nm.text_size, -1, nm.data_size + nm.bss_size, "ModuleClear");
 
 		// Let's also invalidate, just to make sure it's cleared out for any future data.
-		currentMIPS->InvalidateICache(memoryBlockAddr, memoryBlockSize);
+		currentMIPS->InvalidateICacheRangeDeferred(memoryBlockAddr, memoryBlockSize);
 	}
 }
 
@@ -1063,6 +1092,15 @@ enum : u32 {
 
 // filename is only used for dumping/metadata.
 static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 loadAddress, bool fromTop, std::string *error_string, u32 *magic, std::string_view filename, u32 &error) {
+	// The magic reads below need four bytes, and the ~SCE branch another four after that. Everything
+	// downstream checks its own sizes; this is just so we can look at the magic at all. The PBP path
+	// in __KernelLoadModule computes elfSize from two offsets in the file and doesn't floor it.
+	if (elfSize < 2 * sizeof(u32)) {
+		*error_string = "ELF file truncated - can't load";
+		error = SCE_KERNEL_ERROR_FILEERR;
+		return nullptr;
+	}
+
 	PSPModule *module = new PSPModule();
 	kernelObjects.Create(module);
 	loadedModules.insert(module->GetUID());
@@ -1127,16 +1165,23 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 		elfSize = maxElfSize;
 		ptr = newptr;
 		int decryptedSize = pspDecryptPRX(in, (u8*)ptr, head->psp_size);
-		_dbg_assert_(decryptedSize <= (int)maxElfSize);
-		if (decryptedSize <= 0 && Read32(ptr + 0x150) == ELF_MAGIC) {
+		// If decryption got us nowhere, the PRX may simply not be encrypted - in which case the ELF
+		// starts right after the header. Check the source buffer, not the destination: on the paths
+		// where decryption bails early nothing has been written to newptr yet, so this used to read
+		// uninitialized heap to decide. psp_size is known to be <= the data we actually have.
+		if (decryptedSize <= 0 && head->psp_size >= 0x150 + sizeof(u32) && Read32(in + 0x150) == ELF_MAGIC) {
 			decryptedSize = head->psp_size - 0x150;
 			memcpy(newptr, in + 0x150, decryptedSize);
 			// In this case it's definitely not compressed. Added assert below.
 		}
 
-		// Don't accept ELFs over 24MB - nor ones with negative size, of course.
-		if (decryptedSize < 0 || decryptedSize > 24 * 1024 * 1024) {
+		// Don't accept ELFs over 24MB, ones bigger than the buffer we allocated for them - nor ones
+		// with negative size, of course.
+		if (decryptedSize < 0 || decryptedSize > 24 * 1024 * 1024 || decryptedSize > (int)maxElfSize) {
 			*error_string = StringFromFormat("ELF/PRX corrupt, unreasonable decrypted size: %d", (u32)decryptedSize);
+			delete [] newptr;
+			module->Cleanup();
+			kernelObjects.Destroy<PSPModule>(module->GetUID());
 			// TODO: Might be the wrong error code.
 			error = SCE_KERNEL_ERROR_FILEERR;
 			return nullptr;
@@ -1158,6 +1203,9 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 				// Bail out cleanly here rather than falling through to parse whatever's left
 				// in the buffer (still compressed, not a valid ELF) as if it were real code.
 				*error_string = StringFromFormat("Module '%s' decompression failed", head->modname);
+				delete [] newptr;
+				module->Cleanup();
+				kernelObjects.Destroy<PSPModule>(module->GetUID());
 				// TODO: Might be the wrong error code.
 				error = SCE_KERNEL_ERROR_FILEERR;
 				return nullptr;
@@ -1178,6 +1226,10 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 			// This should happen for all "kernel" modules.
 			*error_string = "Missing key";
 			delete [] newptr;
+			// ptr still points into this buffer, but nothing below reads it - and the exits further
+			// down all free newptr, so it has to be null by the time they're reached.
+			newptr = nullptr;
+			ptr = nullptr;
 			module->isFake = true;
 			strncpy(module->nm.name, head->modname, ARRAY_SIZE(module->nm.name));
 			module->nm.entry_addr = -1;
@@ -1287,7 +1339,7 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 	module->memoryBlockAddr = reader.GetVaddr();
 	module->memoryBlockSize = reader.GetTotalSize();
 
-	currentMIPS->InvalidateICache(module->memoryBlockAddr, module->memoryBlockSize);
+	currentMIPS->InvalidateICacheRangeDeferred(module->memoryBlockAddr, module->memoryBlockSize);
 
 	SectionID sceModuleInfoSection = reader.GetSectionByName(".rodata.sceModuleInfo");
 	const PspModuleInfo *modinfo;
@@ -1348,7 +1400,27 @@ static PSPModule *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 load
 	strncpy(moduleName, modinfo->name, ARRAY_SIZE(module->nm.name));
 
 	if (module->memoryBlockAddr != 0) {
-		g_symbolMap->AddModule(moduleName, module->memoryBlockAddr, module->memoryBlockSize);
+		g_symbolMap->AddModule(moduleName, module->memoryBlockAddr, module->memoryBlockSize, module->crc);
+
+		// Line info out of the module we just loaded, where the debug sections are right here in the file.
+		// A PRX or EBOOT.PBP has none (prxgen strips .debug sections), so this doesn't do anything - instead,
+		// see LoadCompanionElfDebugInfo.
+		// A relocated module's ELF addresses are relative to where it ended up; one loaded at the
+		// addresses it asked for already has final ones.
+		const u32 lineDelta = reader.DidRelocate() ? reader.GetVaddr() : 0;
+		g_lineInfo.AddModule(std::string_view((const char *)ptr, elfSize), module->memoryBlockAddr, module->memoryBlockSize, lineDelta);
+
+		// When developing with the homebrew PSPSDK you usually end up with the unstripped ELF next to the EBOOT;
+		// so without this every function in it is just z_un_<address>.
+		LoadCompanionElfDebugInfo(PSP_CoreParameter().fileToStart, module->memoryBlockAddr, module->memoryBlockSize);
+
+		// Load any .ppsym files where the user has renamed functions.
+		if (g_Config.bAutoSaveLoadSymbols) {
+			int idx = g_symbolMap->GetModuleIndexByName(moduleName);
+			if (idx > 0) {
+				g_symbolMap->LoadModuleSymbols(idx, SymbolMap::GetModuleSymbolsPath(moduleName, module->crc));
+			}
+		}
 	}
 
 	SectionID textSection = reader.GetSectionByName(".text");
@@ -2127,7 +2199,7 @@ int __KernelStartModule(SceUID moduleId, u32 argsize, u32 argAddr, u32 returnVal
 		// TODO: Why do we skip smoption->attribute here?
 
 		SceUID threadID = __KernelCreateThread(module->nm.name, moduleId, entryAddr, priority, stacksize, attribute, 0, (module->nm.attribute & 0x1000) != 0);
-		_dbg_assert_(threadID > 0);
+		_dbg_assert_msg_(threadID > 0, "__KernelCreateThread returned %08x", threadID);
 		// TOOD: Check the return value and bail?
 		__KernelStartThreadValidate(threadID, argsize, argAddr);
 		__KernelSetThreadRA(threadID, NID_MODULERETURN);

@@ -15,6 +15,7 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include <atomic>
 #include <algorithm>
 #include <cmath>
 #include <mutex>
@@ -41,7 +42,9 @@ typedef std::pair<FlipCallback, void *> FlipListener;
 static std::vector<FlipListener> flipListeners;
 
 static uint64_t frameStartTicks;
-static int numVBlanks;
+// Atomic because the WebSocket debugger reads it from its own thread (input.buttons.press uses
+// it to count down frames) while the CPU thread bumps it.
+static std::atomic<int> numVBlanks;
 // hCount is computed now.
 static int vCount;
 // The "AccumulatedHcount" can be adjusted, this is the base.
@@ -95,7 +98,7 @@ static void CalculateFPS() {
 		}
 	}
 
-	if ((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::FRAME_GRAPH || coreCollectDebugStats) {
+	if ((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::FRAME_GRAPH || g_coreCollectDebugStats) {
 		frameTimeHistory[frameTimeHistoryPos++] = (float)(now - lastFrameTimeHistory);
 		lastFrameTimeHistory = now;
 		frameTimeHistoryPos = frameTimeHistoryPos % frameTimeHistorySize;

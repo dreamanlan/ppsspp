@@ -363,6 +363,9 @@
     <ClCompile Include="Util\PPGeDraw.cpp">
       <Filter>Util</Filter>
     </ClCompile>
+    <ClCompile Include="Util\PSARUnpack.cpp">
+      <Filter>Util</Filter>
+    </ClCompile>
     <ClCompile Include="HLE\sceFont.cpp">
       <Filter>HLE\Libraries</Filter>
     </ClCompile>
@@ -718,6 +721,9 @@
     <ClCompile Include="Debugger\WebSocket\LogBroadcaster.cpp">
       <Filter>Debugger\WebSocket</Filter>
     </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\LogConfigSubscriber.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
     <ClCompile Include="Debugger\WebSocket\SteppingBroadcaster.cpp">
       <Filter>Debugger\WebSocket</Filter>
     </ClCompile>
@@ -749,6 +755,9 @@
       <Filter>Debugger\WebSocket</Filter>
     </ClCompile>
     <ClCompile Include="Debugger\WebSocket\HLESubscriber.cpp">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WebSocket\HLEKernelObjectSubscriber.cpp">
       <Filter>Debugger\WebSocket</Filter>
     </ClCompile>
     <ClCompile Include="Debugger\WebSocket\GPUBufferSubscriber.cpp">
@@ -960,6 +969,9 @@
     </ClCompile>
     <ClCompile Include="MIPS\fake\FakeJit.cpp">
       <Filter>MIPS\fake</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\LineInfo.cpp">
+      <Filter>Debugger</Filter>
     </ClCompile>
     <ClCompile Include="Debugger\MemBlockInfo.cpp">
       <Filter>Debugger</Filter>
@@ -1402,6 +1414,9 @@
     <ClCompile Include="EmuThread.cpp">
       <Filter>Core</Filter>
     </ClCompile>
+    <ClCompile Include="HLE\sceChkreg.cpp">
+      <Filter>HLE\Libraries</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ELF\ElfReader.h">
@@ -1663,6 +1678,9 @@
       <Filter>HW</Filter>
     </ClInclude>
     <ClInclude Include="Util\PPGeDraw.h">
+      <Filter>Util</Filter>
+    </ClInclude>
+    <ClInclude Include="Util\PSARUnpack.h">
       <Filter>Util</Filter>
     </ClInclude>
     <ClInclude Include="HLE\sceFont.h">
@@ -1989,6 +2007,9 @@
     <ClInclude Include="Debugger\WebSocket\LogBroadcaster.h">
       <Filter>Debugger\WebSocket</Filter>
     </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\LogConfigSubscriber.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
     <ClInclude Include="Debugger\WebSocket\SteppingBroadcaster.h">
       <Filter>Debugger\WebSocket</Filter>
     </ClInclude>
@@ -2023,6 +2044,9 @@
       <Filter>HLE\Kernel</Filter>
     </ClInclude>
     <ClInclude Include="Debugger\WebSocket\HLESubscriber.h">
+      <Filter>Debugger\WebSocket</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WebSocket\HLEKernelObjectSubscriber.h">
       <Filter>Debugger\WebSocket</Filter>
     </ClInclude>
     <ClInclude Include="Debugger\WebSocket\GPUBufferSubscriber.h">
@@ -2099,6 +2123,9 @@
     </ClInclude>
     <ClInclude Include="MIPS\fake\FakeJit.h">
       <Filter>MIPS\fake</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\LineInfo.h">
+      <Filter>Debugger</Filter>
     </ClInclude>
     <ClInclude Include="Debugger\MemBlockInfo.h">
       <Filter>Debugger</Filter>
@@ -2276,6 +2303,9 @@
     </ClInclude>
     <ClInclude Include="HLE\HLEUtil.h">
       <Filter>HLE</Filter>
+    </ClInclude>
+    <ClInclude Include="HLE\sceChkreg.h">
+      <Filter>HLE\Libraries</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

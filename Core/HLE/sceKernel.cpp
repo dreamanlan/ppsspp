@@ -66,6 +66,7 @@
 #include "sceKernelEventFlag.h"
 #include "sceKernelVTimer.h"
 #include "sceKernelTime.h"
+#include "sceMd5.h"
 #include "sceMp3.h"
 #include "sceMpeg.h"
 #include "sceNet.h"
@@ -394,21 +395,24 @@ int sceKernelDcacheInvalidateRange(u32 addr, int size)
 	if (size < 0 || (int) addr + size < 0)
 		return hleNoLog(SCE_KERNEL_ERROR_ILLEGAL_ADDR);
 
-	if (size > 0)
-	{
-		if ((addr % 64) != 0 || (size % 64) != 0)
+	if (size > 0) {
+		if ((addr % 64) != 0 || (size % 64) != 0) {
 			return hleNoLog(SCE_KERNEL_ERROR_CACHE_ALIGNMENT);
+		}
 
-		if (addr != 0)
+		if (addr != 0) {
 			gpu->InvalidateCache(addr, size, GPU_INVALIDATE_HINT);
+		}
 	}
 	hleEatCycles(190);
 	return hleNoLog(0);
 }
 
 int sceKernelIcacheInvalidateRange(u32 addr, int size) {
-	if (size != 0)
-		currentMIPS->InvalidateICache(addr, size);
+	if (size != 0) {
+		currentMIPS->InvalidateICacheRangeDeferred(addr, size);
+		Core_ReenterDispatcher();
+	}
 	return hleLogDebug(Log::CPU, 0);
 }
 
@@ -455,8 +459,7 @@ int sceKernelDcacheWritebackInvalidateRange(u32 addr, int size)
 	return hleNoLog(0);
 }
 
-int sceKernelDcacheWritebackInvalidateAll()
-{
+int sceKernelDcacheWritebackInvalidateAll() {
 #ifdef LOG_CACHE
 	NOTICE_LOG(Log::CPU,"sceKernelDcacheInvalidateAll()");
 #endif
@@ -466,23 +469,23 @@ int sceKernelDcacheWritebackInvalidateAll()
 	return hleLogDebug(Log::CPU, 0, "Dcache invalidated");
 }
 
-u32 sceKernelIcacheInvalidateAll()
-{
+u32 sceKernelIcacheInvalidateAll() {
 #ifdef LOG_CACHE
 	NOTICE_LOG(Log::CPU, "Icache invalidated - should clear JIT someday");
 #endif
 	// Note that this doesn't actually fully invalidate all with such a large range.
-	currentMIPS->InvalidateICache(0, 0x3FFFFFFF);
+	currentMIPS->InvalidateICacheRangeDeferred(0, 0x3FFFFFFF);
+	Core_ReenterDispatcher();
 	return hleLogDebug(Log::CPU, 0, "Icache invalidated");
 }
 
-u32 sceKernelIcacheClearAll()
-{
+u32 sceKernelIcacheClearAll() {
 #ifdef LOG_CACHE
 	NOTICE_LOG(Log::CPU, "Icache cleared - should clear JIT someday");
 #endif
 	// Note that this doesn't actually fully invalidate all with such a large range.
-	currentMIPS->InvalidateICache(0, 0x3FFFFFFF);
+	currentMIPS->InvalidateICacheRangeDeferred(0, 0x3FFFFFFF);
+	Core_ReenterDispatcher();
 	return hleLogDebug(Log::CPU, 0, "Icache cleared");
 }
 
@@ -945,6 +948,16 @@ const HLEFunction ThreadManForKernel[] =
 	{0x1D371B8A, &WrapI_IU<sceKernelCancelVpl>,                      "sceKernelCancelVpl",                        'i', "ix",     HLE_KERNEL_SYSCALL },
 	{0x39810265, &WrapI_IU<sceKernelReferVplStatus>,                 "sceKernelReferVplStatus",                   'i', "ip",     HLE_KERNEL_SYSCALL },
 	{0xBC31C1B9, nullptr, "sceKernelExtendKernelStack"},
+	// New entries must go here at the end, not inserted earlier in this table - the funcindex
+	// (this array position) gets baked directly into resolved-import syscall opcodes written
+	// into guest RAM (see GetSyscallOp() in HLE.cpp), which savestates capture verbatim. Inserting
+	// a new entry before an existing one shifts every later entry's index, silently corrupting
+	// any savestate taken after that entry was already resolved (see AGENTS.md).
+	{0x3AD58B8C, &WrapU_V<sceKernelSuspendDispatchThread>,           "sceKernelSuspendDispatchThread",            'x', "",       HLE_NOT_IN_INTERRUPT | HLE_KERNEL_SYSCALL },
+	{0x27E22EC2, &WrapU_U<sceKernelResumeDispatchThread>,            "sceKernelResumeDispatchThread",             'x', "x",      HLE_NOT_IN_INTERRUPT | HLE_KERNEL_SYSCALL },
+	{0xC11BA8C4, &WrapI_II<sceKernelNotifyCallback>,                 "sceKernelNotifyCallback",                   'i', "ii",     HLE_KERNEL_SYSCALL },
+	{0xF6427665, &WrapI_V<sceKernelGetUserLevel>,                    "sceKernelGetUserLevel",                     'i', "",       HLE_KERNEL_SYSCALL },
+	{0x85A2A5BF, &WrapI_V<sceKernelIsUserModeThread>,                "sceKernelIsUserModeThread",                 'i', "",       HLE_KERNEL_SYSCALL },
 };
 
 void Register_ThreadManForUser()
@@ -1004,7 +1017,7 @@ const HLEFunction UtilsForKernel[] = {
 	{0xC2DF770E, WrapI_UI<sceKernelIcacheInvalidateRange>,           "sceKernelIcacheInvalidateRange",            'i', "xi",     HLE_KERNEL_SYSCALL },
 	{0X78934841, nullptr,                                            "sceKernelGzipDecompress",                   '?', ""        },
 	{0XE8DB3CE6, nullptr,                                            "sceKernelDeflateDecompress",                '?', ""        },
-	{0X840259F1, nullptr,                                            "sceKernelUtilsSha1Digest",                  '?', ""        },
+	{0X840259F1, &WrapI_UIU<sceKernelUtilsSha1Digest>,               "sceKernelUtilsSha1Digest",                  '?', ""        },
 	{0X9E5C5086, nullptr,                                            "sceKernelUtilsMd5BlockInit",                '?', ""        },
 	{0X61E1E525, nullptr,                                            "sceKernelUtilsMd5BlockUpdate",              '?', ""        },
 	{0XB8D24E78, nullptr,                                            "sceKernelUtilsMd5BlockResult",              '?', ""        },

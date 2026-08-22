@@ -19,10 +19,78 @@
 #include "Core/Core.h"
 #include "Core/Debugger/Breakpoints.h"
 #include "Core/Debugger/DisassemblyManager.h"
+#include "Core/Debugger/LineInfo.h"
 #include "Core/Debugger/SymbolMap.h"
 #include "Core/Debugger/WebSocket/BreakpointSubscriber.h"
 #include "Core/Debugger/WebSocket/WebSocketUtils.h"
 #include "Core/MIPS/MIPSDebugInterface.h"
+
+static const char *BreakpointKindToString(BreakpointKind kind) {
+	switch (kind) {
+	case BreakpointKind::Exec: return "exec";
+	case BreakpointKind::Memory: return "memory";
+	case BreakpointKind::Register: return "register";
+	default: return "none";
+	}
+}
+
+void WriteBreakpointHit(JsonWriter &json, const BreakpointHit &hit) {
+	json.pushDict("hit");
+	json.writeString("kind", BreakpointKindToString(hit.kind));
+	json.writeUint("pc", hit.pc);
+	json.writeUint("address", hit.address);
+	json.writeUint("hits", hit.numHits);
+	json.writeBool("logged", hit.logged);
+	json.writeBool("paused", hit.paused);
+	if (hit.condition.empty())
+		json.writeNull("condition");
+	else
+		json.writeString("condition", hit.condition);
+
+	// Resolved here rather than left to the client: it's one symbol map lookup at break time, and
+	// it saves a round trip at exactly the moment the client is trying to show something.
+	const std::string symbol = g_symbolMap->GetDescription(hit.address);
+	if (symbol.empty())
+		json.writeNull("symbol");
+	else
+		json.writeString("symbol", symbol);
+
+	// Only when the game shipped an unstripped ELF with DWARF in it - see LineInfo.h. Keyed on pc
+	// rather than address, since for a memory breakpoint the interesting source location is the
+	// instruction that did the access, not the data it touched.
+	std::string file;
+	int line = 0;
+	if (g_lineInfo.Lookup(hit.pc, &file, &line)) {
+		json.writeString("file", file);
+		json.writeInt("line", line);
+	} else {
+		json.writeNull("file");
+		json.writeNull("line");
+	}
+
+	if (hit.kind == BreakpointKind::Memory) {
+		json.writeInt("size", hit.size);
+		json.writeString("access", hit.write ? "write" : "read");
+		json.writeString("source", hit.source);
+	}
+	if (hit.kind == BreakpointKind::Register) {
+		json.writeInt("register", hit.reg);
+		json.writeString("registerName", MIPSDebugInterface::GetRegName(0, hit.reg));
+	}
+
+	// Which breakpoint it was, as opposed to what was touched. Those differ for every memcheck
+	// with a range, and this is what matches the entries in cpu.breakpoint.list / etc. A register
+	// breakpoint isn't identified by an address at all, so it gets no range rather than a
+	// meaningless zero one - "register" above is its identity.
+	if (hit.kind == BreakpointKind::Exec || hit.kind == BreakpointKind::Memory) {
+		json.pushDict("breakpoint");
+		json.writeUint("start", hit.rangeStart);
+		json.writeUint("end", hit.rangeEnd);
+		json.end();
+	}
+
+	json.end();
+}
 
 DebuggerSubscriber *WebSocketBreakpointInit(DebuggerEventHandlerMap &map) {
 	// No need to bind or alloc state, these are all global.
@@ -108,10 +176,6 @@ struct WebSocketCPUBreakpointParams {
 		if (hasCondition) {
 			if (!req.ParamString("condition", &condition))
 				return false;
-			if (!initExpression(currentDebugMIPS, condition.c_str(), compiledCondition)) {
-				req.Fail(StringFromFormat("Could not parse expression syntax: %s", getExpressionError()));
-				return false;
-			}
 		}
 		hasLogFormat = req.HasParam("logFormat");
 		if (hasLogFormat) {
@@ -120,6 +184,17 @@ struct WebSocketCPUBreakpointParams {
 		}
 
 		return true;
+	}
+
+	// Compiled on the CPU thread rather than in Parse(): resolving symbols in an expression goes
+	// through g_symbolMap, which is CPU-thread-owned and destroyed on shutdown.
+	bool CompileCondition(std::string *error) {
+		if (!hasCondition || condition.empty())
+			return true;
+		if (initExpression(currentDebugMIPS, condition.c_str(), compiledCondition))
+			return true;
+		*error = StringFromFormat("Could not parse expression syntax: %s", getExpressionError());
+		return false;
 	}
 
 	void Apply() {
@@ -143,7 +218,7 @@ struct WebSocketCPUBreakpointParams {
 			hasEnabled = true;
 		}
 		if (hasLog && hasEnabled) {
-			BreakAction result = BREAK_ACTION_IGNORE;
+			BreakAction result = BREAK_ACTION_NONE;
 			if (log)
 				result |= BREAK_ACTION_LOG;
 			if (enabled)
@@ -174,10 +249,15 @@ void WebSocketCPUBreakpointAdd(DebuggerRequest &req) {
 
 	// Route the actual breakpoint manipulation to the CPU thread instead of poking at it directly
 	// from this WebSocket handler thread - see Core_RunOnCPUThread() in Core.h.
+	std::string error;
 	Core_RunOnCPUThread([&] {
+		if (!params.CompileCondition(&error))
+			return;
 		g_breakpoints.AddBreakPoint(params.address);
 		params.Apply();
 	});
+	if (!error.empty())
+		return req.Fail(error);
 	req.Respond();
 }
 
@@ -199,13 +279,18 @@ void WebSocketCPUBreakpointUpdate(DebuggerRequest &req) {
 	// Route the actual breakpoint manipulation to the CPU thread instead of poking at it directly
 	// from this WebSocket handler thread - see Core_RunOnCPUThread() in Core.h.
 	bool found = false;
+	std::string error;
 	Core_RunOnCPUThread([&] {
+		if (!params.CompileCondition(&error))
+			return;
 		bool enabled;
 		found = g_breakpoints.IsAddressBreakPoint(params.address, &enabled);
 		if (found)
 			params.Apply();
 	});
 
+	if (!error.empty())
+		return req.Fail(error);
 	if (!found)
 		return req.Fail("Breakpoint not found");
 	req.Respond();
@@ -260,15 +345,13 @@ void WebSocketCPUBreakpointList(DebuggerRequest &req) {
 	Core_RunOnCPUThread([&] {
 		JsonWriter &json = req.Respond();
 		json.pushArray("breakpoints");
+		// No filtering needed - the internal breakpoint behind step-over/run-until isn't in here.
 		std::vector<BreakPoint> bps = g_breakpoints.GetBreakpoints();
 		for (const BreakPoint &bp : bps) {
-			if (bp.temporary)
-				continue;
-
 			json.pushDict();
 			json.writeUint("address", bp.addr);
 			json.writeBool("enabled", bp.IsEnabled());
-			json.writeBool("log", (bp.result & BREAK_ACTION_LOG) != 0);
+			json.writeBool("log", (bp.action & BREAK_ACTION_LOG) != 0);
 			json.writeUint("hits", bp.numHits);
 			if (bp.hasCond)
 				json.writeString("condition", bp.cond.expressionString);
@@ -297,6 +380,8 @@ void WebSocketCPUBreakpointList(DebuggerRequest &req) {
 struct WebSocketMemoryBreakpointParams {
 	uint32_t address = 0;
 	uint32_t end = 0;
+
+	// These flags indicate whether the corresponding parameter was present in the request.
 	bool hasEnabled = false;
 	bool hasLog = false;
 	bool hasCond = false;
@@ -349,10 +434,6 @@ struct WebSocketMemoryBreakpointParams {
 		if (hasCondition) {
 			if (!req.ParamString("condition", &condition))
 				return false;
-			if (!initExpression(currentDebugMIPS, condition.c_str(), compiledCondition)) {
-				req.Fail(StringFromFormat("Could not parse expression syntax: %s", getExpressionError()));
-				return false;
-			}
 		}
 		hasLogFormat = req.HasParam("logFormat");
 		if (hasLogFormat) {
@@ -363,14 +444,14 @@ struct WebSocketMemoryBreakpointParams {
 		return true;
 	}
 
-	BreakAction Result(bool adding) {
-		int bits = MEMCHECK_READWRITE;
+	BreakAction Action(bool adding) {
+		int bits = BREAK_ACTION_PAUSE | BREAK_ACTION_LOG;
 		if (adding || (hasLog && hasEnabled)) {
 			bits = (enabled ? BREAK_ACTION_PAUSE : 0) | (log ? BREAK_ACTION_LOG : 0);
 		} else {
 			MemCheck prev;
 			if (g_breakpoints.GetMemCheck(address, end, &prev))
-				bits = prev.result;
+				bits = prev.action;
 
 			if (hasEnabled)
 				bits = (bits & ~BREAK_ACTION_PAUSE) | (enabled ? BREAK_ACTION_PAUSE : 0);
@@ -379,6 +460,17 @@ struct WebSocketMemoryBreakpointParams {
 		}
 
 		return BreakAction(bits);
+	}
+
+	// Compiled on the CPU thread rather than in Parse(): resolving symbols in an expression goes
+	// through g_symbolMap, which is CPU-thread-owned and destroyed on shutdown.
+	bool CompileCondition(std::string *error) {
+		if (!hasCondition || condition.empty())
+			return true;
+		if (initExpression(currentDebugMIPS, condition.c_str(), compiledCondition))
+			return true;
+		*error = StringFromFormat("Could not parse expression syntax: %s", getExpressionError());
+		return false;
 	}
 
 	void Apply() {
@@ -421,10 +513,15 @@ void WebSocketMemoryBreakpointAdd(DebuggerRequest &req) {
 
 	// Route the actual breakpoint manipulation to the CPU thread instead of poking at it directly
 	// from this WebSocket handler thread - see Core_RunOnCPUThread() in Core.h.
+	std::string error;
 	Core_RunOnCPUThread([&] {
-		g_breakpoints.AddMemCheck(params.address, params.end, params.cond, params.Result(true));
+		if (!params.CompileCondition(&error))
+			return;
+		g_breakpoints.AddMemCheck(params.address, params.end, params.cond, params.Action(true));
 		params.Apply();
 	});
+	if (!error.empty())
+		return req.Fail(error);
 	req.Respond();
 }
 
@@ -451,15 +548,20 @@ void WebSocketMemoryBreakpointUpdate(DebuggerRequest &req) {
 	// Route the actual breakpoint manipulation to the CPU thread instead of poking at it directly
 	// from this WebSocket handler thread - see Core_RunOnCPUThread() in Core.h.
 	bool found = false;
+	std::string error;
 	Core_RunOnCPUThread([&] {
+		if (!params.CompileCondition(&error))
+			return;
 		MemCheck mc;
 		found = g_breakpoints.GetMemCheck(params.address, params.end, &mc);
 		if (found) {
-			g_breakpoints.ChangeMemCheck(params.address, params.end, params.cond, params.Result(true));
+			g_breakpoints.ChangeMemCheck(params.address, params.end, params.cond, params.Action(true));
 			params.Apply();
 		}
 	});
 
+	if (!error.empty())
+		return req.Fail(error);
 	if (!found)
 		return req.Fail("Breakpoint not found");
 	req.Respond();
@@ -528,8 +630,8 @@ void WebSocketMemoryBreakpointList(DebuggerRequest &req) {
 			json.pushDict();
 			json.writeUint("address", mc.start);
 			json.writeUint("size", mc.end == 0 ? 0 : mc.end - mc.start);
-			json.writeBool("enabled", mc.IsEnabled());
-			json.writeBool("log", (mc.result & BREAK_ACTION_LOG) != 0);
+			json.writeBool("enabled", (mc.action & BREAK_ACTION_PAUSE));
+			json.writeBool("log", (mc.action & BREAK_ACTION_LOG) != 0);
 			json.writeBool("read", (mc.cond & MEMCHECK_READ) != 0);
 			json.writeBool("write", (mc.cond & MEMCHECK_WRITE) != 0);
 			json.writeBool("change", (mc.cond & MEMCHECK_WRITE_ONCHANGE) != 0);
@@ -590,10 +692,6 @@ struct WebSocketRegBreakpointParams {
 		if (hasCondition) {
 			if (!req.ParamString("condition", &condition))
 				return false;
-			if (!initExpression(currentDebugMIPS, condition.c_str(), compiledCondition)) {
-				req.Fail(StringFromFormat("Could not parse expression syntax: %s", getExpressionError()));
-				return false;
-			}
 		}
 		hasLogFormat = req.HasParam("logFormat");
 		if (hasLogFormat) {
@@ -602,6 +700,17 @@ struct WebSocketRegBreakpointParams {
 		}
 
 		return true;
+	}
+
+	// Compiled on the CPU thread rather than in Parse(): resolving symbols in an expression goes
+	// through g_symbolMap, which is CPU-thread-owned and destroyed on shutdown.
+	bool CompileCondition(std::string *error) {
+		if (!hasCondition || condition.empty())
+			return true;
+		if (initExpression(currentDebugMIPS, condition.c_str(), compiledCondition))
+			return true;
+		*error = StringFromFormat("Could not parse expression syntax: %s", getExpressionError());
+		return false;
 	}
 
 	void Apply() {
@@ -626,7 +735,7 @@ struct WebSocketRegBreakpointParams {
 			hasEnabled = true;
 		}
 		if (hasLog && hasEnabled) {
-			BreakAction result = BREAK_ACTION_IGNORE;
+			BreakAction result = BREAK_ACTION_NONE;
 			if (log)
 				result |= BREAK_ACTION_LOG;
 			if (enabled)
@@ -661,10 +770,15 @@ void WebSocketRegBreakpointAdd(DebuggerRequest &req) {
 
 	// Route the actual breakpoint manipulation to the CPU thread instead of poking at it directly
 	// from this WebSocket handler thread - see Core_RunOnCPUThread() in Core.h.
+	std::string error;
 	Core_RunOnCPUThread([&] {
+		if (!params.CompileCondition(&error))
+			return;
 		g_breakpoints.AddRegBreakpoint(params.reg);
 		params.Apply();
 	});
+	if (!error.empty())
+		return req.Fail(error);
 	req.Respond();
 }
 
@@ -681,13 +795,18 @@ void WebSocketRegBreakpointUpdate(DebuggerRequest &req) {
 	// Route the actual breakpoint manipulation to the CPU thread instead of poking at it directly
 	// from this WebSocket handler thread - see Core_RunOnCPUThread() in Core.h.
 	bool found = false;
+	std::string error;
 	Core_RunOnCPUThread([&] {
+		if (!params.CompileCondition(&error))
+			return;
 		RegBreakpoint bp;
 		found = g_breakpoints.GetRegBreakpoint(params.reg, &bp);
 		if (found)
 			params.Apply();
 	});
 
+	if (!error.empty())
+		return req.Fail(error);
 	if (!found)
 		return req.Fail("Breakpoint not found");
 	req.Respond();

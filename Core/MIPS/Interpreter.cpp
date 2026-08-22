@@ -75,7 +75,7 @@ static inline void SkipLikely(MIPSState *mips) {
 	}
 }
 
-int MIPS_SingleStep(MIPSState *mips) {
+int MIPS_InterpretSingleStep(MIPSState *mips) {
 	if (!Memory::IsValid4AlignedAddress(mips->pc)) {
 		Core_ExecException(mips->pc, mips->	pc, ExecExceptionType::JUMP);
 		return 0;
@@ -100,27 +100,53 @@ int MIPS_SingleStep(MIPSState *mips) {
 constexpr u32 UNKNOWN_MMIO_POISON = 0x1337BEEF;
 
 static u8 ReadMMIO_U8(MIPSState *mips, u32 addr) {
+	if (!Memory::IsKernelCodeAddress(mips->pc)) {
+		Core_MemoryException(addr, 1, mips->pc, MemoryExceptionType::READ_WORD, "Kernel mode only");
+		return (u8)UNKNOWN_MMIO_POISON;
+	}
 	WARN_LOG(Log::CPU, "MMIO Read8 at %08x", addr);
 	return (u8)UNKNOWN_MMIO_POISON;
 }
 
 static u16 ReadMMIO_U16(MIPSState *mips, u32 addr) {
+	if (!Memory::IsKernelCodeAddress(mips->pc)) {
+		Core_MemoryException(addr, 2, mips->pc, MemoryExceptionType::READ_WORD, "Kernel mode only");
+		return (u8)UNKNOWN_MMIO_POISON;
+	}
 	WARN_LOG(Log::CPU, "MMIO Read16 at %08x", addr);
 	return (u16)UNKNOWN_MMIO_POISON;
 }
 
 static u32 ReadMMIO_U32(MIPSState *mips, u32 addr) {
+	if (!Memory::IsKernelCodeAddress(mips->pc)) {
+		Core_MemoryException(addr, 4, mips->pc, MemoryExceptionType::READ_WORD, "Kernel mode only");
+		return (u8)UNKNOWN_MMIO_POISON;
+	}
 	WARN_LOG(Log::CPU, "MMIO Read32 at %08x", addr);
 	return UNKNOWN_MMIO_POISON;
 }
 
 void WriteMMIO_U8(MIPSState *mips, u32 addr, u8 value) {
+	if (!Memory::IsKernelCodeAddress(mips->pc)) {
+		Core_MemoryException(addr, 1, mips->pc, MemoryExceptionType::WRITE_WORD, "Kernel mode only");
+		return;
+	}
 	WARN_LOG(Log::CPU, "MMIO Write8 at %08x = %02x", addr, value);
 }
+
 void WriteMMIO_U16(MIPSState *mips, u32 addr, u16 value) {
+	if (!Memory::IsKernelCodeAddress(mips->pc)) {
+		Core_MemoryException(addr, 2, mips->pc, MemoryExceptionType::WRITE_WORD, "Kernel mode only");
+		return;
+	}
 	WARN_LOG(Log::CPU, "MMIO Write16 at %08x = %04x", addr, value);
 }
+
 void WriteMMIO_U32(MIPSState *mips, u32 addr, u32 value) {
+	if (!Memory::IsKernelCodeAddress(mips->pc)) {
+		Core_MemoryException(addr, 4, mips->pc, MemoryExceptionType::WRITE_WORD, "Kernel mode only");
+		return;
+	}
 	WARN_LOG(Log::CPU, "MMIO Write32 at %08x = %08x", addr, value);
 }
 
@@ -184,6 +210,7 @@ namespace MIPSInt {
 	}
 
 	void Int_Syscall(MIPSState *mips, MIPSOpcode op) {
+		const u32 syscallPC = mips->pc - 4;
 		// Need to pre-move PC, as CallSyscall may result in a rescheduling!
 		// To do this neater, we'll need a little generated kernel loop that syscall can jump to and then RFI from
 		// but I don't see a need to bother.
@@ -193,7 +220,7 @@ namespace MIPSInt {
 			mips->pc += 4;
 		}
 		mips->inDelaySlot = false;
-		CallSyscall(op);
+		CallSyscallWithPC(op, syscallPC);
 	}
 
 	void Int_Sync(MIPSState *mips, MIPSOpcode op) {
