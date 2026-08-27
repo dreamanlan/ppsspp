@@ -692,7 +692,7 @@ handleELF:
 			if (flags_ & GameInfoFlags::PARAM_SFO) {
 				info_->id = g_paramSFO.GenerateFakeID(gamePath_);
 				info_->id_version = info_->id + "_1.00";
-				info_->region = GameRegion::HOMEBREW; // Homebrew
+				info_->region = equals(info_->title, "vshmain.prx") ? GameRegion::VSH : GameRegion::HOMEBREW;
 			}
 
 			if (flags_ & GameInfoFlags::ICON) {
@@ -849,6 +849,15 @@ handleELF:
 					} else {
 						info_->title = info_->GetFilePath().GetFilename();
 					}
+				}
+
+				// Most UMDs carry a firmware updater, which is a source of things like the
+				// system fonts. Just note down what's there - unpacking it is a separate step.
+				if (flags_ & GameInfoFlags::BUNDLED_UPDATE_INFO) {
+					BundledUpdateInfo update;
+					ReadBundledUpdateInfo(&umd, "/", &update);
+					std::lock_guard<std::mutex> lock(info_->lock);
+					info_->bundledUpdate = update;
 				}
 
 				if (flags_ & GameInfoFlags::PIC0) {

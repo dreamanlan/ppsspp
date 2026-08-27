@@ -1267,10 +1267,10 @@ void retro_init(void)
    g_Config.currentDirectory = retro_base_dir;
    g_Config.defaultCurrentDirectory = retro_base_dir;
    g_Config.memStickDirectory = retro_save_dir;
-   g_Config.flash0Directory = retro_base_dir / "flash0";
    g_Config.internalDataDirectory = retro_base_dir;
    g_Config.bEnableNetworkChat = false;
    g_Config.bDiscordRichPresence = false;
+   g_Config.nandRootDirectory = GetSysDirectory(PSPDirectories::DIRECTORY_NAND);
 
    g_VFS.Register("", new DirectoryReader(retro_base_dir));
 
@@ -1392,6 +1392,9 @@ namespace Libretro {
             case EmuThreadState::RUNNING:
                EmuFrame();
                break;
+            case EmuThreadState::PAUSE_REQUESTED:
+               emuThreadState = EmuThreadState::PAUSED;
+               [[fallthrough]];
             case EmuThreadState::PAUSED:
                sleep_ms(1, "libretro-paused");
                break;
@@ -1441,7 +1444,7 @@ namespace Libretro {
       if (emuThreadState != EmuThreadState::RUNNING)
          return;
 
-      emuThreadState = EmuThreadState::PAUSED;
+      emuThreadState = EmuThreadState::PAUSE_REQUESTED;
 
       // Is this safe?
       ctx->ThreadFrame(); // Eat 1 frame
@@ -1715,7 +1718,8 @@ void retro_run(void) {
 
    // Handle thread pumping.
    if (useEmuThread) {
-      if (emuThreadState == EmuThreadState::PAUSED) {
+      if (emuThreadState == EmuThreadState::PAUSED ||
+          emuThreadState == EmuThreadState::PAUSE_REQUESTED) {
          VsyncSwapIntervalDetect();
          ctx->SwapBuffers();
          return;
@@ -1984,11 +1988,6 @@ void System_PostUIMessage(UIMessage message, std::string_view param) {}
 void System_RunOnMainThread(std::function<void()>) {}
 void NativeFrame(GraphicsContext *graphicsContext) {}
 void NativeResized() {}
-// Stubs to let things link - libretro builds Core.cpp and Breakpoints.cpp, which call into the
-// WebSocket debugger, but doesn't build Core/Debugger/WebSocket.cpp itself.
-void WebSocketDebuggerTick() {}
-bool WebSocketDebuggerHasClients() { return false; }
-void WebSocketNotifyBreakpointHit(const BreakpointHit &hit) {}
 void System_Toast(std::string_view str) {}
 
 inline int16_t Clamp16(int32_t sample) {

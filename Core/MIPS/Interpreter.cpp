@@ -35,6 +35,7 @@
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/HLETables.h"
 #include "Core/HLE/ReplaceTables.h"
+#include "Core/HW/GpioMMIO.h"
 
 #define R(i) (mips->r[i])
 #define F(i) (mips->f[i])
@@ -93,10 +94,11 @@ int MIPS_InterpretSingleStep(MIPSState *mips) {
 	return 1;
 }
 
-// Dummy functions, for any future MMIO support.
+// MMIO handling, for limited LLE, just enough for VSH.
+//
 // Unregistered reads return a distinctive poison value (not 0) so it's obvious in a live trace
 // when some later computation's input traces back to an unimplemented MMIO register, rather
-// than looking like an ordinary, legitimate zero (see docs/VSHBootInvestigation.md "Attempt 9").
+// than looking like an ordinary, legitimate zero.
 constexpr u32 UNKNOWN_MMIO_POISON = 0x1337BEEF;
 
 static u8 ReadMMIO_U8(MIPSState *mips, u32 addr) {
@@ -104,7 +106,7 @@ static u8 ReadMMIO_U8(MIPSState *mips, u32 addr) {
 		Core_MemoryException(addr, 1, mips->pc, MemoryExceptionType::READ_WORD, "Kernel mode only");
 		return (u8)UNKNOWN_MMIO_POISON;
 	}
-	WARN_LOG(Log::CPU, "MMIO Read8 at %08x", addr);
+	WARN_LOG(Log::CPU, "Unhandled MMIO Read8 at %08x", addr);
 	return (u8)UNKNOWN_MMIO_POISON;
 }
 
@@ -113,7 +115,7 @@ static u16 ReadMMIO_U16(MIPSState *mips, u32 addr) {
 		Core_MemoryException(addr, 2, mips->pc, MemoryExceptionType::READ_WORD, "Kernel mode only");
 		return (u8)UNKNOWN_MMIO_POISON;
 	}
-	WARN_LOG(Log::CPU, "MMIO Read16 at %08x", addr);
+	WARN_LOG(Log::CPU, "Unhandled MMIO Read16 at %08x", addr);
 	return (u16)UNKNOWN_MMIO_POISON;
 }
 
@@ -122,7 +124,13 @@ static u32 ReadMMIO_U32(MIPSState *mips, u32 addr) {
 		Core_MemoryException(addr, 4, mips->pc, MemoryExceptionType::READ_WORD, "Kernel mode only");
 		return (u8)UNKNOWN_MMIO_POISON;
 	}
-	WARN_LOG(Log::CPU, "MMIO Read32 at %08x", addr);
+	if (GpioMMIO::IsGpioAddress(addr)) {
+		return GpioMMIO::Read32(addr);
+	}
+	if (SysconSerialMMIO::IsSysconSerialAddress(addr)) {
+		return SysconSerialMMIO::Read32(addr);
+	}
+	WARN_LOG(Log::CPU, "Unhandled MMIO Read32 at %08x", addr);
 	return UNKNOWN_MMIO_POISON;
 }
 
@@ -131,7 +139,7 @@ void WriteMMIO_U8(MIPSState *mips, u32 addr, u8 value) {
 		Core_MemoryException(addr, 1, mips->pc, MemoryExceptionType::WRITE_WORD, "Kernel mode only");
 		return;
 	}
-	WARN_LOG(Log::CPU, "MMIO Write8 at %08x = %02x", addr, value);
+	WARN_LOG(Log::CPU, "Unhandled MMIO Write8 at %08x = %02x", addr, value);
 }
 
 void WriteMMIO_U16(MIPSState *mips, u32 addr, u16 value) {
@@ -139,15 +147,22 @@ void WriteMMIO_U16(MIPSState *mips, u32 addr, u16 value) {
 		Core_MemoryException(addr, 2, mips->pc, MemoryExceptionType::WRITE_WORD, "Kernel mode only");
 		return;
 	}
-	WARN_LOG(Log::CPU, "MMIO Write16 at %08x = %04x", addr, value);
+	WARN_LOG(Log::CPU, "Unhandled MMIO Write16 at %08x = %04x", addr, value);
 }
 
 void WriteMMIO_U32(MIPSState *mips, u32 addr, u32 value) {
 	if (!Memory::IsKernelCodeAddress(mips->pc)) {
 		Core_MemoryException(addr, 4, mips->pc, MemoryExceptionType::WRITE_WORD, "Kernel mode only");
+	}
+	if (GpioMMIO::IsGpioAddress(addr)) {
+		GpioMMIO::Write32(addr, value);
 		return;
 	}
-	WARN_LOG(Log::CPU, "MMIO Write32 at %08x = %08x", addr, value);
+	if (SysconSerialMMIO::IsSysconSerialAddress(addr)) {
+		SysconSerialMMIO::Write32(addr, value);
+		return;
+	}
+	WARN_LOG(Log::CPU, "Unhandled MMIO Write32 at %08x = %08x", addr, value);
 }
 
 namespace MIPSInt {

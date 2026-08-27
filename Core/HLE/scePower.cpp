@@ -205,7 +205,7 @@ static int scePowerIsLowBattery() {
 }
 
 static int scePowerIsSuspendRequired() {
-	return hleLogInfo(Log::HLE, 0);
+	return hleLogDebug(Log::HLE, 0);
 }
 
 static int scePowerCancelRequest(u32 something) {
@@ -620,7 +620,7 @@ static const HLEFunction scePower[] = {
 	{0X34F9C463, &WrapU_V<scePowerGetPllClockFrequencyInt>,   "scePowerGetPllClockFrequencyInt",   'x', ""   },
 	{0XEA382A27, &WrapF_V<scePowerGetPllClockFrequencyFloat>, "scePowerGetPllClockFrequencyFloat", 'f', ""   },
 	{0XEBD177D6, &WrapU_UUU<scePowerSetClockFrequency>,       "scePowerSetClockFrequency350",      'x', "xxx"}, // This is also the same as SetClockFrequency
-	{0X469989AD, &WrapU_UUU<scePowerSetClockFrequency>,       "scePower_469989ad",                 'x', "xxx"}, // This is also the same as SetClockFrequency
+	{0X469989AD, &WrapU_UUU<scePowerSetClockFrequency>,       "scePowerSetClockFrequency630",      'x', "xxx"}, // This is also the same as SetClockFrequency
 	{0X545A7F3C, nullptr,                                     "scePower_545A7F3C",                 '?', ""   }, // TODO: Supposedly the same as SetClockFrequency also?
 	{0XA4E93389, nullptr,                                     "scePower_A4E93389",                 '?', ""   }, // TODO: Supposedly the same as SetClockFrequency also?
 	{0XA85880D0, &WrapU_V<scePowerCheckWlanCoexistenceClock>, "scePowerCheckWlanCoexistenceClock", 'x', ""   },
@@ -660,8 +660,15 @@ static int scePower_driver_5F5006D2() {
 	return hleLogDebug(Log::HLE, 0, "UNTESTED");
 }
 
+// Configures which events would wake the console from suspend. We never suspend, so there's
+// nothing to arm - but the VSH calls it during startup and wants a success back.
+static int scePowerSetWakeupCondition(u32 condition) {
+	return hleLogWarning(Log::sceMisc, 0, "UNIMPL");
+}
+
 const HLEFunction scePower_driver[] = {
 	{0X5F5006D2, &WrapI_V<scePower_driver_5F5006D2>,          "scePower_driver_5F5006D2",          'i', ""   },
+	{0XBA566CD0, &WrapI_U<scePowerSetWakeupCondition>,        "scePowerSetWakeupCondition",        'i', "x"  },
 };
 
 void Register_scePower_driver() {

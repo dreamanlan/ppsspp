@@ -333,6 +333,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Common/Data/Format/ZIMSave.h \
   $(SRC)/Common/Data/Hash/Hash.cpp \
   $(SRC)/Common/Data/Text/I18n.cpp \
+  $(SRC)/Common/Data/Text/Demangle.cpp \
   $(SRC)/Common/Data/Text/Parsers.cpp \
   $(SRC)/Common/Data/Text/WrapText.cpp \
   $(SRC)/Common/File/AndroidStorage.cpp \
@@ -609,6 +610,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HW/BufferQueue.cpp \
   $(SRC)/Core/HW/Camera.cpp \
   $(SRC)/Core/HW/Display.cpp \
+  $(SRC)/Core/HW/GpioMMIO.cpp \
   $(SRC)/Core/HW/MemoryStick.cpp \
   $(SRC)/Core/HW/MpegDemux.cpp.arm \
   $(SRC)/Core/HW/MediaEngine.cpp.arm \
@@ -760,6 +762,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HLE/sceNetInet.cpp \
   $(SRC)/Core/HLE/sceNetResolver.cpp \
   $(SRC)/Core/HLE/sceOpenPSID.cpp \
+  $(SRC)/Core/HLE/sceResmgr.cpp \
   $(SRC)/Core/HLE/sceP3da.cpp \
   $(SRC)/Core/HLE/sceMt19937.cpp \
   $(SRC)/Core/HLE/sceParseHttp.cpp \
@@ -781,6 +784,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HLE/sceUsbMic.cpp \
   $(SRC)/Core/HLE/sceUtility.cpp \
   $(SRC)/Core/HLE/sceVaudio.cpp \
+  $(SRC)/Core/HLE/sceVshBridge.cpp \
   $(SRC)/Core/HLE/scePspNpDrm_user.cpp \
   $(SRC)/Core/HLE/sceGameUpdate.cpp \
   $(SRC)/Core/HLE/sceNp.cpp \
@@ -981,6 +985,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/BaseScreens.cpp \
   $(SRC)/UI/Background.cpp \
   $(SRC)/UI/CwCheatScreen.cpp \
+  $(SRC)/UI/InstallUpdateScreen.cpp \
   $(SRC)/UI/InstallZipScreen.cpp \
   $(SRC)/UI/JitCompareScreen.cpp \
   $(SRC)/UI/OnScreenDisplay.cpp \
@@ -1044,6 +1049,7 @@ ifeq ($(UNITTEST),1)
     $(SRC)/unittest/TestVertexJit.cpp \
     $(SRC)/unittest/TestTextureReplacer.cpp \
     $(SRC)/unittest/TestVFS.cpp \
+    $(SRC)/unittest/TestDemangle.cpp \
     $(SRC)/unittest/TestLzrc.cpp \
     $(SRC)/unittest/TestZipSlip.cpp \
     $(SRC)/unittest/UnitTest.cpp
