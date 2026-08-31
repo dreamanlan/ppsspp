@@ -50,11 +50,24 @@
 
 SymbolMap *g_symbolMap;
 
+// Not per-instance, so that versions from a map that's been thrown away (one is created and
+// destroyed per game boot) can't collide with the current one's. See SymbolMap::Version.
+static uint32_t g_symbolMapVersionCounter;
+
+SymbolMap::SymbolMap() {
+	Bump();
+}
+
+void SymbolMap::Bump() {
+	version_ = ++g_symbolMapVersionCounter;
+}
+
 void SymbolMap::SortSymbols() {
 	AssignFunctionIndices();
 }
 
 void SymbolMap::Clear() {
+	Bump();
 	functions.clear();
 	labels.clear();
 	data.clear();
@@ -128,9 +141,9 @@ bool SymbolMap::LoadSymbolMap(const Path &filename) {
 		int moduleIndex = 0;
 		int typeInt = ST_NONE;
 		SymbolType type;
-		char name[128] = {0};
+		char name[256] = {0};
 
-		if (sscanf(line, ".module %x %08x %08x %127c", (unsigned int *)&moduleIndex, &address, &size, name) >= 3) {
+		if (sscanf(line, ".module %x %08x %08x %255c", (unsigned int *)&moduleIndex, &address, &size, name) >= 3) {
 			// Found a module definition.
 			ModuleEntry mod;
 			mod.index = moduleIndex;
@@ -142,7 +155,7 @@ bool SymbolMap::LoadSymbolMap(const Path &filename) {
 			continue;
 		}
 
-		const int matched = sscanf(line, "%08x %08x %x %i %127c", &address, &size, &vaddress, &typeInt, name);
+		const int matched = sscanf(line, "%08x %08x %x %i %255c", &address, &size, &vaddress, &typeInt, name);
 		if (matched < 1)
 			continue;
 		type = (SymbolType) typeInt;
@@ -303,8 +316,8 @@ bool SymbolMap::LoadNocashSym(const Path &filename) {
 		return false;
 
 	while (!feof(f)) {
-		char line[256], value[256] = {0};
-		char *p = fgets(line, 256, f);
+		char line[512], value[256] = {0};
+		char *p = fgets(line, sizeof(line), f);
 		if (p == NULL)
 			break;
 
@@ -768,6 +781,8 @@ std::vector<SymbolEntry> SymbolMap::GetAllActiveSymbols(SymbolType symbolMask) {
 }
 
 void SymbolMap::AddModule(const char *name, u32 address, u32 size, u32 crc) {
+	Bump();
+
 	for (auto &module : modules) {
 		if (equals(module.name, name)) {
 			// A name match alone isn't proof it's really the same module reloading - some
@@ -803,6 +818,7 @@ void SymbolMap::AddModule(const char *name, u32 address, u32 size, u32 crc) {
 }
 
 void SymbolMap::UnloadModule(u32 address, u32 size) {
+	Bump();
 	activeModuleEnds.erase(address + size);
 	activeNeedUpdate_ = true;
 }
@@ -907,6 +923,8 @@ std::vector<LoadedModuleInfo> SymbolMap::getAllModules() const {
 }
 
 void SymbolMap::AddFunction(const char* name, u32 address, u32 size, int moduleIndex, bool updateName) {
+	Bump();
+
 	moduleIndex = ResolveModuleIndex(address, moduleIndex);
 
 	// Is there an existing one?
@@ -1116,6 +1134,8 @@ void SymbolMap::UpdateActiveSymbols() {
 }
 
 bool SymbolMap::SetFunctionSize(u32 startAddress, u32 newSize) {
+	Bump();
+
 	if (activeNeedUpdate_)
 		UpdateActiveSymbols();
 
@@ -1136,6 +1156,8 @@ bool SymbolMap::SetFunctionSize(u32 startAddress, u32 newSize) {
 }
 
 bool SymbolMap::RemoveFunction(u32 startAddress, bool removeName) {
+	Bump();
+
 	if (activeNeedUpdate_)
 		UpdateActiveSymbols();
 
@@ -1167,6 +1189,8 @@ bool SymbolMap::RemoveFunction(u32 startAddress, bool removeName) {
 }
 
 void SymbolMap::AddLabel(const char* name, u32 address, int moduleIndex, bool updateName) {
+	Bump();
+
 	moduleIndex = ResolveModuleIndex(address, moduleIndex);
 
 	// Is there an existing one?
@@ -1225,6 +1249,8 @@ void SymbolMap::AddLabel(const char* name, u32 address, int moduleIndex, bool up
 }
 
 void SymbolMap::SetLabelName(const char* name, u32 address) {
+	Bump();
+
 	if (activeNeedUpdate_)
 		UpdateActiveSymbols();
 
@@ -1236,7 +1262,7 @@ void SymbolMap::SetLabelName(const char* name, u32 address) {
 		auto label = labels.find(symbolKey);
 		if (label != labels.end()) {
 			truncate_cpy(label->second.name, name);
-			label->second.name[127] = 0;
+			label->second.name[255] = 0;
 
 			// Refresh the active item if it exists.
 			auto active = activeLabels.find(address);
@@ -1289,6 +1315,8 @@ bool SymbolMap::GetLabelValue(const char* name, u32& dest) {
 }
 
 void SymbolMap::AddData(u32 address, u32 size, DataType type, int moduleIndex) {
+	Bump();
+
 	moduleIndex = ResolveModuleIndex(address, moduleIndex);
 
 	// Is there an existing one?
@@ -1395,6 +1423,8 @@ DataType SymbolMap::GetDataType(u32 startAddress) {
 }
 
 bool SymbolMap::RemoveData(u32 startAddress, bool removeName) {
+	Bump();
+
 	if (activeNeedUpdate_)
 		UpdateActiveSymbols();
 

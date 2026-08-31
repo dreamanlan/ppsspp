@@ -515,9 +515,6 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 
 	IncrementDebugCounter(DebugCounter::APP_BOOT);
 
-	// Probably an excessive timeout. it only causes delays on shutdown, though.
-	__UPnPInit(2000);
-
 	ShaderTranslationInit();
 
 	g_threadManager.Init(cpu_info.num_cores, cpu_info.logical_cpu_count);
@@ -703,6 +700,11 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 		g_Config.SetAppendedConfigIni(Path(cmdLineOptions.appendConfig.value()));
 		g_Config.LoadAppendedConfig();
 	}
+
+	// Has to be after the config is loaded: it only starts a service thread if UPnP is enabled,
+	// and g_Config.Init() above doesn't read the ini, it just builds a lookup table.
+	// Probably an excessive timeout. It only causes delays on shutdown, though.
+	__UPnPInit(2000);
 
 	// This parameter should be a boot filename. Only accept it if we
 	// don't already have one.
@@ -1657,12 +1659,13 @@ bool NativeKey(const KeyInput &key) {
 		modifierFlags |= KeyInputFlags::ModMeta;
 	}
 
-	KeyInput modKey = key;
-	modKey.flags |= modifierFlags;
+	// Everything below here gets the key with the modifiers attached, since that's what the
+	// keyboard shortcuts in the screens are matched against.
+	const KeyInput modKey{ key.deviceId, key.keyCode, key.flags | modifierFlags };
 
 	bool retval = false;
 
-	UI::KeyEventResult kev = UI::KeyEventToFocusMoves(key);
+	UI::KeyEventResult kev = UI::KeyEventToFocusMoves(modKey);
 	if (!(key.flags & KeyInputFlags::IS_REPEAT)) {
 		// If a repeat, we follow what KeyEventToFocusMoves set it to.
 		// Otherwise we signal that we used the key, always.
@@ -1683,7 +1686,7 @@ bool NativeKey(const KeyInput &key) {
 	// Queue up the key event for synchronous processing in the UI.
 	QueuedEvent ev{};
 	ev.type = QueuedEventType::KEY;
-	ev.key = key;
+	ev.key = modKey;
 	{
 		std::lock_guard<std::mutex> guard(g_inputEventQueueLock);
 		g_inputEventQueue.push_back(ev);
@@ -1849,8 +1852,6 @@ void NativeShutdown() {
 	ShutdownWebServer();
 
 	__UPnPShutdown();
-
-	g_PortManager.Shutdown();
 
 	net::Shutdown();
 

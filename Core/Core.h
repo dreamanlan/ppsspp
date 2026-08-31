@@ -231,6 +231,12 @@ CoreShutdownLock Core_LockAgainstShutdown();
 // Called from the CPU thread only - which is whatever thread NativeFrame() itself runs on.
 void Core_ProcessCPUQueue();
 
+// While the CPU is stopped with nothing pending, the CPU thread blocks briefly rather than
+// spinning (see Core_IdleWaitWhileStepping() in Core.cpp). Call this after making state changes
+// that give it something to do, so it notices immediately instead of at the next timeout. Already
+// called by Core_RunOnCPUThread(), Core_RequestCPUStep() and Core_Resume(); free-threaded.
+void Core_WakeIdleCPUThread();
+
 // Guards CPU-thread-owned debugger state (breakpoints, symbol map, registers, memory, etc.)
 // against concurrent unsynchronized reads from other threads' paint handlers.
 //
@@ -269,10 +275,18 @@ enum class ExecExceptionType {
 	PERM,  // trying to execute kernel space instructions in user space
 	ILLEGAL,
 };
+// The IEEE 754 exceptions the FPU can raise. Only the ones we actually detect are listed;
+// they all live in fcr31 in the standard MIPS bit positions, see FCR31_* in MIPS.h.
+enum class FPUExceptionType {
+	DIVIDE_BY_ZERO,
+};
 
 void Core_MemoryException(u32 address, u32 accessSize, u32 pc, MemoryExceptionType type, std::string_view additionalInfo = "");
 void Core_ExecException(u32 address, u32 pc, ExecExceptionType type);
 void Core_BreakException(u32 pc);
+// Only called for exceptions the game has unmasked in fcr31 - a masked one just sets the flag bit
+// and produces the IEEE default result, without coming through here.
+void Core_FPUException(u32 pc, FPUExceptionType type);
 // Call when loading save states, etc.
 void Core_ResetException();
 
@@ -300,6 +314,7 @@ enum class MIPSExceptionType {
 	MEMORY,
 	BREAK,
 	BAD_EXEC_ADDR,
+	FPU,
 };
 
 struct MIPSExceptionInfo {
@@ -316,6 +331,9 @@ struct MIPSExceptionInfo {
 
 	// Reuses pc and address from memory type, where address is the failed destination.
 	ExecExceptionType exec_type;
+
+	// FPU exception info. Only pc is meaningful alongside it.
+	FPUExceptionType fpu_type;
 };
 
 const MIPSExceptionInfo &Core_GetExceptionInfo();
@@ -323,3 +341,4 @@ const MIPSExceptionInfo &Core_GetExceptionInfo();
 const char *ExceptionTypeAsString(MIPSExceptionType type);
 const char *MemoryExceptionTypeAsString(MemoryExceptionType type);
 const char *ExecExceptionTypeAsString(ExecExceptionType type);
+const char *FPUExceptionTypeAsString(FPUExceptionType type);

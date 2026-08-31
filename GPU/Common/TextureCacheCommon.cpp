@@ -410,7 +410,9 @@ static u32 ComputeTextureHash(TextureReplacer &replacer, u32 addr, int bufw, int
 	const u32 *checkp = (const u32 *)Memory::GetPointerOrException(addr);
 
 	// NOTE: I'm not sure we want to align-check the end, so can't use IsValidTextureAddress here.
-	if (Memory::IsValidAddress(addr + sizeInRAM)) {
+	// IsValidAddress on the end address alone isn't enough - the end can land in a different valid
+	// region than the start, e.g. a VRAM texture whose computed end reaches the base of RAM.
+	if (Memory::IsValidRange(addr, sizeInRAM)) {
 		gpuStats.perFrame.numTextureDataBytesHashed += sizeInRAM;
 
 		// return XXH64(checkp, sizeInRAM, 0xBACD7814);
@@ -2863,6 +2865,8 @@ bool TextureCacheCommon::PrepareBuildTexture(BuildTexturePlan &plan, TexCacheEnt
 		// These will only work correctly in the top 512x512 part. So, I've increased the threshold quite a bit.
 		// We probably should handle these differently, by clamping the texture size and texture coordinates, but meh.
 		if (plan.w > 2048 || plan.h > 2048) {
+			// Strangely, the homebrew "Kitten Cannon" hits this a bunch, with a clearly invalid 512x32768 texture.
+			// Some noise bit in the texture size command that we might just want to ignore.
 			ERROR_LOG(Log::TexCache, "Bad texture dimensions: %dx%d", plan.w, plan.h);
 			return false;
 		}

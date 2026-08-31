@@ -144,7 +144,6 @@ void System_LaunchUrl(LaunchUrlType urlType, std::string_view url) {
 	case LaunchUrlType::BROWSER_URL:
 	case LaunchUrlType::LOCAL_FILE:
 	case LaunchUrlType::LOCAL_FOLDER:
-	case LaunchUrlType::MARKET_URL:
 	case LaunchUrlType::EMAIL_ADDRESS:
 		// ShellExecute handles everything.
 	{
@@ -1251,8 +1250,8 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 			[](GraphicsContext *graphicsContext) {
 				NativeFrame(graphicsContext);
 				return GetUIState() != UISTATE_EXIT;
-		})) {
-			HandleGraphicsFailure("Failed to initialize main thread function.");
+		}, &errorMessage)) {
+			HandleGraphicsFailure(errorMessage);
 			return;
 		}
 		graphicsContext->ShutdownAPI();
