@@ -113,7 +113,7 @@ jobs:
         Compress-Archive -Path "ppsspp/*" -Update -DestinationPath "releases/PPSSPP-${{ github.ref_name }}-Windows-${{ matrix.platform }}.zip"
 
     - name: Upload release
-      uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+      uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
       if: github.ref_type == 'tag'
       with:
         files: releases/*.zip
@@ -321,7 +321,7 @@ jobs:
       if: runner.os == 'Linux' && matrix.extra != 'android' && matrix.extra != 'loongarch64'
       run: |
         sudo apt-get update -y -qq
-        sudo apt-get install libsdl3-dev libgl1-mesa-dev libglu1-mesa-dev libsdl3-ttf-dev libfontconfig1-dev
+        sudo apt-get install libsdl3-dev libgl1-mesa-dev libglu1-mesa-dev libsdl3-ttf-dev libfontconfig1-dev libcurl4-openssl-dev
 
     - name: Install macOS SDL3 dependencies
       if: runner.os == 'macOS' && matrix.id == 'macos'
@@ -438,7 +438,7 @@ jobs:
       run: mv PPSSPPSDL.zip PPSSPPSDL-macOS-${GITHUB_REF_NAME}.zip
 
     - name: Upload macOS & iOS release
-      uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+      uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
       if: github.ref_type == 'tag' && (matrix.id == 'macos' || matrix.id == 'ios')
       with:
         files: |
@@ -475,7 +475,7 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update -y -qq
-        sudo apt-get install libsdl3-dev libgl1-mesa-dev libglu1-mesa-dev libsdl3-ttf-dev libfontconfig1-dev
+        sudo apt-get install libsdl3-dev libgl1-mesa-dev libglu1-mesa-dev libsdl3-ttf-dev libfontconfig1-dev libcurl4-openssl-dev
 
     - name: Install macOS dependencies
       if: runner.os == 'macOS'
@@ -524,7 +524,7 @@ jobs:
     steps:
     - name: Install Linux dependencies (Alpine)
       run: |
-        apk add build-base wget git bash cmake python3 glu-dev sdl3-dev sdl3_ttf-dev
+        apk add build-base wget git bash cmake python3 glu-dev sdl3-dev sdl3_ttf-dev curl-dev
 
     - uses: actions/checkout@v7
       with:
