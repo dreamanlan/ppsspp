@@ -277,7 +277,7 @@ if(WIN32 OR ANDROID OR (APPLE AND NOT IOS))
 	# Nothing to do, these need no external library.
 elseif(UNIX AND NOT APPLE AND NOT LIBRETRO)
 	# We only need the curl headers at build time - libcurl itself is loaded with dlopen
-	# (see ext/naett/src/naett_curl.h), so it stays optional at runtime and a build made
+	# (see ext/naett-lib/src/naett_curl.h), so it stays optional at runtime and a build made
 	# here still starts on a machine without it, just without HTTPS.
 	find_package(CURL)
 	if(NOT CURL_FOUND)

@@ -1,7 +1,7 @@
 cmake_minimum_required (VERSION 3.10.0)
 project (naett)
 
-set(SRC_DIR ../naett/src)
+set(SRC_DIR ../naett-lib/src)
 
 set(ALL_SOURCE_FILES
 	${SRC_DIR}/naett_core.c

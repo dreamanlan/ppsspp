@@ -15,12 +15,12 @@
 #include "Common/Net/Resolve.h"
 
 #ifndef HTTPS_NOT_AVAILABLE
-#include "ext/naett/naett.h"
+#include "ext/naett-lib/naett.h"
 // Note: PPSSPP_PLATFORM(LINUX) is also set on Android, which needs no loader.
 #if PPSSPP_PLATFORM(LINUX) && !PPSSPP_PLATFORM(ANDROID)
 // On Linux, naett goes through libcurl, which we load at runtime - so HTTPS support is
 // only known once we've tried.
-#include "ext/naett/src/naett_curl.h"
+#include "ext/naett-lib/src/naett_curl.h"
 #endif
 #endif
 
