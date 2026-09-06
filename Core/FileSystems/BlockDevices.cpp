@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include "Common/Data/Text/I18n.h"
@@ -511,6 +512,10 @@ typedef struct ciso_header
 // TODO: Need much better error handling.
 
 static const u32 CSO_READ_BUFFER_SIZE = 256 * 1024;
+// The frame size decides how big readBuffer and zlibBuffer are, straight from the header, so
+// without a ceiling a 96-byte file can ask us for a couple of gigabytes. Real images use 2KB
+// through 64KB; this leaves a lot of room above that and still bounds what a header can cost us.
+static const u32 CSO_MAX_FRAME_SIZE = 16 * 1024 * 1024;
 
 CISOFileBlockDevice::CISOFileBlockDevice(FileLoader *fileLoader)
 	: BlockDevice(fileLoader)
@@ -536,6 +541,9 @@ CISOFileBlockDevice::CISOFileBlockDevice(FileLoader *fileLoader)
 	} else if (frameSize < 0x800) {
 		errorString_ = StringFromFormat("CSO block size %i unsupported, must be at least one sector", frameSize);
 		return;
+	} else if (frameSize > CSO_MAX_FRAME_SIZE) {
+		errorString_ = StringFromFormat("CSO block size %u unsupported, too large", frameSize);
+		return;
 	}
 
 	// Determine the translation from block to frame.
@@ -552,8 +560,17 @@ CISOFileBlockDevice::CISOFileBlockDevice(FileLoader *fileLoader)
 		return;
 	}
 	const u64 totalSize = hdr.total_bytes;
-	numFrames = (u32)((totalSize + frameSize - 1) / frameSize);
-	numBlocks = (u32)(totalSize / GetBlockSize());
+	// Compute the counts without overflowing the 64-bit total size, then
+	// validate them before truncating to the 32-bit fields used by the CSO
+	// block reader. In particular, numFrames + 1 must remain representable.
+	const u64 numFrames64 = totalSize / frameSize + (totalSize % frameSize != 0);
+	const u64 numBlocks64 = totalSize / GetBlockSize();
+	if (numFrames64 >= 0xFFFFFFFFull || numBlocks64 > 0xFFFFFFFFull) {
+		errorString_ = "Invalid CSO header (image is too large)";
+		return;
+	}
+	numFrames = (u32)numFrames64;
+	numBlocks = (u32)numBlocks64;
 	VERBOSE_LOG(Log::Loader, "CSO numBlocks=%i numFrames=%i align=%i", numBlocks, numFrames, indexShift);
 
 	// numFrames and numBlocks are independently truncated to 32 bits from the same
@@ -568,6 +585,16 @@ CISOFileBlockDevice::CISOFileBlockDevice(FileLoader *fileLoader)
 		return;
 	}
 
+	const size_t headerEnd = hdr.ver > 1 ? (size_t)hdr.header_size : sizeof(hdr);
+	const u64 indexSize64 = numFrames64 + 1;
+	const u64 indexBytes = indexSize64 * sizeof(u32);
+	const u64 fileSize = fileLoader->FileSize();
+	if (indexBytes > (u64)std::numeric_limits<size_t>::max() ||
+		headerEnd > fileSize || indexBytes > fileSize - headerEnd) {
+		errorString_ = "Invalid CSO header (index table is truncated)";
+		return;
+	}
+
 	// We might read a bit of alignment too, so be prepared.
 	readBufferSize = frameSize + (1u << indexShift);
 	if (readBufferSize < CSO_READ_BUFFER_SIZE)
@@ -576,8 +603,7 @@ CISOFileBlockDevice::CISOFileBlockDevice(FileLoader *fileLoader)
 	zlibBuffer = new u8[frameSize + (1u << indexShift)];
 	zlibBufferFrame = numFrames;
 
-	const u32 indexSize = numFrames + 1;
-	const size_t headerEnd = hdr.ver > 1 ? (size_t)hdr.header_size : sizeof(hdr);
+	const u32 indexSize = (u32)indexSize64;
 
 #if COMMON_LITTLE_ENDIAN
 	index = new u32[indexSize];
@@ -603,7 +629,6 @@ CISOFileBlockDevice::CISOFileBlockDevice(FileLoader *fileLoader)
 	ver_ = hdr.ver;
 
 	// Double check that the CSO is not truncated.  In most cases, this will be the exact size.
-	u64 fileSize = fileLoader->FileSize();
 	u64 lastIndexPos = index[indexSize - 1] & 0x7FFFFFFF;
 	u64 expectedFileSize = lastIndexPos << indexShift;
 	if (expectedFileSize > fileSize) {

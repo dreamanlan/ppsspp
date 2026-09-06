@@ -88,6 +88,10 @@ extern u32 __nx_applet_type; // Not exposed through a header?
 GlobalUIState lastUIState = UISTATE_MENU;
 GlobalUIState GetUIState();
 
+// How long the cursor stays visible after the mouse stops moving, when auto-hiding it.
+static constexpr double CURSOR_HIDE_DELAY = 0.5;
+static double g_lastCursorMoveTime = 0.0;
+
 static bool g_QuitRequested = false;
 static bool g_RestartRequested = false;
 
@@ -696,6 +700,17 @@ static void InitializeFilters(std::vector<std::string> &filters, BrowseFileType 
 	filters.push_back("*");
 }
 
+#if PPSSPP_PLATFORM(LINUX) && !PPSSPP_PLATFORM(ANDROID)
+// Opens a file or folder in whatever the desktop associates with it, without blocking the caller.
+static void LaunchXdgOpen(const std::string &path) {
+	pid_t pid = fork();
+	if (pid == 0) {
+		execlp("xdg-open", "xdg-open", path.c_str(), nullptr);
+		_exit(1);
+	}
+}
+#endif
+
 bool System_MakeRequest(SystemRequestType type, int requestId, const std::string &param1, const std::string &param2, int64_t param3, int64_t param4) {
 	switch (type) {
 	case SystemRequestType::RESTART_APP:
@@ -866,14 +881,7 @@ bool System_MakeRequest(SystemRequestType type, int requestId, const std::string
 #elif PPSSPP_PLATFORM(MAC)
 		OSXShowInFinder(param1.c_str());
 #elif (PPSSPP_PLATFORM(LINUX) && !PPSSPP_PLATFORM(ANDROID))
-		pid_t pid = fork();
-		if (pid < 0)
-			return true;
-
-		if (pid == 0) {
-			execlp("xdg-open", "xdg-open", param1.c_str(), nullptr);
-			exit(1);
-		}
+		LaunchXdgOpen(param1);
 #endif /* PPSSPP_PLATFORM(WINDOWS) */
 		return true;
 	}
@@ -985,6 +993,8 @@ void System_LaunchUrl(LaunchUrlType urlType, std::string_view url) {
 #if defined(__APPLE__)
 		// If it's a folder and we're on a mac, open it in finder.
 		OSXShowInFinder(std::string(url).c_str());
+#elif PPSSPP_PLATFORM(LINUX) && !PPSSPP_PLATFORM(ANDROID)
+		LaunchXdgOpen(std::string(url));
 #endif
 		// INFO_LOG(Log::System, "LaunchUrlType::LOCAL_FILE not implemented on this platform");
 		break;
@@ -1330,12 +1340,7 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 				g_Config.iWindowWidth = windowWidth;
 				g_Config.iWindowHeight = windowHeight;
 			}
-			// Hide/Show cursor correctly toggling fullscreen
-			if (lastUIState == UISTATE_INGAME && fullscreen && !g_Config.bShowTouchControls) {
-				SDL_HideCursor();
-			} else if (lastUIState != UISTATE_INGAME || !fullscreen) {
-				SDL_ShowCursor();
-			}
+			// The cursor visibility is handled by UpdateSDLCursor, which runs every frame.
 			break;
 		}
 	case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
@@ -1605,6 +1610,11 @@ static void ProcessSDLEvent(SDL_Window *window, const SDL_Event &event, InputSta
 			NativeTouch(input);
 			NativeMouseDelta(event.motion.xrel, event.motion.yrel);
 
+			// Require a bit of movement to un-hide the cursor, so that jitter doesn't keep it up.
+			if (fabsf(event.motion.xrel) > 1.0f || fabsf(event.motion.yrel) > 1.0f) {
+				g_lastCursorMoveTime = time_now_d();
+			}
+
 			UpdateCursor();
 			break;
 		}
@@ -1716,12 +1726,23 @@ void UpdateTextFocus(SDL_Window *window) {
 
 void UpdateSDLCursor() {
 #if !defined(MOBILE_DEVICE)
-	if (lastUIState != GetUIState()) {
-		lastUIState = GetUIState();
-		if (lastUIState == UISTATE_INGAME && g_Config.bFullScreen && !g_Config.bShowTouchControls)
-			SDL_HideCursor();
-		if (lastUIState != UISTATE_INGAME || !g_Config.bFullScreen)
+	lastUIState = GetUIState();
+
+	// In fullscreen while in-game, the cursor auto-hides once the mouse has been still for a
+	// moment, and comes back as soon as it's moved again. Same idea as the Windows version.
+	// While a button is held the user is interacting, so keep it visible.
+	const bool buttonDown = (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK) != 0;
+	const bool autoHide = g_Config.bFullScreen && lastUIState == UISTATE_INGAME && !buttonDown;
+	const bool visible = !autoHide || time_now_d() - g_lastCursorMoveTime < CURSOR_HIDE_DELAY;
+
+	static bool cursorVisible = true;
+	if (visible != cursorVisible) {
+		cursorVisible = visible;
+		if (visible) {
 			SDL_ShowCursor();
+		} else {
+			SDL_HideCursor();
+		}
 	}
 #endif
 }
