@@ -58,6 +58,8 @@
 #include "Core/MIPS/MIPSTables.h"
 #include "Core/System.h"
 #include "Core/Util/PSARUnpack.h"
+#include "Core/Util/PkgUnpack.h"
+#include "headless/ReverseEngineer.h"
 #include "Core/WebServer.h"
 #include "Core/HLE/sceUtility.h"
 #include "Core/SaveState.h"
@@ -77,6 +79,7 @@ static Path g_comparisonScreenshot;
 static Path g_screenshotSavePath;
 static Path g_screenshotDiffPath;
 static bool g_screenshotSaveKeepAlpha = false;
+static bool g_screenshotSaved = false;
 static double g_maxScreenshotError = 0.0;
 static bool g_screenshotFailed = false;
 static std::string g_debugOutputBuffer;
@@ -205,6 +208,7 @@ void SendDebugScreenshot(const DebugScreenshotDesc &desc) {
 	if (!g_screenshotSavePath.empty()) {
 		ScreenshotComparer saver(pixels, FRAME_STRIDE, FRAME_WIDTH, FRAME_HEIGHT);
 		bool saved = g_screenshotSavePath.GetFileExtension() == ".png" ? saver.SaveActualPNG(g_screenshotSavePath, g_screenshotSaveKeepAlpha) : saver.SaveActualBitmap(g_screenshotSavePath);
+		g_screenshotSaved = g_screenshotSaved || saved;
 		if (saved)
 			SendAndCollectOutput("Screenshot saved to: " + g_screenshotSavePath.ToVisualString() + "\n");
 	}
@@ -285,6 +289,16 @@ static GraphicsContext *CreateGraphicsContext(GPUCore gpuCore, std::string **dev
 #endif
 }
 
+// Whether what we're booting is homebrew rather than a retail disc. The two want opposite
+// defaults for the graduated HLE modules - see where this is used.
+//
+// This runs before the loaders are up, and Identify_File can't even see the file yet.
+// pspautotests is .prx, with .elf as its fallback.
+static bool BootTargetIsHomebrewExecutable(const std::string &filename) {
+	const std::string ext = Path(filename).GetFileExtension();
+	return ext == ".prx" || ext == ".elf";
+}
+
 struct AutoTestOptions {
 	double timeout;
 	double maxScreenshotError;
@@ -300,6 +314,9 @@ static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &corePar
 	// Kinda ugly, trying to guesstimate the test name from filename...
 	currentTestName = GetTestName(coreParameter.fileToStart);
 	g_screenshotFailed = false;
+	// Per test, so a test that emits one of its own doesn't stop the next one getting the end-of-run
+	// capture below.
+	g_screenshotSaved = false;
 
 	std::string output;
 	if (opt.compare || opt.bench) {
@@ -402,6 +419,12 @@ static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &corePar
 		}
 
 		draw->EndFrame();
+	}
+
+	if (!g_screenshotSavePath.empty() && !g_screenshotSaved) {
+		// SendDebugScreenshot ignores the descriptor and reads the display framebuffer from the GPU
+		// itself, so there's nothing to fill in here.
+		SendDebugScreenshot(DebugScreenshotDesc{});
 	}
 
 	PSP_Shutdown(true);
@@ -579,7 +602,7 @@ int main(int argc, const char* argv[]) {
 	// Needed before any sockets can be used (WSAStartup on Windows) - without this, the
 	// WebSocket debugger silently fails to listen. Only done when requested since headless
 	// otherwise has no use for networking.
-	if (cmdLineOptions.debuggerPort.has_value())
+	if (cmdLineOptions.DebuggerPort().has_value())
 		net::Init();
 
 	AutoTestOptions testOptions{};
@@ -671,6 +694,38 @@ int main(int argc, const char* argv[]) {
 		return ok ? 0 : 1;
 	}
 
+	// Same deal for installing a game update package.
+	if (cmdLineOptions.installPkg.has_value()) {
+		if (cmdLineOptions.bootFilenames.size() != 1) {
+			fprintf(stderr, "--install-pkg takes exactly one .pkg file\n");
+			return 1;
+		}
+		std::unique_ptr<FileLoader> loader(ConstructFileLoader(Path(cmdLineOptions.bootFilenames[0])));
+		PkgReader reader;
+		std::string pkgError;
+		if (!loader || !reader.Open(loader.get(), &pkgError)) {
+			fprintf(stderr, "Not a usable PKG: %s\n", pkgError.c_str());
+			return 1;
+		}
+		const PkgInfo &info = reader.Info();
+		printf("%s (%s)\n", info.title.c_str(), info.contentId.c_str());
+		printf("Category %s, %d items, %lld bytes installed\n", info.category.c_str(),
+			(int)info.items.size(), (long long)PkgInstalledSize(info));
+		if (info.isGameUpdate) {
+			printf("Game update for %s v%s -> app version %s (firmware %s)\n", info.discId.c_str(),
+				info.discVersion.c_str(), info.appVer.c_str(), info.systemVer.c_str());
+		} else {
+			fprintf(stderr, "This PKG isn't a game update - nothing we know how to install\n");
+			return 1;
+		}
+		if (!InstallPkg(reader, Path(cmdLineOptions.installPkg.value()), nullptr, &pkgError)) {
+			fprintf(stderr, "Install failed: %s\n", pkgError.c_str());
+			return 1;
+		}
+		printf("Installed into %s\n", cmdLineOptions.installPkg.value().c_str());
+		return 0;
+	}
+
 	g_Config.RestoreDefaults(RestoreSettingsBits::SETTINGS | RestoreSettingsBits::CONTROLS | RestoreSettingsBits::RECENT, false);
 
 	Core_RegisterDebugOutputListeners(&SendDebugOutput, &SendDebugScreenshot);
@@ -723,18 +778,30 @@ int main(int argc, const char* argv[]) {
 	g_Config.sMACAddress = "12:34:56:78:9A:BC";
 	g_Config.iFirmwareVersion = PSP_DEFAULT_FIRMWARE;
 	g_Config.iPSPModel = PSP_MODEL_SLIM;
+	// Booting an ISO shouldn't rewrite the NAND out from under a test run - and the tests want
+	// whatever firmware is installed to stay put. Install one with --unpack-updater instead.
+	g_Config.bAutoUpgradeFirmware = false;
 	g_Config.iGameVolume = VOLUMEHI_FULL;
 	g_Config.iReverbVolume = VOLUMEHI_FULL;
 	g_Config.internalDataDirectory.clear();
 	g_Config.bUseOldAtrac = oldAtrac;
-	g_Config.iForceEnableHLE = 0xFFFFFFFF;  // Run all modules as HLE. We don't have anything to load in this context.
 	g_Config.bSkipDeadbeefFilling = false;
 
 	// ApplyToConfig() has the final say, applied after RestoreDefaults() and the headless
 	// overrides above, so a matching command line flag always wins.
 	cmdLineOptions.ApplyToConfig();
 
-	// This looks contradictory to the above. But, this preserves the old test behavior which apparently ran the JIT for the CPU
+	// pspautotests is plain homebrew PRXes so do not ship user libraries that a retail disc may carry. 
+	// So we must use HLE, unless we install firmware.
+	// A disc brings its own copies and the app runs them for real, so
+	// headless has to as well or it isn't testing what ships.
+	const bool bootIsDisc = testFilenames.size() == 1 &&
+		!BootTargetIsHomebrewExecutable(testFilenames[0]);
+	if (!bootIsDisc) {
+		g_Config.iForceEnableHLE = 0xFFFFFFFF & ~g_Config.iDisableHLE;
+	}
+
+	// This looks contradictory to above checks. But, this preserves the old test behavior which apparently ran the JIT for the CPU
 	// but ended up running software vertex decoding due to the setting in g_Config. Yeah, it's a mess.
 	CPUCore cpuCore = CPUCore::JIT;
 	if (cmdLineOptions.cpuCore.has_value()) {
@@ -823,6 +890,56 @@ int main(int argc, const char* argv[]) {
 	g_Config.nandRootDirectory = GetSysDirectory(DIRECTORY_NAND);
 	coreParameter.nandRoot = g_Config.nandRootDirectory;
 
+	// Most discs carry the firmware they shipped with - this option installs it, if one
+	// isn't already installed. TODO: Check version here.
+	if (cmdLineOptions.firmwareFromDisc.value_or(false)) {
+		if (!bootIsDisc) {
+			fprintf(stderr, "--firmware-from-disc only applies when booting a disc\n");
+			return 1;
+		}
+		const Path disc(testFilenames[0]);
+		const Path nand = g_Config.memStickDirectory / "PSP" / "NAND_FROM_DISC" / disc.GetFilename();
+		if (File::Exists(nand / "flash0" / "kd")) {
+			printf("Reusing the firmware already unpacked from this disc at %s\n", nand.c_str());
+		} else {
+			PSARUnpackOptions unpackOptions;
+			unpackOptions.verbose = testOptions.verbose;
+			PSARUnpackStats stats;
+			std::string unpackError;
+			if (!UnpackUpdater(disc, nand, unpackOptions, &stats, &unpackError)) {
+				fprintf(stderr, "Couldn't install the firmware on %s: %s\n",
+					disc.GetFilename().c_str(), unpackError.c_str());
+				return 1;
+			}
+			printf("Installed firmware %s from the disc to %s (%d files)\n",
+				stats.firmwareVersion.c_str(), nand.c_str(), stats.written);
+		}
+		g_Config.nandRootDirectory = nand;
+		coreParameter.nandRoot = nand;
+	}
+
+	// Placed here rather than with the other early-exit subcommands above, because resolving a
+	// "flash0:/kd/foo.prx" module path needs nandRootDirectory, which is only settled just above.
+	if (cmdLineOptions.reDecrypt.has_value()) {
+		return RunDecryptFile(cmdLineOptions.reDecrypt.value(), cmdLineOptions.reDecryptOut.value_or("decrypted.bin"));
+	}
+	if (cmdLineOptions.reModule.has_value()) {
+		ReverseEngineerOptions reOptions;
+		reOptions.modulePath = cmdLineOptions.reModule.value();
+		// A "disc0:" module path reads out of the disc image given as the positional argument.
+		if (!cmdLineOptions.bootFilenames.empty()) {
+			reOptions.discPath = cmdLineOptions.bootFilenames[0];
+		}
+		reOptions.outDir = cmdLineOptions.reOut.value_or("re-out");
+		reOptions.funcFilter = cmdLineOptions.reFunc.value_or("");
+		reOptions.symsFile = cmdLineOptions.reSyms.value_or("");
+		// Accepts "0x08300000" or plain decimal.
+		reOptions.rawBase = (u32)strtoul(cmdLineOptions.reRawBase.value_or("0").c_str(), nullptr, 0);
+		reOptions.verbose = testOptions.verbose;
+		return RunReverseEngineer(reOptions);
+	}
+
+
 	// Try to find the assets flash0 directory. Often this is from a subdirectory.
 	// This is needed for our fallback fonts.
 	Path nextPath = exePath;
@@ -880,13 +997,19 @@ int main(int argc, const char* argv[]) {
 		return printUsage(cmdLineOptions, argv[0], argc <= 1 ? NULL : "No executables specified");
 	}
 
-	if (cmdLineOptions.debuggerPort.has_value()) {
-		coreParameter.startBreak = true;
+	if (cmdLineOptions.DebuggerPort().has_value()) {
+		coreParameter.startBreak = cmdLineOptions.DebuggerBreaksAtStart();
+		if (coreParameter.startBreak) {
+			// Worth saying out loud: a run that looks frozen with zero progress is usually this,
+			// not the game. Send cpu.resume, or use --debugger-run to skip the wait entirely.
+			fprintf(stderr, "--debugger: breaking at the entry point, waiting for a client to "
+				"resume the CPU (cpu.resume). Use --debugger-run to start running instead.\n");
+		}
 		StartWebServer(WebServerFlags::DEBUGGER);
 		// We break at start and wait for a debugger to drive us, so coming up without one just
 		// hangs until the timeout. Better to say why and bail - see WebServerSetRequireExactPort().
 		if (!WebServerWaitForStartup()) {
-			fprintf(stderr, "Failed to start the debugger web server on port %d\n", cmdLineOptions.debuggerPort.value());
+			fprintf(stderr, "Failed to start the debugger web server on port %d\n", cmdLineOptions.DebuggerPort().value());
 			// The server thread has exited but is still joinable - without this, its std::thread
 			// destructor would call std::terminate() on the way out and we'd abort instead of
 			// returning a useful exit code.
@@ -936,7 +1059,7 @@ int main(int argc, const char* argv[]) {
 
 	delete graphicsContext;
 
-	if (cmdLineOptions.debuggerPort.has_value()) {
+	if (cmdLineOptions.DebuggerPort().has_value()) {
 		ShutdownWebServer();
 	}
 
@@ -950,7 +1073,7 @@ int main(int argc, const char* argv[]) {
 
 	g_VFS.Clear();
 	g_logManager.Shutdown();
-	if (cmdLineOptions.debuggerPort.has_value()) {
+	if (cmdLineOptions.DebuggerPort().has_value()) {
 		net::Shutdown();
 	}
 	TimeShutdown();

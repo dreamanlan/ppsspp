@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 
 #include "Common/System/Display.h"
@@ -71,15 +72,21 @@ LRESULT CALLBACK CtrlRegisterList::wndProc(HWND hwnd, UINT msg, WPARAM wParam, L
 	case WM_SETFONT:
 		break;
 	case WM_SIZE:
-		ccp->redraw();
+		if (ccp->cpu) ccp->scrollTo(ccp->scrollRow_);
 		break;
 	case WM_PAINT:
 		ccp->onPaint(wParam,lParam);
-		break;	
-/*
+		break;
 	case WM_VSCROLL:
 		ccp->onVScroll(wParam,lParam);
-		break;*/
+		break;
+	case WM_MOUSEWHEEL:
+		if (GET_WHEEL_DELTA_WPARAM(wParam) > 0) {
+			ccp->scrollTo(ccp->scrollRow_ - 3);
+		} else if (GET_WHEEL_DELTA_WPARAM(wParam) < 0) {
+			ccp->scrollTo(ccp->scrollRow_ + 3);
+		}
+		break;
 	case WM_ERASEBKGND:
 		return FALSE;
 	case WM_KEYDOWN:
@@ -130,10 +137,13 @@ CtrlRegisterList *CtrlRegisterList::getFrom(HWND hwnd)
 CtrlRegisterList::CtrlRegisterList(HWND _wnd)
 	: wnd(_wnd) {
 	SetWindowLongPtr(wnd, GWLP_USERDATA, (LONG_PTR)this);
+	SetWindowLong(wnd, GWL_STYLE, GetWindowLong(wnd,GWL_STYLE) | WS_VSCROLL);
 
 	const float fontScale = 1.0f / g_display.dpi_scale_real_y;
 	rowHeight = g_Config.iFontHeight * fontScale;
-	int charWidth = g_Config.iFontWidth * fontScale;
+	charWidth = g_Config.iFontWidth * fontScale;
+	if (charWidth < 1)
+		charWidth = 1;
 	font = CreateFont(rowHeight, charWidth, 0, 0,
 		FW_DONTCARE, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH,
 		L"Lucida Console");
@@ -192,12 +202,40 @@ void CtrlRegisterList::onPaint(WPARAM wParam, LPARAM lParam)
 	{
 		SelectObject(hdc,i==category?currentPen:nullPen);
 		SelectObject(hdc,i==category?pcBrush:nullBrush);
-		Rectangle(hdc,width*i/nc,0,width*(i+1)/nc,rowHeight);
+		int tabX = width * i / nc;
+		Rectangle(hdc,tabX,0,width*(i+1)/nc,rowHeight);
 		const char *name = cpu->GetCategoryName(i);
-		TextOutA(hdc,width*i/nc,1,name,(int)strlen(name));
+		// Clip to the tab so a narrow list doesn't get the labels running into each other.
+		int tabChars = std::max((width * (i + 1) / nc - tabX) / charWidth, 1);
+		TextOutA(hdc,tabX,1,name,std::min((int)strlen(name), tabChars));
 	}
 
 	int numRows=rect.bottom/rowHeight;
+
+	// Column layout, in pixels. The font scales with the DPI and the vertical scrollbar takes a
+	// bite out of the client width, while the control has a fixed width in the dialog - so derive
+	// the value column from the client width instead of hardcoding it, or the values get cut off
+	// at the right edge. kNameChars covers the widest register name in any category ("zero").
+	constexpr int kNameChars = 5;
+	const int nameX = 17;
+	const int minValueX = nameX + kNameChars * charWidth;
+	const int maxValueX = nameX + (kNameChars + 3) * charWidth;
+	// Pull the column in far enough that a whole value fits - 8 digits for hex, more for floats.
+	int valueX = width - 2 - (category == 0 ? 8 : 12) * charWidth;
+	if (valueX > maxValueX)
+		valueX = maxValueX;
+	if (valueX < minValueX)
+		valueX = minValueX;
+	// How many characters actually fit. Anything longer gets clipped rather than spilling over.
+	int valueChars = (width - 2 - valueX) / charWidth;
+	if (valueChars < 1)
+		valueChars = 1;
+
+	SCROLLINFO si{ sizeof(si), SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL };
+	si.nMax = totalRows() - 1;
+	si.nPage = visibleRows();
+	si.nPos = scrollRow_;
+	SetScrollInfo(wnd, SB_VERT, &si, TRUE);
 
 	// Reading live CPU-thread-owned register state here on the GUI thread would otherwise race
 	// with the CPU thread - hold g_frameMutex for the duration of the read, which NativeFrame()
@@ -208,10 +246,10 @@ void CtrlRegisterList::onPaint(WPARAM wParam, LPARAM lParam)
 	// to highlight "changes" that are really just noise at that point.
 	bool running = !Core_IsStepping();
 
-	for (int i=0; i<numRows; i++)
+	for (int i=scrollRow_; i<scrollRow_+numRows; i++)
 	{
-		int rowY1 = rowHeight*(i+1);
-		int rowY2 = rowHeight*(i+2);
+		int rowY1 = rowHeight*(i-scrollRow_+1);
+		int rowY2 = rowY1+rowHeight;
 
 
 		lbr.lbColor = i==selection?0xffeee0:0xffffff;
@@ -260,7 +298,7 @@ void CtrlRegisterList::onPaint(WPARAM wParam, LPARAM lParam)
 			char temp[256];
 			int temp_len = snprintf(temp, sizeof(temp), "%s", cpu->GetRegName(category, i).c_str());
 			SetTextColor(hdc, running ? 0x808080 : 0x600000);
-			TextOutA(hdc,17,rowY1,temp,temp_len);
+			TextOutA(hdc,nameX,rowY1,temp,std::min(temp_len, kNameChars));
 
 			cpu->PrintRegValue(category, i, temp, sizeof(temp));
 			if (running)
@@ -269,7 +307,7 @@ void CtrlRegisterList::onPaint(WPARAM wParam, LPARAM lParam)
 				SetTextColor(hdc, 0x0000FF);
 			else
 				SetTextColor(hdc,0x004000);
-			TextOutA(hdc,77,rowY1,temp,(int)strlen(temp));
+			TextOutA(hdc,valueX,rowY1,temp,std::min((int)strlen(temp), valueChars));
 		} else if (category == 0 && i < REGISTERS_END)
 		{
 			char temp[256];
@@ -297,7 +335,7 @@ void CtrlRegisterList::onPaint(WPARAM wParam, LPARAM lParam)
 			}
 
 			SetTextColor(hdc, running ? 0x808080 : 0x600000);
-			TextOutA(hdc,17,rowY1,temp,len);
+			TextOutA(hdc,nameX,rowY1,temp,std::min(len, kNameChars));
 			len = snprintf(temp, sizeof(temp), "%08X",value);
 			if (running)
 				SetTextColor(hdc, 0x808080);
@@ -305,7 +343,7 @@ void CtrlRegisterList::onPaint(WPARAM wParam, LPARAM lParam)
 				SetTextColor(hdc, 0x0000FF);
 			else
 				SetTextColor(hdc,0x004000);
-			TextOutA(hdc,77,rowY1,temp,(int)strlen(temp));
+			TextOutA(hdc,valueX,rowY1,temp,std::min(len, valueChars));
 		}
 	}
 
@@ -360,6 +398,59 @@ void CtrlRegisterList::onKeyDown(WPARAM wParam, LPARAM lParam)
 	default:
 		return;
 	}
+	if (selection >= totalRows()) selection = totalRows() - 1;
+	if (selection < 0) selection = 0;
+	// Keep the selection in view.
+	if (selection < scrollRow_)
+		scrollTo(selection);
+	else if (selection >= scrollRow_ + visibleRows())
+		scrollTo(selection - visibleRows() + 1);
+	redraw();
+}
+
+void CtrlRegisterList::onVScroll(WPARAM wParam, LPARAM lParam)
+{
+	switch (wParam & 0xFFFF)
+	{
+	case SB_LINEDOWN:
+		scrollTo(scrollRow_ + 1);
+		break;
+	case SB_LINEUP:
+		scrollTo(scrollRow_ - 1);
+		break;
+	case SB_PAGEDOWN:
+		scrollTo(scrollRow_ + visibleRows());
+		break;
+	case SB_PAGEUP:
+		scrollTo(scrollRow_ - visibleRows());
+		break;
+	case SB_THUMBTRACK:
+	case SB_THUMBPOSITION:
+		scrollTo(HIWORD(wParam));
+		break;
+	}
+}
+
+// Rows in the current category, including pc/hi/lo for the GPR tab.
+int CtrlRegisterList::totalRows()
+{
+	return category == 0 ? REGISTERS_END : cpu->GetNumRegsInCategory(category);
+}
+
+// Rows that fit below the category header.
+int CtrlRegisterList::visibleRows()
+{
+	GetClientRect(wnd, &rect);
+	int rows = rect.bottom / rowHeight - 1;
+	return rows < 1 ? 1 : rows;
+}
+
+void CtrlRegisterList::scrollTo(int row)
+{
+	int maxRow = totalRows() - visibleRows();
+	if (row > maxRow) row = maxRow;
+	if (row < 0) row = 0;
+	scrollRow_ = row;
 	redraw();
 }
 
@@ -486,14 +577,14 @@ void CtrlRegisterList::onMouseDown(WPARAM wParam, LPARAM lParam, int button)
 		{
 			RECT rc;
 			SetCapture(wnd);
-			GetWindowRect(wnd,&rc);
+			GetClientRect(wnd,&rc);
 			int lastCat = category;
 			category = (x*cpu->GetNumCategories())/(rc.right-rc.left);
 			if (category<0) category=0;
 			if (category>=cpu->GetNumCategories())
 				category=cpu->GetNumCategories()-1;
 			if (category!=lastCat)
-				redraw();
+				scrollTo(0);
 		}
 	}
 	else
@@ -597,7 +688,7 @@ int CtrlRegisterList::yToIndex(int y)
 //	int ydiff=y-rect.bottom/2-rowHeight_/2;
 //	ydiff=(int)(floorf((float)ydiff / (float)rowHeight_))+1;
 //	return curAddress + ydiff * align;
-	int n = (y/rowHeight) - 1;
+	int n = (y/rowHeight) - 1 + scrollRow_;
 	if (n<0) n=0;
 	return n;
 }

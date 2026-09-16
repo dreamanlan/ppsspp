@@ -63,6 +63,7 @@
 #include "Core/Config.h"
 #include "Core/Core.h"
 #include "Core/Util/PathUtil.h"
+#include "Core/Util/PSARUnpack.h"
 #include "Core/CoreTiming.h"
 #include "Core/CoreParameter.h"
 #include "Core/FileLoaders/RamCachingFileLoader.h"
@@ -255,6 +256,7 @@ static void GetBootError(IdentifiedFileType type, std::string *errorString) {
 		break;
 
 	case IdentifiedFileType::ARCHIVE_7Z: *errorString = "7z file detected (Require 7-Zip)"; break;
+	case IdentifiedFileType::PSP_PKG: *errorString = "PKG game updates need to be installed, not booted."; break;
 	case IdentifiedFileType::PSX_ISO:  *errorString = "PSX game image detected."; break;
 	case IdentifiedFileType::PS2_ISO:  *errorString = "PS2 game image detected."; break;
 	case IdentifiedFileType::PS3_ISO:  *errorString = "PS2 game image detected."; break;
@@ -504,15 +506,24 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 
 	DisplayHWInit();
 
-	// Init all the HLE modules
-	HLEInit();
-
 	// TODO: Put this somewhere better?
 	if (!g_CoreParameter.mountIso.empty()) {
 		g_CoreParameter.mountIsoLoader = ConstructFileLoader(g_CoreParameter.mountIso);
 	}
 
+	// Most game discs carry a firmware updater, so this is where a NAND with nothing (or only the
+	// fonts) in it gets filled in. Has to happen before the mount below: the install erases and
+	// rewrites the very directory flash0:/flash1: point at.
+	AutoInstallFirmwareFromDisc();
+
 	MountFileSystems();
+
+	// Init all the HLE modules. After the mount, and after the firmware install above, so that the
+	// checks in HLEInit deciding whether a library can run its real module instead of our HLE can
+	// ask the PSP filesystem the way everything else does - and see a firmware this very boot just
+	// installed off the disc. Nothing between CoreTiming::Init above and here touches HLE, and the
+	// kernel and the game's modules both come later, in the switch below.
+	HLEInit();
 
 	// Game-specific settings are load from for example Load_PSP_ISO (which calls g_Config.LoadGameConfig).
 	// We can't do things that depend on these before the below switch. So for example, the adjustment of the GPU core

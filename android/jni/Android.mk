@@ -614,6 +614,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HW/GpioMMIO.cpp \
   $(SRC)/Core/HW/MemoryStick.cpp \
   $(SRC)/Core/HW/MpegDemux.cpp.arm \
+  $(SRC)/Core/HW/AvcDecoder.cpp.arm \
   $(SRC)/Core/HW/MediaEngine.cpp.arm \
   $(SRC)/Core/HW/SasAudio.cpp.arm \
   $(SRC)/Core/HW/SasReverb.cpp.arm \
@@ -741,7 +742,9 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HLE/sceKernelThread.cpp.arm \
   $(SRC)/Core/HLE/sceKernelTime.cpp \
   $(SRC)/Core/HLE/sceKernelVTimer.cpp \
+  $(SRC)/Core/HLE/sceVideocodec.cpp \
   $(SRC)/Core/HLE/sceMpeg.cpp \
+  $(SRC)/Core/HLE/sceMpegbase.cpp \
   $(SRC)/Core/HLE/sceMd5.cpp \
   $(SRC)/Core/HLE/sceMp4.cpp \
   $(SRC)/Core/HLE/sceAac.cpp \
@@ -811,7 +814,9 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/Util/GameManager.cpp \
   $(SRC)/Core/Util/BlockAllocator.cpp \
   $(SRC)/Core/Util/PPGeDraw.cpp \
+  $(SRC)/Core/Util/KL4E.cpp \
   $(SRC)/Core/Util/PSARUnpack.cpp \
+  $(SRC)/Core/Util/PkgUnpack.cpp \
   $(SRC)/Core/Util/RecentFiles.cpp \
   $(SRC)/Core/Util/VideoPlayer.cpp \
   $(SRC)/git-version.cpp
@@ -986,6 +991,8 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/BaseScreens.cpp \
   $(SRC)/UI/Background.cpp \
   $(SRC)/UI/CwCheatScreen.cpp \
+  $(SRC)/UI/InstallPkgScreen.cpp \
+  $(SRC)/UI/FirmwareScreen.cpp \
   $(SRC)/UI/InstallUpdateScreen.cpp \
   $(SRC)/UI/InstallZipScreen.cpp \
   $(SRC)/UI/JitCompareScreen.cpp \
@@ -1013,6 +1020,7 @@ ifeq ($(HEADLESS),1)
   LOCAL_MODULE := ppsspp_headless
   LOCAL_SRC_FILES := \
     $(SRC)/headless/Headless.cpp \
+    $(SRC)/headless/ReverseEngineer.cpp \
     $(SRC)/headless/Compare.cpp
 
   include $(BUILD_EXECUTABLE)

@@ -801,7 +801,9 @@ SOURCES_CXX += \
 	       $(COREDIR)/HLE/sceKernelThread.cpp \
 	       $(COREDIR)/HLE/sceKernelTime.cpp \
 	       $(COREDIR)/HLE/sceKernelVTimer.cpp \
+	       $(COREDIR)/HLE/sceVideocodec.cpp \
 	       $(COREDIR)/HLE/sceMpeg.cpp \
+	       $(COREDIR)/HLE/sceMpegbase.cpp \
 	       $(COREDIR)/HLE/sceNet.cpp \
 	       $(COREDIR)/HLE/sceNet_lib.cpp \
 	       $(COREDIR)/HLE/NetAdhocCommon.cpp \
@@ -847,6 +849,7 @@ SOURCES_CXX += \
 	       $(COREDIR)/HW/SimpleAudioDec.cpp \
 	       $(COREDIR)/HW/Atrac3Standalone.cpp \
 	       $(COREDIR)/HW/AsyncIOManager.cpp \
+	       $(COREDIR)/HW/AvcDecoder.cpp \
 	       $(COREDIR)/HW/MediaEngine.cpp \
 	       $(COREDIR)/HW/MpegDemux.cpp \
 	       $(COREDIR)/HW/MemoryStick.cpp \
@@ -900,7 +903,9 @@ SOURCES_CXX += \
 	       $(COREDIR)/Util/BlockAllocator.cpp \
 	       $(COREDIR)/Util/MemStick.cpp \
 	       $(COREDIR)/Util/PPGeDraw.cpp \
+	       $(COREDIR)/Util/KL4E.cpp \
 	       $(COREDIR)/Util/PSARUnpack.cpp \
+	       $(COREDIR)/Util/PkgUnpack.cpp \
 	       $(COREDIR)/Util/RecentFiles.cpp \
 	       $(COREDIR)/Util/AudioFormat.cpp \
 	       $(COREDIR)/Util/PathUtil.cpp \
