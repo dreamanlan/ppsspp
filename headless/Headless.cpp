@@ -4,7 +4,7 @@
 // To build on non-windows systems, just run CMake in the SDL directory, it will build both a normal ppsspp and the headless version.
 //
 // Example command line to run a test in the VS debugger (useful to debug failures):
-// > --root pspautotests/tests/../ --compare --timeout=5 --graphics=software pspautotests/tests/cpu/cpu_alu/cpu_alu.prx
+// > --root pspautotests/tests/../ --compare --timeout-wall=5 --graphics=software pspautotests/tests/cpu/cpu_alu/cpu_alu.prx
 // Example command line for taking screenshots from a frame dump:
 // > -l --graphics=vulkan --screenshot-save=vt_ref.bmp "D:\PSP ISO\dump\Depth\11578 Virtua Tennis pause menu ULES00126_0002.zip" --resolution-scale=2
 // Example command line for messing with the vsh:
@@ -85,6 +85,10 @@ static bool g_screenshotFailed = false;
 static std::string g_debugOutputBuffer;
 static bool g_writeFailureScreenshot = true;
 static bool g_writeDebugOutput = true;
+// Whether the emulated program's stdout/stderr are forwarded to ours. On by default - just running
+// a homebrew and seeing what it prints is the most basic thing headless does. Off for test runs,
+// where the only output that should reach the console is what the comparison produces.
+static bool g_forwardHostOutput = true;
 // Set from the savestate callback on the emu thread, read after it has been joined.
 static bool g_stateLoadFailed = false;
 // Set by --save-state. Saving needs the game to actually be running, so it happens from the run
@@ -167,7 +171,20 @@ void SetWriteFailureScreenshot(bool flag) {
 	g_writeFailureScreenshot = flag;
 }
 
-void SendDebugOutput(std::string_view output) {
+void SendDebugOutput(DebugOutputChannel channel, std::string_view output) {
+	if (channel != DebugOutputChannel::Debug) {
+		if (!g_forwardHostOutput)
+			return;
+		// Straight through, unmodified - and flushed, so it interleaves with the debug channel in
+		// the order the program actually wrote it.
+		FlushDebugOutput();
+		fflush(stdout);
+		FILE *stream = channel == DebugOutputChannel::StdErr ? stderr : stdout;
+		fwrite(output.data(), sizeof(char), output.length(), stream);
+		fflush(stream);
+		return;
+	}
+
 	if (!g_writeDebugOutput)
 		return;
 #ifdef _WIN32
@@ -183,7 +200,7 @@ void SendDebugOutput(std::string_view output) {
 }
 
 void SendAndCollectOutput(std::string_view output) {
-	SendDebugOutput(output);
+	SendDebugOutput(DebugOutputChannel::Debug, output);
 	if (PSP_CoreParameter().collectDebugOutput) {
 		*PSP_CoreParameter().collectDebugOutput += output;
 	}
@@ -300,7 +317,9 @@ static bool BootTargetIsHomebrewExecutable(const std::string &filename) {
 }
 
 struct AutoTestOptions {
-	double timeout;
+	// Both in effect at once; whichever is reached first ends the run. Infinity means "no limit".
+	double timeoutWall;
+	double timeoutEmulated;
 	double maxScreenshotError;
 	bool compare;
 	bool verbose;
@@ -359,16 +378,37 @@ static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &corePar
 
 	bool passed = true;
 	const double startTime = time_now_d();
-	double deadline = startTime + opt.timeout;
-	// Late enough that the game is past booting, early enough to leave the run some time after.
-	double saveStateAt = startTime + opt.timeout * 0.7;
+	// Emulated time is what you want for "has the game had long enough" - a heavy scene runs many
+	// times slower than real time and a near-idle one much faster, so a wall-clock budget says
+	// something quite different depending on what's on screen. Wall-clock is what stops a hang from
+	// hanging the machine. Either, both or neither may be set.
+	const double wallDeadline = startTime + opt.timeoutWall;
+	// Late enough that the game is past booting, early enough to leave the run some time after -
+	// against whichever limit is actually set, and the earlier of the two if both are.
+	const double wallSaveStateAt = startTime + opt.timeoutWall * 0.7;
+	// Emulated time is accumulated rather than measured from a fixed start, because loading a
+	// savestate sets the emulated clock to whatever it read when the state was written, which can
+	// be a long way either side of where this run is. One iteration of the loop below advances the
+	// clock by 0.1 seconds of emulated time at most, plus whatever an idle skip jumps to the next
+	// scheduled event - bounded in practice by vblank, so tens of milliseconds. A step of a whole
+	// second is therefore the clock being moved rather than time passing, and doesn't count.
+	const double emulatedStepLimit = 1.0;
+	double emulatedElapsed = 0.0;
+	double lastEmulatedTime = CoreTiming::GetGlobalTimeUs() / 1000000.0;
 	coreState = coreParameter.startBreak ? CORE_STEPPING_CPU : CORE_RUNNING_CPU;
 	while (coreState == CORE_RUNNING_CPU || coreState == CORE_STEPPING_CPU) {
 		// Savestate loads/saves are queued and applied here, same as EmuScreen::render does in the
 		// app. Without this, --state silently did nothing at all.
 		SaveState::Process();
 
-		if (!g_stateToSave.empty() && time_now_d() > saveStateAt) {
+		const double emulatedNow = CoreTiming::GetGlobalTimeUs() / 1000000.0;
+		const double emulatedStep = emulatedNow - lastEmulatedTime;
+		lastEmulatedTime = emulatedNow;
+		if (emulatedStep > 0.0 && emulatedStep < emulatedStepLimit) {
+			emulatedElapsed += emulatedStep;
+		}
+
+		if (!g_stateToSave.empty() && (time_now_d() > wallSaveStateAt || emulatedElapsed > opt.timeoutEmulated * 0.7)) {
 			const std::string filename = g_stateToSave;
 			g_stateToSave.clear();
 			SaveState::Save(Path(filename), -1, [](SaveState::Status status, std::string_view message, std::string_view) {
@@ -383,6 +423,14 @@ static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &corePar
 		if (coreState == CORE_NEXTFRAME) {
 			// INFO_LOG(Log::System, "(frame)");
 			coreState = CORE_RUNNING_CPU;
+			// Close and reopen the host frame, which is what the app does once per displayed
+			// frame. All the GPU's per-frame work hangs off BeginHostFrame - the texture cache's
+			// StartFrame and the framebuffer manager's DecimateFBOs - so with a single host frame
+			// spanning the whole run, none of it ever ran here, and a long test decayed nothing.
+			if (gpu) {
+				gpu->EndHostFrame();
+				gpu->BeginHostFrame(g_Config.GetDisplayLayoutConfig(DeviceOrientation::Landscape));
+			}
 		}
 		if (coreState == CORE_STEPPING_CPU && !coreParameter.startBreak) {
 			break;
@@ -392,13 +440,18 @@ static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &corePar
 		if (IsDebuggerPresent())
 			debugger = true;
 #endif
-		if (time_now_d() > deadline && !debugger) {
+		// The debugger exemption is only for the wall-clock limit: sitting at a native breakpoint
+		// burns real seconds but no emulated ones, so the emulated limit can't misfire that way.
+		const bool wallTimedOut = time_now_d() > wallDeadline && !debugger;
+		const bool emulatedTimedOut = emulatedElapsed > opt.timeoutEmulated;
+		if (wallTimedOut || emulatedTimedOut) {
 			// Don't compare, print the output at least up to this point, and bail.
 			if (!opt.bench) {
 				printf("%s", output.c_str());
 
-				SendDebugOutput("TIMEOUT\n");
-				GitHubActionsPrint("error", "Test timeout for %s", currentTestName.c_str());
+				SendDebugOutput(DebugOutputChannel::Debug, wallTimedOut ? "TIMEOUT\n" : "TIMEOUT (emulated)\n");
+				GitHubActionsPrint("error", "Test %s timeout for %s",
+					wallTimedOut ? "wall-clock" : "emulated-time", currentTestName.c_str());
 			}
 
 			passed = false;
@@ -516,7 +569,9 @@ int RunTests(GraphicsContext *graphicsContext, CoreParameter &coreParameter, con
 		const bool passed = RunAutoTest(graphicsContext, coreParameter, testOptions);
 		if (testOptions.bench) {
 			double st = time_now_d();
-			double deadline = st + testOptions.timeout;
+			// Benchmarking repeats the run, so budget it in real seconds regardless of what the run
+			// itself is limited by.
+			double deadline = st + testOptions.timeoutWall;
 			double runs = 0.0;
 			for (int i = 0; i < 100; ++i) {
 				RunAutoTest(graphicsContext, coreParameter, testOptions);
@@ -608,7 +663,8 @@ int main(int argc, const char* argv[]) {
 	AutoTestOptions testOptions{};
 	testOptions.compare = cmdLineOptions.compare.value_or(false);
 	testOptions.bench = cmdLineOptions.bench.value_or(false);
-	testOptions.timeout = cmdLineOptions.timeout.value_or(std::numeric_limits<double>::infinity());
+	testOptions.timeoutWall = cmdLineOptions.timeoutWall.value_or(std::numeric_limits<double>::infinity());
+	testOptions.timeoutEmulated = cmdLineOptions.timeoutEmulated.value_or(std::numeric_limits<double>::infinity());
 	testOptions.verbose = cmdLineOptions.verbose.value_or(false);
 	testOptions.printEqualLines = cmdLineOptions.printEqualLines.value_or(false);
 	testOptions.maxScreenshotError = cmdLineOptions.maxScreenshotError.value_or(0.0);
@@ -735,6 +791,12 @@ int main(int argc, const char* argv[]) {
 
 	std::string error_string;
 
+	// Headless never loads a config file, so without this every setting not named below keeps the
+	// zero-initialized value instead of its real default, and headless runs games differently from
+	// every other build (bFastMemory and bFuncReplacements are both "true" defaults that came out
+	// false that way). Apply the defaults first, then force the values the tests want.
+	g_Config.RestoreDefaults(RestoreSettingsBits::SETTINGS, false);
+
 	// Force known values for deterministic test execution. This happens before
 	// ApplyToConfig() below, so a matching command line flag can still override any of it -
 	// ApplyToConfig() always has the final say on the settings in g_Config.
@@ -768,6 +830,10 @@ int main(int argc, const char* argv[]) {
 	g_Config.iInternalResolution = cmdLineOptions.resolutionScale.value_or(1);
 	g_Config.bEnableLogging = (fullLog || outputDebugStringLog);
 	g_Config.bVertexDecoderJit = true;
+	// Headless never loads a config file, so anything not set here keeps the zero-initialized
+	// value rather than the ConfigSetting default. This one defaults to true in the app, and
+	// leaving it false made headless run games differently from every other build.
+	g_Config.bFuncReplacements = true;
 	g_Config.bSoftwareRendering = cmdLineOptions.softwareRendering.value_or(false);
 	g_Config.bSoftwareRenderingJit = true;
 	g_Config.iSplineBezierQuality = 2;
@@ -971,6 +1037,7 @@ int main(int argc, const char* argv[]) {
 
 	SetWriteFailureScreenshot(!getenv("GITHUB_ACTIONS") && !testOptions.bench);
 	g_writeDebugOutput = !testOptions.compare && !testOptions.bench;
+	g_forwardHostOutput = !testOptions.compare && !testOptions.bench;
 
 #if PPSSPP_PLATFORM(ANDROID)
 	// For some reason the debugger installs it with this name?
