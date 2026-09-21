@@ -55,6 +55,7 @@
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/EmuThread.h"
+#include "Core/HLE/HLE.h"
 #include "Core/MIPS/MIPSTables.h"
 #include "Core/System.h"
 #include "Core/Util/PSARUnpack.h"
@@ -83,6 +84,9 @@ static bool g_screenshotSaved = false;
 static double g_maxScreenshotError = 0.0;
 static bool g_screenshotFailed = false;
 static std::string g_debugOutputBuffer;
+// Set when a run was asked for a configuration that couldn't be honoured. That isn't a test result,
+// so it fails the process whether or not this run was comparing anything.
+static bool g_configRefused = false;
 static bool g_writeFailureScreenshot = true;
 static bool g_writeDebugOutput = true;
 // Whether the emulated program's stdout/stderr are forwarded to ours. On by default - just running
@@ -289,10 +293,10 @@ static GraphicsContext *CreateGraphicsContext(GPUCore gpuCore, std::string **dev
 	default:
 		return nullptr;
 	}
-#elif PPSSPP_ARCH(LOONGARCH64)
-	// The loongarch64 cross-compilation toolchain has no SDL3 packages available (see the
-	// LOONGARCH64_DEVICE branch in CMakeLists.txt), so this build is compile-tested only and
-	// never actually needs to create a graphics context at runtime.
+#elif PPSSPP_ARCH(LOONGARCH64) || PPSSPP_ARCH(RISCV64)
+	// The loongarch64 and riscv64 cross-compilation sysroots have no SDL3 (see the HEADLESS_CROSS
+	// branch in CMakeLists.txt). These builds still run fine under qemu with --graphics=software,
+	// which needs no graphics context.
 	*deviceSetting = nullptr;
 	return nullptr;
 #elif PPSSPP_PLATFORM(ANDROID)
@@ -325,6 +329,10 @@ struct AutoTestOptions {
 	bool verbose;
 	bool bench;
 	bool printEqualLines;
+	// What --disable-hle asked for, or 0 if it was not passed. Only an explicit request binds:
+	// sceMpeg and sceMp4 run the firmware module by default now and fall back to the HLE wherever
+	// none is installed, which must not fail every run on such a machine.
+	int requiredDisableHLE;
 };
 
 static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &coreParameter, const AutoTestOptions &opt) {
@@ -361,6 +369,29 @@ static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &corePar
 
 	if (!PSP_IsInited()) {
 		GitHubActionsPrint("error", "Test init failed for %s", currentTestName.c_str());
+		return false;
+	}
+
+	// Running a different configuration than the one asked for measures the wrong thing without
+	// saying so, which is worse in a test tool than not running at all.
+	const int missingHLE = (int)HLEGetUnavailableDisableFlags() & opt.requiredDisableHLE;
+	if (missingHLE) {
+		for (int i = 0; i < (int)DisableHLEFlags::Count; i++) {
+			if (!(missingHLE & (1 << i))) {
+				continue;
+			}
+			const HLEModuleMeta *meta = GetHLEModuleMetaByFlag((DisableHLEFlags)(1 << i));
+			fprintf(stderr, "--disable-hle asked for %s, but no firmware module for it is installed "
+				"or on the disc - our HLE would run instead.\n", meta ? meta->modname : "an unknown module");
+		}
+		// Nearly always because headless defaulted the memory stick to one beside the exe rather than
+		// the app's, so the firmware installed through the app isn't the firmware it looked at.
+		fprintf(stderr, "Looked in %s (memory stick %s).\n",
+			(g_Config.nandRootDirectory / "flash0" / "kd").c_str(), g_Config.memStickDirectory.c_str());
+		GitHubActionsPrint("error", "Requested --disable-hle unavailable for %s", currentTestName.c_str());
+		g_configRefused = true;
+		// Booted, so it has to come down the same way a finished run does.
+		PSP_Shutdown(true);
 		return false;
 	}
 
@@ -607,6 +638,10 @@ int RunTests(GraphicsContext *graphicsContext, CoreParameter &coreParameter, con
 		}
 	}
 
+	if (g_configRefused) {
+		return 1;
+	}
+
 	return 0;
 }
 
@@ -668,6 +703,7 @@ int main(int argc, const char* argv[]) {
 	testOptions.verbose = cmdLineOptions.verbose.value_or(false);
 	testOptions.printEqualLines = cmdLineOptions.printEqualLines.value_or(false);
 	testOptions.maxScreenshotError = cmdLineOptions.maxScreenshotError.value_or(0.0);
+	testOptions.requiredDisableHLE = cmdLineOptions.disableHLE.value_or(0);
 
 	bool fullLog = cmdLineOptions.enableLogging.value_or(false);
 	const char *stateToLoad = cmdLineOptions.stateToLoad.has_value() ? cmdLineOptions.stateToLoad.value().c_str() : nullptr;
@@ -799,12 +835,8 @@ int main(int argc, const char* argv[]) {
 
 	// Force known values for deterministic test execution. This happens before
 	// ApplyToConfig() below, so a matching command line flag can still override any of it -
-	// ApplyToConfig() always has the final say on the settings in g_Config.
-	//
-	// This affects the test execution of pspautotests/tests/gpu/vertices/morph.prx, even though
-	// we actually set the cpu core in CoreParameter below.
-	// The check that decides that is in the DrawEngineCommon constructor.
-	g_Config.iCpuCore = (int)CPUCore::INTERPRETER;
+	// ApplyToConfig() always has the final say on the settings in g_Config - except for iCpuCore,
+	// which is forced after it instead, see below.
 
 	// NOTE: In headless mode, we never save the config. This is just for this run.
 	g_Config.iDumpFileTypes = 0;
@@ -857,6 +889,14 @@ int main(int argc, const char* argv[]) {
 	// overrides above, so a matching command line flag always wins.
 	cmdLineOptions.ApplyToConfig();
 
+	// The exception to that, forced after ApplyToConfig() so --cpu can't reach it. g_Config.iCpuCore
+	// doesn't pick the MIPS core here (CoreParameter below does, straight from the command line) -
+	// it also gates the vertex decoder JIT, in the DrawEngineCommon constructor. Letting --cpu=jit
+	// switch that on decodes vertices through a different path and changes the output of a dozen or
+	// so GPU tests, gpu/vertices/morph among them. The core to test is a CPU question, so keep the
+	// GPU side on one path for every backend.
+	g_Config.iCpuCore = (int)CPUCore::INTERPRETER;
+
 	// pspautotests is plain homebrew PRXes so do not ship user libraries that a retail disc may carry. 
 	// So we must use HLE, unless we install firmware.
 	// A disc brings its own copies and the app runs them for real, so
@@ -900,7 +940,7 @@ int main(int argc, const char* argv[]) {
 		// We don't bother with a window.
 		graphicsContext = new NullGraphicsContext();
 	} else {
-#if PPSSPP_PLATFORM(ANDROID) || PPSSPP_ARCH(LOONGARCH64)
+#if PPSSPP_PLATFORM(ANDROID) || PPSSPP_ARCH(LOONGARCH64) || PPSSPP_ARCH(RISCV64)
 		fprintf(stderr, "Headless graphics context creation is not supported on this platform.\n");
 		return 1;
 #else
@@ -1130,7 +1170,7 @@ int main(int argc, const char* argv[]) {
 		ShutdownWebServer();
 	}
 
-#if PPSSPP_PLATFORM(ANDROID) || PPSSPP_ARCH(LOONGARCH64)
+#if PPSSPP_PLATFORM(ANDROID) || PPSSPP_ARCH(LOONGARCH64) || PPSSPP_ARCH(RISCV64)
 	// ... see above
 #else
 	if (window) {
