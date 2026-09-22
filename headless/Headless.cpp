@@ -454,12 +454,24 @@ static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &corePar
 		if (coreState == CORE_NEXTFRAME) {
 			// INFO_LOG(Log::System, "(frame)");
 			coreState = CORE_RUNNING_CPU;
-			// Close and reopen the host frame, which is what the app does once per displayed
-			// frame. All the GPU's per-frame work hangs off BeginHostFrame - the texture cache's
+			// Close and reopen the frame, which is what the app does once per displayed frame.
+			// All the GPU's per-frame work hangs off BeginHostFrame - the texture cache's
 			// StartFrame and the framebuffer manager's DecimateFBOs - so with a single host frame
 			// spanning the whole run, none of it ever ran here, and a long test decayed nothing.
+			//
+			// The draw context's frame has to turn over too, and for the same reason one level up:
+			// Vulkan's push buffers are recycled by BeginFrame, so one frame spanning the run means
+			// nothing is ever reused and every allocation takes a fresh 8MB block - about 13MB a
+			// second, which runs a long test out of device memory. Draw frame outside, host frame
+			// inside, the way the app nests them.
 			if (gpu) {
 				gpu->EndHostFrame();
+			}
+			if (draw) {
+				draw->EndFrame();
+				draw->BeginFrame(Draw::DebugFlags::NONE);
+			}
+			if (gpu) {
 				gpu->BeginHostFrame(g_Config.GetDisplayLayoutConfig(DeviceOrientation::Landscape));
 			}
 		}
@@ -835,8 +847,7 @@ int main(int argc, const char* argv[]) {
 
 	// Force known values for deterministic test execution. This happens before
 	// ApplyToConfig() below, so a matching command line flag can still override any of it -
-	// ApplyToConfig() always has the final say on the settings in g_Config - except for iCpuCore,
-	// which is forced after it instead, see below.
+	// ApplyToConfig() always has the final say on the settings in g_Config.
 
 	// NOTE: In headless mode, we never save the config. This is just for this run.
 	g_Config.iDumpFileTypes = 0;
@@ -889,14 +900,6 @@ int main(int argc, const char* argv[]) {
 	// overrides above, so a matching command line flag always wins.
 	cmdLineOptions.ApplyToConfig();
 
-	// The exception to that, forced after ApplyToConfig() so --cpu can't reach it. g_Config.iCpuCore
-	// doesn't pick the MIPS core here (CoreParameter below does, straight from the command line) -
-	// it also gates the vertex decoder JIT, in the DrawEngineCommon constructor. Letting --cpu=jit
-	// switch that on decodes vertices through a different path and changes the output of a dozen or
-	// so GPU tests, gpu/vertices/morph among them. The core to test is a CPU question, so keep the
-	// GPU side on one path for every backend.
-	g_Config.iCpuCore = (int)CPUCore::INTERPRETER;
-
 	// pspautotests is plain homebrew PRXes so do not ship user libraries that a retail disc may carry. 
 	// So we must use HLE, unless we install firmware.
 	// A disc brings its own copies and the app runs them for real, so
@@ -907,8 +910,6 @@ int main(int argc, const char* argv[]) {
 		g_Config.iForceEnableHLE = 0xFFFFFFFF & ~g_Config.iDisableHLE;
 	}
 
-	// This looks contradictory to above checks. But, this preserves the old test behavior which apparently ran the JIT for the CPU
-	// but ended up running software vertex decoding due to the setting in g_Config. Yeah, it's a mess.
 	CPUCore cpuCore = CPUCore::JIT;
 	if (cmdLineOptions.cpuCore.has_value()) {
 		cpuCore = cmdLineOptions.cpuCore.value();
@@ -963,6 +964,9 @@ int main(int argc, const char* argv[]) {
 	// but not now.
 	CoreParameter coreParameter;
 	coreParameter.cpuCore = (CPUCore)cpuCore;
+	// The pspautotests expectations and frametest references were recorded with the C++ vertex
+	// decoder, and the JIT decoders don't match it everywhere yet.
+	coreParameter.bUseVertexDecoderJit = false;
 	coreParameter.gpuCore = (GPUCore)gpuCore;
 	coreParameter.graphicsContext = graphicsContext;
 	coreParameter.enableSound = false;
