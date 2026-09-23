@@ -256,6 +256,15 @@ static inline int TransposeMatrixReg(int matrixReg) {
 int GetVectorOverlap(int reg1, VectorSize size1, int reg2, VectorSize size2);
 
 bool GetVFPUCtrlMask(int reg, u32 *mask);
+// Bits a write to the register always sets, on top of the mask: the RNG state registers keep
+// 0x3F800000 in their top bits whatever is written (cpu/vfpu/vrnd).
+u32 GetVFPUCtrlSetBits(int reg);
 
 float Float16ToFloat32(unsigned short l);
+
+// vh2f and vf2h, bit-exact to the hardware (cpu/vfpu/specials). vf2h truncates the mantissa,
+// flushes below 2^-14 to zero and keeps the low ten mantissa bits of a NaN; vh2f flushes
+// subnormal halves and keeps inf/NaN mantissa bits unshifted.
+u32 vfpu_h2f(u16 h);
+u16 vfpu_f2h(u32 f);
 void InitVFPU();
