@@ -548,20 +548,50 @@ void Arm64JitBackend::CompIR_FSpecial(IRInst inst) {
 		break;
 
 	case IROp::FRSqrt:
-		regs_.Map(inst);
-		fp_.MOVI2F(SCRATCHF1, 1.0f);
-		fp_.FSQRT(regs_.F(inst.dest), regs_.F(inst.src1));
-		fp_.FDIV(regs_.F(inst.dest), SCRATCHF1, regs_.F(inst.dest));
+		callFuncF_F(&vfpu_rsqrt);
 		break;
 
 	case IROp::FRecip:
-		regs_.Map(inst);
-		fp_.MOVI2F(SCRATCHF1, 1.0f);
-		fp_.FDIV(regs_.F(inst.dest), SCRATCHF1, regs_.F(inst.src1));
+		callFuncF_F(&vfpu_rcp);
 		break;
 
 	case IROp::FAsin:
 		callFuncF_F(&vfpu_asin);
+		break;
+
+	case IROp::FVSqrt:
+		callFuncF_F(&vfpu_sqrt);
+		break;
+
+	case IROp::FExp2:
+		callFuncF_F(&vfpu_exp2);
+		break;
+
+	case IROp::FLog2:
+		callFuncF_F(&vfpu_log2);
+		break;
+
+	case IROp::FHalfToFloat:
+		callFuncF_F(inst.src2 ? &vfpu_h2f_upper : &vfpu_h2f_lower);
+		break;
+
+	case IROp::FSinCos:
+		// The helper returns the sine and cosine packed into D0, which the cache never allocates.
+		regs_.FlushBeforeCall();
+		WriteDebugProfilerStatus(IRProfilerStatus::MATH_HELPER);
+		if (regs_.IsFPRMapped(inst.src1)) {
+			int lane = regs_.GetFPRLane(inst.src1);
+			if (lane == 0)
+				fp_.FMOV(S0, regs_.F(inst.src1));
+			else
+				fp_.DUP(32, Q0, regs_.F(inst.src1), lane);
+		} else {
+			fp_.LDR(32, INDEX_UNSIGNED, S0, CTXREG, offsetof(MIPSState, f) + inst.src1 * 4);
+		}
+		QuickCallFunction(SCRATCH2_64, &vfpu_sincos_packed);
+		regs_.MapVec2(inst.dest, MIPSMap::NOINIT);
+		fp_.FMOV(regs_.FD(inst.dest), D0);
+		WriteDebugProfilerStatus(IRProfilerStatus::IN_JIT);
 		break;
 
 	default:

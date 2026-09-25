@@ -50,6 +50,7 @@
 #include "Common/Thread/ThreadManager.h"
 #include "Common/GPU/Vulkan/VulkanGraphicsContext.h"
 #include "Core/CmdLine.h"
+#include "Common/Net/HTTPRequest.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/Core.h"
@@ -877,7 +878,10 @@ int main(int argc, const char* argv[]) {
 	// value rather than the ConfigSetting default. This one defaults to true in the app, and
 	// leaving it false made headless run games differently from every other build.
 	g_Config.bFuncReplacements = true;
-	g_Config.bSoftwareRendering = cmdLineOptions.softwareRendering.value_or(false);
+	// Software unless --graphics picked a hardware backend (which sets softwareRendering=false).
+	// Defaulting this to false silently ran everything on OpenGL, which hangs games early in boot
+	// under Mesa llvmpipe on Linux/WSL.
+	g_Config.bSoftwareRendering = cmdLineOptions.softwareRendering.value_or(true);
 	g_Config.bSoftwareRenderingJit = true;
 	g_Config.iSplineBezierQuality = 2;
 	g_Config.bHighQualityDepth = true;
@@ -1181,6 +1185,9 @@ int main(int argc, const char* argv[]) {
 		DestroyHiddenWindow(window,	windowDesc);
 	}
 #endif
+
+	// A request finishing while globals are destroyed at exit touches g_OSD, which may be gone by then.
+	g_DownloadManager.CancelAll();
 
 	g_VFS.Clear();
 	g_logManager.Shutdown();
