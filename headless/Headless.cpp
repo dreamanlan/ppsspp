@@ -271,9 +271,6 @@ static GraphicsContext *CreateGraphicsContext(GPUCore gpuCore, std::string **dev
 	switch (gpuCore) {
 	case GPUCORE_GLES:
 		return new SDLHeadlessGLGraphicsContext();
-	case GPUCORE_VULKAN:
-		*deviceSetting = &g_Config.sVulkanDevice;
-		return new VulkanGraphicsContext();
 	default:
 		return nullptr;
 	}
@@ -287,9 +284,6 @@ static GraphicsContext *CreateGraphicsContext(GPUCore gpuCore, std::string **dev
 	case GPUCORE_DIRECTX11:
 		*deviceSetting = &g_Config.sD3D11Device;
 		return new D3D11Context();
-	case GPUCORE_VULKAN:
-		*deviceSetting = &g_Config.sVulkanDevice;
-		return new VulkanGraphicsContext();
 	case GPUCORE_SOFTWARE:
 	default:
 		return nullptr;
@@ -334,7 +328,21 @@ struct AutoTestOptions {
 	// sceMpeg and sceMp4 run the firmware module by default now and fall back to the HLE wherever
 	// none is installed, which must not fail every run on such a machine.
 	int requiredDisableHLE;
+	// The WebSocket debugger is on (--debugger or --debugger-run), so a stop is its to resume.
+	bool debugger;
 };
+
+// Ends a frame of the draw context the way the app does, presenting it. Unpresented frames never
+// finish: with Vulkan, presenting is what returns a frame's image, and OpenGL's render thread only
+// finishes a frame when it's presented, so either would eventually wait forever. Neither waits for
+// vsync here (Vulkan and, on macOS, OpenGL render offscreen, and the hidden-window OpenGL context
+// swaps with interval 0). D3D11 presents to a hidden window, which could.
+static void EndDrawFrame(Draw::DrawContext *draw) {
+	draw->EndFrame();
+	if (GetGPUBackend() == GPUBackend::VULKAN || GetGPUBackend() == GPUBackend::OPENGL) {
+		draw->Present(Draw::PresentMode::FIFO);
+	}
+}
 
 static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &coreParameter, const AutoTestOptions &opt) {
 	using namespace Draw;
@@ -469,14 +477,15 @@ static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &corePar
 				gpu->EndHostFrame();
 			}
 			if (draw) {
-				draw->EndFrame();
+				EndDrawFrame(draw);
 				draw->BeginFrame(Draw::DebugFlags::NONE);
 			}
 			if (gpu) {
 				gpu->BeginHostFrame(g_Config.GetDisplayLayoutConfig(DeviceOrientation::Landscape));
 			}
 		}
-		if (coreState == CORE_STEPPING_CPU && !coreParameter.startBreak) {
+		// Without a debugger nothing can resume a stop, so it ends the run.
+		if (coreState == CORE_STEPPING_CPU && !opt.debugger) {
 			break;
 		}
 		bool debugger = false;
@@ -515,7 +524,7 @@ static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &corePar
 			gpu->CopyDisplayToOutput(g_Config.GetDisplayLayoutConfig(DeviceOrientation::Landscape));
 		}
 
-		draw->EndFrame();
+		EndDrawFrame(draw);
 	}
 
 	if (!g_screenshotSavePath.empty() && !g_screenshotSaved) {
@@ -682,6 +691,11 @@ int main(int argc, const char* argv[]) {
 		perror("Unable to ignore SIGPIPE");
 	}
 #endif
+#if PPSSPP_PLATFORM(MAC)
+	// MoltenVK logs its setup and every unsupported feature to the console, which mixes into the
+	// test output. Only its errors, unless asked for more.
+	setenv("MVK_CONFIG_LOG_LEVEL", "1", 0);
+#endif
 
 	SetupCRT(true);
 
@@ -717,6 +731,7 @@ int main(int argc, const char* argv[]) {
 	testOptions.printEqualLines = cmdLineOptions.printEqualLines.value_or(false);
 	testOptions.maxScreenshotError = cmdLineOptions.maxScreenshotError.value_or(0.0);
 	testOptions.requiredDisableHLE = cmdLineOptions.disableHLE.value_or(0);
+	testOptions.debugger = cmdLineOptions.DebuggerPort().has_value();
 
 	bool fullLog = cmdLineOptions.enableLogging.value_or(false);
 	const char *stateToLoad = cmdLineOptions.stateToLoad.has_value() ? cmdLineOptions.stateToLoad.value().c_str() : nullptr;
@@ -949,17 +964,30 @@ int main(int argc, const char* argv[]) {
 		fprintf(stderr, "Headless graphics context creation is not supported on this platform.\n");
 		return 1;
 #else
-		// TODO: Will we need a larger window for higher resolutions? Well, not if we use buffered rendering.
-		window = CreateHiddenWindow(480, 272, cmdLineOptions.gpuBackend.value_or(GPUBackend::OPENGL), &windowDesc);
-		if (!windowDesc.Valid()) {
-			fprintf(stderr, "Failed to create a window for graphics context");
-			return 1;
-		}
-		graphicsContext = CreateGraphicsContext(gpuCore, &deviceSetting);
-		if (!graphicsContext) {
-			// If we don't get the desired context, we DO NOT fall back.
-			fprintf(stderr, "Failed to create a graphics context for GPU core");
-			return 1;
+		if (gpuCore == GPUCORE_VULKAN) {
+			// Vulkan renders into images of its own, with no window or swapchain.
+			VulkanGraphicsContext *vulkanContext = new VulkanGraphicsContext();
+			vulkanContext->SetOffscreen(480, 272);
+			graphicsContext = vulkanContext;
+			deviceSetting = &g_Config.sVulkanDevice;
+#if PPSSPP_PLATFORM(MAC) && defined(SDL)
+		} else if (gpuCore == GPUCORE_GLES) {
+			// So does OpenGL, into a framebuffer object of its own.
+			graphicsContext = new CGLHeadlessGraphicsContext(480, 272);
+#endif
+		} else {
+			// TODO: Will we need a larger window for higher resolutions? Well, not if we use buffered rendering.
+			window = CreateHiddenWindow(480, 272, cmdLineOptions.gpuBackend.value_or(GPUBackend::OPENGL), &windowDesc);
+			if (!windowDesc.Valid()) {
+				fprintf(stderr, "Failed to create a window for graphics context\n");
+				return 1;
+			}
+			graphicsContext = CreateGraphicsContext(gpuCore, &deviceSetting);
+			if (!graphicsContext) {
+				// If we don't get the desired context, we DO NOT fall back.
+				fprintf(stderr, "Failed to create a graphics context for GPU core\n");
+				return 1;
+			}
 		}
 #endif
 	}
