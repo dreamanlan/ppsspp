@@ -22,6 +22,8 @@
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/HLE/sceAudiocodec.h"
 #include "Core/HLE/sceKernelMemory.h"
+#include "Core/HLE/scePower.h"
+#include "Core/HLE/sceVideocodec.h"
 #include "Core/HLE/ErrorCodes.h"
 #include "Core/MemMap.h"
 #include "Core/Reporting.h"
@@ -222,44 +224,17 @@ void __AudioCodecShutdown() {
 	clearDecoders();
 }
 
-// TODO: Actually support mono output.
-static int __AudioCodecInitCommon(u32 ctxPtr, int codec, bool mono) {
-	const PSPAudioType audioType = (PSPAudioType)codec;
-	if (!IsValidCodec(audioType)) {
-		return hleLogError(Log::ME, SCE_KERNEL_ERROR_OUT_OF_RANGE, "Invalid codec");
-	}
-
-	// Re-initialising a context that still has a decoder is normal, not a report-worthy
-	// surprise: mpeg.prx sizes the allocation through a scratch context of its own and only ever
-	// releases that one, so the context it actually decodes through still holds a decoder when the
-	// next movie starts. Once per video, on every game running the real module.
-	if (removeDecoder(ctxPtr)) {
-		INFO_LOG(Log::HLE, "sceAudiocodecInit(%08x, %d): replacing existing context", ctxPtr, codec);
-	}
-
-	// Initialize the codec memory.
+// Creates a context's decoder from what the context holds. Init does this, and so does a state
+// load, since the decoders themselves aren't saved.
+static AudioDecoder *CreateDecoderForContext(u32 ctxPtr, PSPAudioType audioType) {
 	auto ctx = PSPPointer<SceAudiocodecCodec>::Create(ctxPtr);
-	ctx->magic = 0x5100601;
-	ctx->err = 0;
 
 	int bytesPerFrame = 0;
 	int channels = 2;
 
 	uint8_t extraData[14]{};
 
-	SceAudiocodecCodec *ptr = ctx;
-	// Special actions for some codecs.
 	switch (audioType) {
-	case PSP_CODEC_MP3:
-		// Not seeing inited in Kurok (homebrew)
-		// _dbg_assert_(ctx->inited == 1);
-		ctx->fmt.mp3.version = 9999;
-		break;
-	case PSP_CODEC_AAC:
-		// AAC / mp4
-		// offsets 40-42 are a 24-bit LE number specifying the sample rate. It's 32000, 44100 or 48000.
-		// neededMem has been set to 0x18f20.
-		break;
 	case PSP_CODEC_AT3PLUS:
 		CalculateInputBytesAndChannelsAt3Plus(ctx, &bytesPerFrame, &channels);
 		break;
@@ -282,12 +257,52 @@ static int __AudioCodecInitCommon(u32 ctxPtr, int codec, bool mono) {
 	}
 
 	// Create audio decoder for given audio codec and push it into AudioList
-	INFO_LOG(Log::ME, "sceAudioDecoder: Creating codec with %04x frame size and %d channels, codec %04x", bytesPerFrame, channels, codec);
+	INFO_LOG(Log::ME, "sceAudioDecoder: Creating codec with %04x frame size and %d channels, codec %04x", bytesPerFrame, channels, (int)audioType);
 	// We send in extra data with all codec, most ignore it.
 	AudioDecoder *decoder = CreateAudioDecoder(audioType, 44100, channels, bytesPerFrame, extraData, sizeof(extraData));
 	decoder->SetCtxPtr(ctxPtr);
 	g_audioDecoderContexts[ctxPtr] = decoder;
 	g_at3PlusFrameBytes[ctxPtr] = bytesPerFrame;
+	return decoder;
+}
+
+// TODO: Actually support mono output.
+static int __AudioCodecInitCommon(u32 ctxPtr, int codec, bool mono) {
+	const PSPAudioType audioType = (PSPAudioType)codec;
+	if (!IsValidCodec(audioType)) {
+		return hleLogError(Log::ME, SCE_KERNEL_ERROR_OUT_OF_RANGE, "Invalid codec");
+	}
+
+	// Re-initialising a context that still has a decoder is normal, not a report-worthy
+	// surprise: mpeg.prx sizes the allocation through a scratch context of its own and only ever
+	// releases that one, so the context it actually decodes through still holds a decoder when the
+	// next movie starts. Once per video, on every game running the real module.
+	if (removeDecoder(ctxPtr)) {
+		INFO_LOG(Log::HLE, "sceAudiocodecInit(%08x, %d): replacing existing context", ctxPtr, codec);
+	}
+
+	// Initialize the codec memory.
+	auto ctx = PSPPointer<SceAudiocodecCodec>::Create(ctxPtr);
+	ctx->magic = 0x5100601;
+	ctx->err = 0;
+
+	// Special actions for some codecs.
+	switch (audioType) {
+	case PSP_CODEC_MP3:
+		// Not seeing inited in Kurok (homebrew)
+		// _dbg_assert_(ctx->inited == 1);
+		ctx->fmt.mp3.version = 9999;
+		break;
+	case PSP_CODEC_AAC:
+		// AAC / mp4
+		// offsets 40-42 are a 24-bit LE number specifying the sample rate. It's 32000, 44100 or 48000.
+		// neededMem has been set to 0x18f20.
+		break;
+	default:
+		break;
+	}
+
+	CreateDecoderForContext(ctxPtr, audioType);
 	return hleLogDebug(Log::ME, 0);
 }
 
@@ -354,9 +369,7 @@ static int sceAudiocodecDecode(u32 ctxPtr, int codec) {
 	if (!decoder && oldStateLoaded) {
 		// We must have loaded an old state that did not have sceAudiocodec information.
 		// Fake it by creating the desired context.
-		decoder = CreateAudioDecoder(audioType, 44100, channels, bytesPerFrame);
-		decoder->SetCtxPtr(ctxPtr);
-		g_audioDecoderContexts[ctxPtr] = decoder;
+		decoder = CreateDecoderForContext(ctxPtr, audioType);
 	}
 
 	if (decoder && codec == PSP_CODEC_AT3PLUS && bytesPerFrame > 0) {
@@ -407,6 +420,21 @@ static int sceAudiocodecDecode(u32 ctxPtr, int codec) {
 		// reporting the sample count instead gave it a quarter of every frame, which played back
 		// fast and metallic. The decoder always writes stereo 16-bit, whatever the source is.
 		ctx->dstBytesWritten = outSamples * 2 * (int)sizeof(int16_t);
+	}
+	// The decode runs on the ME and takes real time. Measured on a PSP through the libraries that
+	// call this, so each includes their own work around the call: sceMpegAtracDecode of one ATRAC3+
+	// frame (2048 samples) takes about 2.5ms (pspautotests video/mpeg/playertiming), and
+	// sceMp4AacDecode of one AAC-LC stereo frame (1024 samples) about 1.7ms (video/mp4/mp4timing).
+	// Other codecs aren't measured yet.
+	int decodeUs = 0;
+	if (audioType == PSP_CODEC_AT3PLUS) {
+		decodeUs = 2500;
+	} else if (audioType == PSP_CODEC_AAC) {
+		decodeUs = 1700;
+	}
+	if (decodeUs > 0) {
+		decodeUs = MEScheduleJob(PowerScaleFromDefaultClock(decodeUs));
+		return hleDelayResult(hleLogDebug(Log::ME, 0, "codec %s sampleRate: %d bytesPerFrame: %d channels: %d", GetCodecName(codec), sampleRate, bytesPerFrame, channels), "audiocodec decode", decodeUs);
 	}
 	return hleLogDebug(Log::ME, 0, "codec %s sampleRate: %d bytesPerFrame: %d channels: %d", GetCodecName(codec), sampleRate, bytesPerFrame, channels);
 }
@@ -630,20 +658,29 @@ void Register_sceAudiocodec() {
 void __sceAudiocodecDoState(PointerWrap &p){
 	auto s = p.Section("AudioList", 0, 2);
 	if (!s) {
-		oldStateLoaded = true;
+		if (p.mode == PointerWrap::MODE_READ) {
+			clearDecoders();
+			oldStateLoaded = true;
+		}
 		return;
+	}
+	if (p.mode == PointerWrap::MODE_READ) {
+		oldStateLoaded = false;
 	}
 
 	int count = (int)g_audioDecoderContexts.size();
 	Do(p, count);
 
+	if (p.mode == PointerWrap::MODE_READ) {
+		clearDecoders();
+	}
+
 	if (count > 0) {
 		if (p.mode == PointerWrap::MODE_READ) {
-			clearDecoders();
-
 			// loadstate if audioList is nonempty
-			auto codec_ = new int[count];
-			auto ctxPtr_ = new u32[count];
+			// v1 read a fixed two, whatever the count.
+			auto codec_ = new int[std::max(count, 2)];
+			auto ctxPtr_ = new u32[std::max(count, 2)];
 			// These sizeof(pointers) are wrong, but kept to avoid breaking on old saves.
 			// They're not used in new savestates.
 #ifdef __clang__
@@ -657,9 +694,11 @@ void __sceAudiocodecDoState(PointerWrap &p){
 			DoArray(p, codec_, s >= 2 ? count : (int)ARRAY_SIZE(codec_));
 			DoArray(p, ctxPtr_, s >= 2 ? count : (int)ARRAY_SIZE(ctxPtr_));
 			for (int i = 0; i < count; i++) {
-				auto decoder = CreateAudioDecoder((PSPAudioType)codec_[i]);
-				decoder->SetCtxPtr(ctxPtr_[i]);
-				g_audioDecoderContexts[ctxPtr_[i]] = decoder;
+				if (!Memory::IsValidRange(ctxPtr_[i], sizeof(SceAudiocodecCodec))) {
+					ERROR_LOG(Log::ME, "Savestate has an audiocodec context at an invalid address %08x", ctxPtr_[i]);
+					continue;
+				}
+				CreateDecoderForContext(ctxPtr_[i], (PSPAudioType)codec_[i]);
 			}
 #ifdef __clang__
 #pragma clang diagnostic pop

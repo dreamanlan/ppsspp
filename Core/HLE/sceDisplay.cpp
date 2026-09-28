@@ -261,9 +261,11 @@ void __DisplayDoState(PointerWrap &p) {
 		Do(p, lagSyncEvent);
 		Do(p, lagSyncScheduled);
 		CoreTiming::RestoreRegisterEvent(lagSyncEvent, "LagSync", &hleLagSync);
-		lastLagSync = time_now_d();
-		if (lagSyncScheduled != UseLagSync()) {
-			ScheduleLagSync();
+		if (p.mode == p.MODE_READ) {
+			lastLagSync = time_now_d();
+			if (lagSyncScheduled != UseLagSync()) {
+				ScheduleLagSync();
+			}
 		}
 	} else {
 		lagSyncEvent = -1;
@@ -296,6 +298,10 @@ void __DisplayDoState(PointerWrap &p) {
 	} else {
 		Do(p, lastFlipCycles);
 		Do(p, nextFlipCycles);
+	}
+	if (p.mode == p.MODE_READ) {
+		// Not saved. Start counting again rather than carry over the session before the load.
+		lastFlipsTooFrequent = 0;
 	}
 
 	gpu->DoState(p);

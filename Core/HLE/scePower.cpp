@@ -68,6 +68,10 @@ static int RealbusFreq = 111000000;
 static int pllFreq = 222000000;
 static int busFreq = 111000000;
 
+int PowerScaleFromDefaultClock(int us) {
+	return (int)((s64)us * 222000000 / (pllFreq > 0 ? pllFreq : 222000000));
+}
+
 int GetLockedCPUSpeedMhz() {
 	return PSP_CoreParameter().compat.flags().RequireDefaultCPUClock ? 0 : g_Config.iLockedCPUSpeed;
 }
@@ -157,13 +161,15 @@ void __PowerDoState(PointerWrap &p) {
 		RealpllFreq = PowerPllMhzToHz(222);
 		RealbusFreq = PowerBusMhzToHz(111);
 	}
-	if (GetLockedCPUSpeedMhz() > 0) {
-		pllFreq = PowerPllMhzToHz(GetLockedCPUSpeedMhz());
-		busFreq = PowerBusMhzToHz(pllFreq / 2000000);
-		CoreTiming::SetClockFrequencyHz(PowerCpuMhzToHz(GetLockedCPUSpeedMhz(), pllFreq));
-	} else {
-		pllFreq = RealpllFreq;
-		busFreq = RealbusFreq;
+	if (p.mode == p.MODE_READ) {
+		if (GetLockedCPUSpeedMhz() > 0) {
+			pllFreq = PowerPllMhzToHz(GetLockedCPUSpeedMhz());
+			busFreq = PowerBusMhzToHz(pllFreq / 2000000);
+			CoreTiming::SetClockFrequencyHz(PowerCpuMhzToHz(GetLockedCPUSpeedMhz(), pllFreq));
+		} else {
+			pllFreq = RealpllFreq;
+			busFreq = RealbusFreq;
+		}
 	}
 	DoArray(p, powerCbSlots, ARRAY_SIZE(powerCbSlots));
 	Do(p, volatileMemLocked);

@@ -230,7 +230,9 @@ void MpegContext::DoState(PointerWrap &p) {
 		}
 	}
 	DoClass(p, mediaengine);
-	ringbufferNeedsReverse = s < 2;
+	if (p.mode == p.MODE_READ) {
+		ringbufferNeedsReverse = s < 2;
+	}
 }
 
 static MpegContext *getMpegCtx(u32 mpegAddr) {
@@ -362,6 +364,10 @@ void __MpegInit() {
 	isMpegInit = false;
 	mpegLibVersion = 0x010A;
 	streamIdGen = 1;
+	useRingbufferPutCallbackMulti = true;
+	sceMpegAvcResourceAddr = 0;
+	sceMpegAvcResourceDataAddr = 0;
+	sceMpegAvcResourceFlags = 0;
 	actionPostPut = __KernelRegisterActionType(PostPutAction::Create);
 
 #ifdef USE_FFMPEG
@@ -375,7 +381,7 @@ void __MpegInit() {
 }
 
 void __MpegDoState(PointerWrap &p) {
-	auto s = p.Section("sceMpeg", 1, 4);
+	auto s = p.Section("sceMpeg", 1, 5);
 	if (!s)
 		return;
 
@@ -392,6 +398,7 @@ void __MpegDoState(PointerWrap &p) {
 			useRingbufferPutCallbackMulti = false;
 			ringbufferPutPacketsAdded = 0;
 		} else {
+			useRingbufferPutCallbackMulti = true;
 			Do(p, ringbufferPutPacketsAdded);
 		}
 		if (s < 4) {
@@ -409,6 +416,18 @@ void __MpegDoState(PointerWrap &p) {
 	__KernelRestoreActionType(actionPostPut, PostPutAction::Create);
 
 	Do(p, g_mpegCtxs);
+
+	if (s >= 5) {
+		Do(p, sceMpegAvcResourceFlags);
+	} else {
+		sceMpegAvcResourceFlags = 0;
+	}
+	if (p.mode == p.MODE_READ) {
+		// Constant for now, see sceMpegAvcResourceInit.
+		const bool inited = (sceMpegAvcResourceFlags & MPEG_AVC_RESOURCE_FLAG) != 0;
+		sceMpegAvcResourceAddr = inited ? 0x10000000 : 0;
+		sceMpegAvcResourceDataAddr = inited ? sceMpegAvcResourceAddr + 8 : 0;
+	}
 }
 
 void __MpegShutdown() {
@@ -1049,10 +1068,7 @@ void __VideoPmpInit() {
 
 void __VideoPmpShutdown() {
 #ifdef USE_FFMPEG
-	// We need to empty pmp_queue to not leak memory.
-	for (auto it = pmp_queue.begin(); it != pmp_queue.end(); ++it){
-		av_free(*it);
-	}
+	// The queued frames are the media engine's own m_pFrameRGB, which it frees.
 	pmp_queue.clear();
 	pmp_ContextList.clear();
 	delete pmpframes;

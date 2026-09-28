@@ -255,6 +255,10 @@ void __AtracDoState(PointerWrap &p) {
 		u32 count = (u32)g_pendingOutput.size();
 		Do(p, count);
 		if (p.mode == PointerWrap::MODE_READ) {
+			if (!p.CheckRead((size_t)count * sizeof(u32) * 2)) {
+				g_pendingOutput.clear();
+				return;
+			}
 			g_pendingOutput.resize(count);
 		}
 		for (AtracPendingOutput &pending : g_pendingOutput) {
@@ -266,6 +270,8 @@ void __AtracDoState(PointerWrap &p) {
 		Do(p, g_atracOutputEvent);
 	} else if (p.mode == PointerWrap::MODE_READ) {
 		g_pendingOutput.clear();
+		// The state doesn't have it, so the id it got at boot may belong to another event in there.
+		g_atracOutputEvent = -1;
 	}
 	CoreTiming::RestoreRegisterEvent(g_atracOutputEvent, "AtracOutput", AtracOutputEvent);
 }
