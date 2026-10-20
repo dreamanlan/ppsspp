@@ -19,8 +19,8 @@ if [ -n "$(git status --porcelain)" ]; then
 	[ "$ans" = "y" ] || [ "$ans" = "Y" ] || exit 1
 fi
 
-# 保留当前状态到备份分支，便于回退: git reset --hard backup/<branch>-local
-git branch -f "$BACKUP_BRANCH" HEAD
+# 保留目标分支当前状态到备份分支，便于回退: git reset --hard backup/<branch>-local
+git branch -f "$BACKUP_BRANCH" "$BRANCH"
 
 git checkout "$BRANCH"
 git reset --hard "$UPSTREAM_REMOTE/$BRANCH"
@@ -31,3 +31,4 @@ git submodule update --init --recursive --force
 git push --force-with-lease "$ORIGIN_REMOTE" "$BRANCH"
 
 echo "同步完成: $(git rev-parse --short HEAD) $(git log -1 --format=%s)"
+echo "提示: 把上游更新合进开发分支 -> git checkout dev && git merge master"
