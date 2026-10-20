@@ -61,6 +61,7 @@ using namespace std::placeholders;
 #include "Core/Reporting.h"
 #include "Core/Util/PathUtil.h"
 #include "Core/System.h"
+#include "GPU/Common/FramebufferManagerCommon.h"
 #include "GPU/Common/PresentationCommon.h"
 #include "GPU/GPUState.h"
 #include "GPU/GPUCommon.h"
@@ -298,6 +299,9 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
 		coreParam.gpuCore = GPUCORE_VULKAN;
 		break;
 #endif
+	case GPUBackend::METAL:
+		coreParam.gpuCore = GPUCORE_METAL;
+		break;
 	}
 
 	// Preserve the existing graphics context.
@@ -441,13 +445,8 @@ EmuScreen::~EmuScreen() {
 	g_Config.TimeTracker().Stop(gameID);
 
 	if (bootPending_) {
-		// We probably quit during boot, got blocked in lostdevice, and then didn't end up in update again to call PSP_InitUpdate.
-		// So we need to finish and join the boot thread before we can exit.
-		_dbg_assert_(PollBootState() != BootState::Booting);
-		// Make sure we join the boot thread, by calling PSP_InitUpdate.
-		std::string error_string = "(unknown error)";
-		PSP_InitUpdate(&error_string);
-		ERROR_LOG(Log::G3D, "Quit during boot, not good. %s", error_string.c_str());
+		// We quit during boot (maybe from the background). PSP_Shutdown below waits for the loader thread.
+		ERROR_LOG(Log::G3D, "Quit during boot");
 		bootPending_ = false;
 	}
 
@@ -504,7 +503,7 @@ void EmuScreen::dialogFinished(const Screen *dialog, DialogResult result) {
 	// DR_CANCEL/DR_BACK means clicked on "continue", DR_OK means clicked on "back to menu",
 	// DR_YES means a message sent to PauseMenu by System_PostUIMessage.
 	if ((result == DR_OK || quit_) && !bootPending_) {
-		screenManager()->switchScreen(new MainScreen());
+		leaveGame();
 		quit_ = false;
 	} else {
 		RecreateViews();
@@ -551,7 +550,7 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 			INFO_LOG(Log::Loader, "REQUEST_GAME_STOP: running exit callback before shutdown.");
 		} else {
 			// No callback (or already in flight, or core not running) - the destructor will take care of shutting down.
-			screenManager()->switchScreen(new MainScreen());
+			leaveGame();
 		}
 	} else if (message == UIMessage::REQUEST_GAME_RESET) {
 		if (bootPending_) {
@@ -1297,6 +1296,11 @@ void EmuScreen::CreateViews() {
 	Spinner *loadingSpinner = root_->Add(new Spinner(symbols, ARRAY_SIZE(symbols), new AnchorLayoutParams(NONE, NONE, 70, 70, Centering::Both)));
 	loadingSpinner_ = loadingSpinner;
 
+	// The same spinner in the same place, without the background.
+	saveStateSpinner_ = root_->Add(new Spinner(symbols, ARRAY_SIZE(symbols), new AnchorLayoutParams(NONE, NONE, 70, 70, Centering::Both)));
+	saveStateSpinner_->SetColor(alphaMul(0xFFFFFFFF, 0.7f));
+	saveStateSpinner_->SetVisibility(V_GONE);
+
 	loadingBG->SetTag("LoadingBG");
 	loadingSpinner->SetTag("LoadingSpinner");
 
@@ -1327,13 +1331,7 @@ void EmuScreen::CreateViews() {
 }
 
 void EmuScreen::deviceLost() {
-	// If we are currently in the middle of boot, we have to block here!
-	// Otherwise the boot thread will encounter draw_ == nullptr and weird stuff like that.
-	// We're doing this in a very ugly way for now.
-	while (PollBootState() == BootState::Booting) {
-		sleep_ms(100, "device-lost-during-boot");
-	}
-
+	// A boot in progress only creates the GPU from PSP_InitUpdate, which doesn't run while the device is lost.
 	UIScreen::deviceLost();
 }
 
@@ -1354,8 +1352,12 @@ void EmuScreen::OpenChat(bool focus) {
 	}
 	if (chatMenu_ != nullptr) {
 		chatMenu_->SetVisibility(UI::V_VISIBLE);
+		// Not here: this can run from the control mapper's own key handler, under its lock.
+		releaseMapperInput_ = true;
 
 		if (focus) {
+			// Drop keys and stick directions held in-game, or they'd start moving the focus.
+			UI::EnableFocusMovement(false);
 			UI::EnableFocusMovement(true);
 			root_->SetDefaultFocusView(chatMenu_);
 
@@ -1380,6 +1382,23 @@ void EmuScreen::update() {
 
 	// This is where views are recreated.
 	UIScreen::update();
+
+	if (releaseMapperInput_) {
+		// Otherwise a stick let go inside the chat would stay pushed for the game.
+		g_controlMapper.ReleaseAll();
+		releaseMapperInput_ = false;
+	}
+
+	// Only once a savestate operation has taken a while, or it'd flash up on every quick save.
+	if (SaveState::IsBusy()) {
+		if (saveStateBusySince_ < 0.0) {
+			saveStateBusySince_ = time_now_d();
+		}
+	} else {
+		saveStateBusySince_ = -1.0;
+	}
+	const bool showSaveStateSpinner = saveStateBusySince_ >= 0.0 && time_now_d() - saveStateBusySince_ > 0.25 && loadingSpinner_->GetVisibility() != V_VISIBLE;
+	saveStateSpinner_->SetVisibility(showSaveStateSpinner ? V_VISIBLE : V_GONE);
 
 	resumeButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR && Memory::MemFault_MayBeResumable() ? V_VISIBLE : V_GONE);
 	resetButton_->SetVisibility(coreState == CoreState::CORE_RUNTIME_ERROR ? V_VISIBLE : V_GONE);
@@ -1480,10 +1499,19 @@ bool EmuScreen::checkPowerDown() {
 	// Also for REQUEST_STOP.
 	if (coreState == CORE_POWERDOWN && PSP_GetBootState() == BootState::Complete && !bootPending_) {
 		INFO_LOG(Log::System, "SELF-POWERDOWN!");
-		screenManager()->switchScreen(new MainScreen());
+		leaveGame();
 		return true;
 	}
 	return false;
+}
+
+void EmuScreen::leaveGame() {
+	// Switch screens even when exiting, so the game gets shut down the usual way.
+	screenManager()->switchScreen(new MainScreen());
+	if (g_Config.bPauseMenuExitsEmulator) {
+		INFO_LOG(Log::System, "Game ended, exiting (--pause-menu-exit)");
+		System_ExitApp();
+	}
 }
 
 ScreenRenderRole EmuScreen::renderRole(bool isTop) const {
@@ -1558,9 +1586,23 @@ bool EmuScreen::ShouldRunEmulation(ScreenRenderMode mode) const {
 	return true;
 }
 
+// The GPU only applies a changed Skip Buffer Effects setting in BeginHostFrame, so while emulation is
+// paused it can still be in non-buffered mode. Then it draws directly to the backbuffer, which isn't
+// bound yet in PreRender.
+static bool GPUIsBuffered() {
+	FramebufferManagerCommon *framebufferManager = gpu->GetFramebufferManagerCommon();
+	return !framebufferManager || framebufferManager->UseBufferedRendering();
+}
+
 ScreenRenderFlags EmuScreen::PreRender(ScreenRenderMode mode) {
 	// If a boot is in progress, update it.
 	ProcessGameBoot(gamePath_);
+
+	if (PSP_IsInited() && !ShouldRunEmulation(mode) && !Achievements::IsBlockingExecution()) {
+		// Paused under a screen on top, like the pause menu. A state loaded from there should be in
+		// place before the game resumes, not a few frames into it, so savestate operations still run.
+		SaveState::Process(false);
+	}
 
 	using namespace Draw;
 	skipBufferEffects_ = g_Config.bSkipBufferEffects;
@@ -1568,7 +1610,7 @@ ScreenRenderFlags EmuScreen::PreRender(ScreenRenderMode mode) {
 		if (ShouldRunEmulation(mode)) {
 			// We need to run emulation here, and perform all the normal render passes.
 			return RunEmulation(false);
-		} else if (gpu) {
+		} else if (gpu && GPUIsBuffered()) {
 			// Need to check for gpu here, we might be in reset.
 			const DeviceOrientation orientation = GetDeviceOrientation();
 			const DisplayLayoutConfig &displayLayoutConfig = g_Config.GetDisplayLayoutConfig(orientation);
@@ -1717,6 +1759,10 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
 		if (Achievements::HardcoreModeActive()) {
 			PSP_CoreParameter().freezeNext = false;
 			PSP_CoreParameter().frozen = false;
+		} else if (coreState == CORE_STEPPING_GE || coreState == CORE_RUNNING_GE) {
+			// A display list stopped in the GE debugger still belongs to the sceGe call that started
+			// it. Loading over that, or saving it mid-list, leaves them out of step. SaveState::Process()
+			// waits this out too.
 		} else if (PSP_CoreParameter().freezeNext) {
 			PSP_CoreParameter().frozen = true;
 			PSP_CoreParameter().freezeNext = false;
@@ -1724,7 +1770,7 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
 		} else if (PSP_CoreParameter().frozen) {
 			std::string errorString;
 			if (CChunkFileReader::ERROR_NONE != SaveState::LoadFromRam(freezeState_, &errorString)) {
-				ERROR_LOG(Log::SaveState, "Failed to load freeze state (%s). Unfreezing.", errorString.c_str());
+				ERROR_LOG(Log::SaveState, "Failed to load freeze state (failure at %s). Unfreezing.", errorString.c_str());
 				PSP_CoreParameter().frozen = false;
 			}
 		}
@@ -1809,7 +1855,7 @@ ScreenRenderFlags EmuScreen::RunEmulation(bool skipBufferEffects) {
 
 bool EmuScreen::hasVisibleUI() {
 	// Regular but uncommon UI.
-	if (saveStatePreview_->GetVisibility() != UI::V_GONE || loadingSpinner_->GetVisibility() == UI::V_VISIBLE)
+	if (saveStatePreview_->GetVisibility() != UI::V_GONE || loadingSpinner_->GetVisibility() == UI::V_VISIBLE || saveStateSpinner_->GetVisibility() == UI::V_VISIBLE)
 		return true;
 	if (!g_OSD.IsEmpty() || g_Config.bShowTouchControls || g_Config.iShowStatusFlags != 0)
 		return true;

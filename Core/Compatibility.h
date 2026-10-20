@@ -60,6 +60,7 @@ struct CompatFlags {
 	bool RequireDefaultCPUClock;
 	bool MGS2AcidHack;
 	bool SonicRivalsHack;
+	bool TiledDepalHack;
 	bool BlockTransferAllowCreateFB;
 	bool IntraVRAMBlockTransferAllowCreateFB;
 	bool YugiohSaveFix;
@@ -67,15 +68,12 @@ struct CompatFlags {
 	bool ForceMax60FPS;
 	bool GoWFramerateHack60;
 	bool FramerateHack30;
-	bool JitInvalidationHack;
 	bool HideISOFiles;
-	bool MoreAccurateVMMUL;
 	bool ForceSoftwareRenderer;
 	bool DarkStalkersPresentHack;
 	bool ReportSmallMemstick;
 	bool MemstickFixedFree;
 	bool DateLimited;
-	bool ShaderColorBitmask;
 	bool DisableFirstFrameReadback;
 	bool MpegAvcWarmUp;
 	bool BlueToAlpha;
@@ -98,7 +96,6 @@ struct CompatFlags {
 	bool BlockTransferDepth;
 	bool DaxterRotatedAnalogStick;
 	bool ForceMaxDepthResolution;
-	bool SOCOMClut8Replacement;
 	bool LoadCLUTFromCurrentFrameOnly;
 	bool ForceUMDReadSpeed;
 	bool KernelGetSystemTimeLowEatMoreCycles;
@@ -122,6 +119,11 @@ struct CompatFlags {
 	float SpriteBorderFix;
 	bool TextureCLUTInShader;
 	bool DisableRangeCulling;
+	bool BlockTransferReadbackSmall;
+	bool DepthCLUTIntoHalves;
+	bool AccurateSplines;
+	bool ReadbackShadow;
+	bool ColorPickingDrawSyncReadback;
 };
 
 struct VRCompat {
@@ -148,6 +150,8 @@ public:
 	const VRCompat &vrCompat() const { return vrCompat_; }
 
 	void Load(const std::string &gameID);
+	// No flags at all.
+	void Clear();
 
 	const std::string &GetActiveFlagsString() const {
 		return activeList_;
@@ -156,7 +160,6 @@ public:
 
 
 private:
-	void Clear();
 	void CheckSettings(IniFile &iniFile, const std::string &gameID);
 	void CheckVRSettings(IniFile &iniFile, const std::string &gameID);
 	void CheckSetting(IniFile &iniFile, const std::string &gameID, const char *option, bool *flag);

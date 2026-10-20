@@ -23,7 +23,6 @@
 #include "Core/MemMapHelpers.h"
 #include "Core/HLE/sceAtrac.h"
 #include "Core/HLE/scePower.h"
-#include "Core/Config.h"
 #include "Core/Reporting.h"
 #include "Core/Util/AudioFormat.h"
 #include "Core/System.h"
@@ -173,6 +172,13 @@ void VagDecoder::DoState(PointerWrap &p) {
 		}
 	}
 	Do(p, curSample);
+	// States from before 2018 saved idle voices uninitialized, so this can be garbage. The voice
+	// is ended instead, as GetSamples would index samples with it.
+	const bool badSample = curSample < 0 || curSample > (int)ARRAY_SIZE(samples);
+	if (badSample) {
+		WARN_LOG(Log::SaveState, "Bad VAG sample position %d, ending the voice", curSample);
+		curSample = (int)ARRAY_SIZE(samples);
+	}
 
 	Do(p, data_);
 	Do(p, read_);
@@ -186,6 +192,17 @@ void VagDecoder::DoState(PointerWrap &p) {
 	Do(p, loopEnabled_);
 	Do(p, loopAtNextBlock_);
 	Do(p, end_);
+	// GetSamples checks the read position against the blocks once, but loops back by block number
+	// without checking again.
+	const bool badBlocks = numBlocks_ < 0 || curBlock_ > numBlocks_ || loopStartBlock_ >= numBlocks_ ||
+		!Memory::IsValidRange(data_, (u32)numBlocks_ * 16);
+	if (p.mode == p.MODE_READ && badBlocks && !end_) {
+		WARN_LOG(Log::SaveState, "Bad VAG blocks (%d of %d, loop %d), ending the voice", curBlock_, numBlocks_, loopStartBlock_);
+		end_ = true;
+	}
+	if (badSample) {
+		end_ = true;
+	}
 }
 
 // The context pointer is assumed to be valid.
@@ -787,6 +804,11 @@ void SasInstance::DoState(PointerWrap &p) {
 	}
 
 	Do(p, maxVoices);
+	if (maxVoices <= 0 || maxVoices > PSP_SAS_VOICES_MAX) {
+		ERROR_LOG(Log::SaveState, "Bad SAS voice count %d", maxVoices);
+		p.SetError(p.ERROR_FAILURE);
+		return;
+	}
 	Do(p, sampleRate);
 	Do(p, outputMode);
 
@@ -876,6 +898,14 @@ void SasVoice::DoState(PointerWrap &p) {
 
 	Do(p, sampleFrac);
 	Do(p, pitch);
+	// Mixing leaves less than a sample in sampleFrac, and indexes its temp buffer by it and pitch.
+	// ReadSamples() needs the PCM positions inside the buffer.
+	if (sampleFrac >= PSP_SAS_PITCH_BASE || pitch < PSP_SAS_PITCH_MIN || pitch > PSP_SAS_PITCH_MAX ||
+		(type == VOICETYPE_PCM && (pcmSize <= 0 || pcmIndex < 0 || pcmIndex > pcmSize || pcmLoopPos < 0 || pcmLoopPos >= pcmSize))) {
+		ERROR_LOG(Log::SaveState, "Bad SAS voice state");
+		p.SetError(p.ERROR_FAILURE);
+		return;
+	}
 	Do(p, loop);
 	if (s < 2 && type == VOICETYPE_PCM) {
 		// We set loop incorrectly before, and always looped.

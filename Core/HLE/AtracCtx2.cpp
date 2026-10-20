@@ -360,6 +360,13 @@ void Atrac2::DoState(PointerWrap &p) {
 		Do(p, sas_.fileOffset);
 	}
 
+	// Both straight from the file: one is dereferenced, the other indexes the two SAS buffers.
+	if (p.mode == p.MODE_READ && (!context_.IsValid() || sas_.curBuffer < 0 || sas_.curBuffer > 1)) {
+		ERROR_LOG(Log::SaveState, "Atrac2: bad context %08x or SAS buffer %d in savestate", context_.ptr, sas_.curBuffer);
+		p.SetError(p.ERROR_FAILURE);
+		return;
+	}
+
 	const SceAtracIdInfo &info = context_->info;
 	if (p.mode == p.MODE_READ && info.state != ATRAC_STATUS_NO_DATA) {
 		CreateDecoder(info.codec, info.sampleSize, info.numChan);

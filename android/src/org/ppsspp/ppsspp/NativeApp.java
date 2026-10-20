@@ -1,7 +1,5 @@
 package org.ppsspp.ppsspp;
 
-// Note that the display* methods are in NativeRenderer.java
-
 import android.os.Build;
 import android.util.Log;
 import android.view.InputDevice;
@@ -29,7 +27,7 @@ public class NativeApp {
 	public static final int RESULT_ERROR_ACTIVITY_NOT_FOUND = 1;
 	public static final int RESULT_ERROR_OTHER_ACTIVITY_ERROR = 2;
 
-	public static native void init(String model, int deviceType, String languageRegion, String apkPath, String dataDir, String externalStorageDir, String extFilesDir, String nativeLibDir, String additionalStorageDirs, String cacheDir, String shortcutParam, String installerName, int androidVersion, String board, int smallestScreenWidthDp);
+	public static native void init(String model, int deviceType, String languageRegion, String apkPath, String dataDir, String externalStorageDir, String extFilesDir, String nativeLibDir, String additionalStorageDirs, String cacheDir, String shortcutParam, String installerName, int androidVersion, String board);
 	public static native void audioInit();
 	public static native void audioShutdown();
 	public static native void audioConfig(int optimalFramesPerBuffer, int optimalSampleRate);
@@ -43,9 +41,10 @@ public class NativeApp {
 	public static native int getDesiredBackbufferHeight();
 
 	public static native void setDisplayParameters(int display_xres, int display_yres, int dpi, float refreshRate);
-	public static native void backbufferResize(int bufferWidth, int bufferHeight, int format);
+	// rotation is the Surface.ROTATION_* of the display. A change in it alone (a 180 degree flip) keeps the size
+	// but the swapchain still has to be recreated, for the pre-rotation.
+	public static native void backbufferResize(int bufferWidth, int bufferHeight, int rotation);
 
-	public static native boolean isLandscape();
 	public static native boolean isAtTopLevel();
 
 	// These have Android semantics: Resume is always called on bootup, after init
@@ -109,7 +108,7 @@ public class NativeApp {
 		if ((ev.getSource() & InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE) {
 			float dx = ev.getAxisValue(MotionEvent.AXIS_RELATIVE_X);
 			float dy = ev.getAxisValue(MotionEvent.AXIS_RELATIVE_Y);
-			Log.i(TAG, "Mouse delta: " + dx + " " + dy);
+			// Log.i(TAG, "Mouse delta: " + dx + " " + dy);
 			NativeApp.mouseDelta(dx, dy);
 		}
 	}
@@ -119,7 +118,7 @@ public class NativeApp {
 	}
 
 	private static void onMouseEventMotion(final MotionEvent ev) {
-		Log.i(TAG, "motion mouse event");
+		// Log.i(TAG, "motion mouse event");
 		switch (ev.getActionMasked()) {
 			case MotionEvent.ACTION_DOWN: {
 				if (PpssppActivity.useModernMouseEvents) {
@@ -179,11 +178,11 @@ public class NativeApp {
 						code = 4;
 					break;
 				case MotionEvent.ACTION_CANCEL:
+					// The whole gesture is over (the system took it, for example), so every pointer in the
+					// event is, not just the one at the action index. Otherwise the rest stay held down
+					// on the native side. Handle like ACTION_UP for now.
 					Log.i(TAG, "ACTION_CANCEL");
-					if (ev.getActionIndex() == i) {
-						// Handle like ACTION_UP for now.
-						code = 4;
-					}
+					code = 4;
 					break;
 				case MotionEvent.ACTION_MOVE: {
 					code = 1;

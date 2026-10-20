@@ -49,6 +49,9 @@
 #include "Common/StringUtils.h"
 #include "Common/Thread/ThreadManager.h"
 #include "Common/GPU/Vulkan/VulkanGraphicsContext.h"
+#if PPSSPP_API(METAL)
+#include "Common/GPU/Metal/MetalGraphicsContext.h"
+#endif
 #include "Core/CmdLine.h"
 #include "Common/Net/HTTPRequest.h"
 #include "Core/Config.h"
@@ -339,7 +342,7 @@ struct AutoTestOptions {
 // swaps with interval 0). D3D11 presents to a hidden window, which could.
 static void EndDrawFrame(Draw::DrawContext *draw) {
 	draw->EndFrame();
-	if (GetGPUBackend() == GPUBackend::VULKAN || GetGPUBackend() == GPUBackend::OPENGL) {
+	if (GetGPUBackend() == GPUBackend::VULKAN || GetGPUBackend() == GPUBackend::OPENGL || GetGPUBackend() == GPUBackend::METAL) {
 		draw->Present(Draw::PresentMode::FIFO);
 	}
 }
@@ -444,7 +447,9 @@ static bool RunAutoTest(GraphicsContext *graphicsContext, CoreParameter &corePar
 		const double emulatedNow = CoreTiming::GetGlobalTimeUs() / 1000000.0;
 		const double emulatedStep = emulatedNow - lastEmulatedTime;
 		lastEmulatedTime = emulatedNow;
-		if (emulatedStep > 0.0 && emulatedStep < emulatedStepLimit) {
+		// With --state, count from when the state lands. Until then the game boots, for however long
+		// reading and decompressing the state takes on the host, which made runs end on different frames.
+		if (emulatedStep > 0.0 && emulatedStep < emulatedStepLimit && !g_stateLoadPending) {
 			emulatedElapsed += emulatedStep;
 		}
 
@@ -716,11 +721,9 @@ int main(int argc, const char* argv[]) {
 		return 0;
 	}
 
-	// Needed before any sockets can be used (WSAStartup on Windows) - without this, the
-	// WebSocket debugger silently fails to listen. Only done when requested since headless
-	// otherwise has no use for networking.
-	if (cmdLineOptions.DebuggerPort().has_value())
-		net::Init();
+	// Needed before any sockets can be used (WSAStartup on Windows), by the WebSocket debugger
+	// and by tests and games that use sceNetInet.
+	net::Init();
 
 	AutoTestOptions testOptions{};
 	testOptions.compare = cmdLineOptions.compare.value_or(false);
@@ -795,6 +798,8 @@ int main(int argc, const char* argv[]) {
 			fprintf(stderr, "Unknown PSP model '%s' - expected 01g..12g or any\n", cmdLineOptions.unpackUpdaterModel.value().c_str());
 			return 1;
 		}
+		// A directory that isn't there yet will be empty, so the unpack can skip checking for each file.
+		unpackOptions.outputDirIsEmpty = !File::Exists(Path(cmdLineOptions.unpackUpdater.value()));
 		PSARUnpackStats stats;
 		std::string unpackError;
 		const bool ok = UnpackUpdater(Path(cmdLineOptions.bootFilenames[0]), Path(cmdLineOptions.unpackUpdater.value()), unpackOptions, &stats, &unpackError);
@@ -947,6 +952,9 @@ int main(int argc, const char* argv[]) {
 		case GPUBackend::VULKAN:
 			gpuCore = GPUCORE_VULKAN;
 			break;
+		case GPUBackend::METAL:
+			gpuCore = GPUCORE_METAL;
+			break;
 		}
 	}
 
@@ -970,6 +978,12 @@ int main(int argc, const char* argv[]) {
 			vulkanContext->SetOffscreen(480, 272);
 			graphicsContext = vulkanContext;
 			deviceSetting = &g_Config.sVulkanDevice;
+#if PPSSPP_API(METAL)
+		} else if (gpuCore == GPUCORE_METAL) {
+			MetalGraphicsContext *metalContext = new MetalGraphicsContext();
+			metalContext->SetOffscreen(480, 272);
+			graphicsContext = metalContext;
+#endif
 #if PPSSPP_PLATFORM(MAC) && defined(SDL)
 		} else if (gpuCore == GPUCORE_GLES) {
 			// So does OpenGL, into a framebuffer object of its own.
@@ -1017,16 +1031,17 @@ int main(int argc, const char* argv[]) {
 	Path exePath = File::GetExeDirectory();
 
 	// --memstick, applied by ApplyToConfig() further up, wins. This runs after it, so without the
-	// check the default below would silently overwrite whatever was asked for.
+	// check the default below would silently overwrite whatever was asked for. Otherwise it's the app's
+	// default, except on Windows (next to the exe, like a portable install) and iOS. The test runners
+	// pass their own.
 	if (!cmdLineOptions.memStick.has_value()) {
-		// TODO: Share this derivation with the main build.
 #if PPSSPP_PLATFORM(WINDOWS)
 		// Mount a filesystem
 		g_Config.memStickDirectory = exePath / "memstick";
 		File::CreateDir(g_Config.memStickDirectory, true);
 		CreateSysDirectories();
 #elif !PPSSPP_PLATFORM(ANDROID)
-		g_Config.memStickDirectory = Path(std::string(getenv("HOME"))) / ".ppsspp";
+		g_Config.memStickDirectory = GetDefaultDesktopMemStickDirectory();
 #endif
 	}
 	g_Config.nandRootDirectory = GetSysDirectory(DIRECTORY_NAND);
@@ -1175,10 +1190,14 @@ int main(int argc, const char* argv[]) {
 
 	if (stateToLoad) {
 		// Queued now, actually applied by SaveState::Process() once the game is up and running.
-		SaveState::Load(Path(stateToLoad), -1, [](SaveState::Status status, std::string_view message, std::string_view) {
+		SaveState::Load(Path(stateToLoad), -1, [](SaveState::Status status, std::string_view message, std::string_view metadata) {
 			// The message already reads as a full sentence, e.g. "Failed to load state: <reason>".
-			fprintf(stderr, "%.*s\n", (int)message.size(), message.data());
+			fprintf(stderr, "%.*s\n", STR_VIEW(message));
 			if (status == SaveState::Status::FAILURE) {
+				// Which version saved the state.
+				if (!metadata.empty()) {
+					fprintf(stderr, "%.*s\n", STR_VIEW(metadata));
+				}
 				g_stateLoadFailed = true;
 			}
 		});
@@ -1227,9 +1246,7 @@ int main(int argc, const char* argv[]) {
 
 	g_VFS.Clear();
 	g_logManager.Shutdown();
-	if (cmdLineOptions.DebuggerPort().has_value()) {
-		net::Shutdown();
-	}
+	net::Shutdown();
 	TimeShutdown();
 
 	g_threadManager.Teardown();

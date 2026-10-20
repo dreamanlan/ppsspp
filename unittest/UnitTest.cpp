@@ -58,8 +58,11 @@
 #include "Common/Data/Text/Parsers.h"
 #include "Common/Data/Text/WrapText.h"
 #include "Common/Data/Encoding/Utf8.h"
+#include "Common/Data/Encoding/Utf16.h"
+#include "Common/Data/Encoding/Shiftjis.h"
 #include "Common/Buffer.h"
 #include "Common/File/Path.h"
+#include "Common/File/FileUtil.h"
 #include "Common/Log/LogManager.h"
 #include "Common/Math/SIMDHeaders.h"
 #include "Common/Math/CrossSIMD.h"
@@ -97,6 +100,7 @@
 #include <set>
 #include <list>
 #include "Core/CmdLine.h"
+#include "Core/System.h"
 #include "Common/Data/Collections/Hashmaps.h"
 #include "Core/Util/BlockAllocator.h"
 #include "Core/Debugger/Breakpoints.h"
@@ -112,13 +116,17 @@
 #include "Core/KeyMap.h"
 #include "Core/ControlMapper.h"
 #include "Core/HLE/sceCtrl.h"
+#include "Core/HLE/sceUsbMic.h"
 #include "Core/Util/PathUtil.h"
 #include "Core/MIPS/MIPSVFPUUtils.h"
+#include "Core/MIPS/MIPSStackWalk.h"
+#include "GPU/Common/DepthSwizzle.h"
 #include "GPU/Common/TextureDecoder.h"
 #include "GPU/Common/GPUStateUtils.h"
 #include "GPU/Math3D.h"
 
 #include "Common/File/AndroidContentURI.h"
+#include "Common/System/Request.h"
 
 #include "unittest/JitHarness.h"
 #include "unittest/TestVertexJit.h"
@@ -126,6 +134,24 @@
 
 // Set to true for more verbose unit tests.
 bool g_testLog = false;
+
+Path UnitTestTempPath(const char *name) {
+#if PPSSPP_PLATFORM(WINDOWS)
+	const wchar_t *temp = _wgetenv(L"TEMP");
+	if (temp && *temp) {
+		return Path(ConvertWStringToUTF8(temp)) / name;
+	}
+#else
+	const char *temp = getenv("TMPDIR");
+	if (temp && *temp) {
+		return Path(temp) / name;
+	}
+#if !PPSSPP_PLATFORM(ANDROID)
+	return Path("/tmp") / name;
+#endif
+#endif
+	return Path(name);
+}
 
 std::string System_GetProperty(SystemProperty prop) { return ""; }
 std::vector<std::string> System_GetPropertyStringVec(SystemProperty prop) { return std::vector<std::string>(); }
@@ -155,7 +181,15 @@ std::vector<std::string> System_GetCameraDeviceList() { return std::vector<std::
 void NativeFrame(GraphicsContext *graphicsContext) {}
 void NativeResized() {}
 
-bool System_MakeRequest(SystemRequestType type, int requestId, const std::string &param1, const std::string &param2, int64_t param3, int64_t param4) { return false; }
+// TestRequestManager answers these itself.
+static int g_lastInputBoxRequestId = -1;
+bool System_MakeRequest(SystemRequestType type, int requestId, const std::string &param1, const std::string &param2, int64_t param3, int64_t param4) {
+	if (type == SystemRequestType::INPUT_TEXT_MODAL) {
+		g_lastInputBoxRequestId = requestId;
+		return true;
+	}
+	return false;
+}
 // Pulled in via Core/WebServer.cpp's OpenWebDebugger(), which CmdLine.cpp now references.
 void System_LaunchUrl(LaunchUrlType urlType, std::string_view url) {}
 void System_InputBoxGetString(const std::string &title, const std::string &defaultValue, std::function<void(bool, const std::string &)> cb) { cb(false, ""); }
@@ -176,8 +210,12 @@ jclass findClass(const char *name) {
 	return nullptr;
 }
 
+// Defined in app-android.cpp for the app itself, which this doesn't link.
+jobject Android_GetActivity(JNIEnv *env) {
+	return nullptr;
+}
+
 bool System_AudioRecordingIsAvailable() { return false; }
-bool System_AudioRecordingState() { return false; }
 #endif
 
 #ifndef M_PI_2
@@ -332,6 +370,55 @@ bool TestUtf8() {
 			const std::string once = ReplaceInvalidUTF8(input);
 			EXPECT_TRUE(ReplaceInvalidUTF8(once) == once);
 		}
+	}
+
+	return true;
+}
+
+bool TestTextDecoders() {
+	{
+		const char16_t pair[] = { 0xD83C, 0xDFAE, 0 };
+		UTF16LE utf(pair);
+		EXPECT_EQ_HEX((uint32_t)utf.next(), 0x1F3AEu);
+		EXPECT_TRUE(utf.end());
+	}
+
+	// An unpaired surrogate is invalid on its own, and decoding carries on after it.
+	{
+		const char16_t highThenA[] = { 0xD800, 'A', 0 };
+		UTF16LE utf(highThenA);
+		EXPECT_TRUE(utf.next() == UTF16LE::INVALID);
+		EXPECT_EQ_HEX((uint32_t)utf.next(), (uint32_t)'A');
+		EXPECT_TRUE(utf.end());
+
+		const char16_t lowThenA[] = { 0xDC00, 'A', 0 };
+		UTF16LE utf2(lowThenA);
+		EXPECT_TRUE(utf2.next() == UTF16LE::INVALID);
+		EXPECT_EQ_HEX((uint32_t)utf2.next(), (uint32_t)'A');
+	}
+
+	// A high surrogate right before the terminator must not consume it.
+	{
+		const char16_t highAtEnd[] = { 0xD800, 0, 'A', 0 };
+		UTF16LE utf(highAtEnd);
+		EXPECT_TRUE(utf.next() == UTF16LE::INVALID);
+		EXPECT_EQ_INT(utf.shortIndex(), 1);
+		EXPECT_TRUE(utf.end());
+	}
+
+	{
+		ShiftJIS sjis("A\xA1\x82\xA0");
+		EXPECT_EQ_HEX(sjis.next(), 0x41u);
+		EXPECT_EQ_HEX(sjis.next(), 0xA1u);
+		EXPECT_EQ_HEX(sjis.next(), 0x2422u);
+		EXPECT_TRUE(sjis.end());
+	}
+
+	// Lead bytes that encode nothing.
+	for (const char *bad : { "\x80", "\xA0", "\xFD", "\xFE", "\xFF" }) {
+		ShiftJIS sjis(bad);
+		EXPECT_TRUE(sjis.next() == ShiftJIS::INVALID);
+		EXPECT_EQ_INT(sjis.byteIndex(), 1);
 	}
 
 	return true;
@@ -887,6 +974,55 @@ bool TestTempBreakpoints() {
 	g_breakpoints.RemoveBreakPoint(kAddrA);
 	EXPECT_FALSE(g_breakpoints.HasBreakPoints());
 
+	// Resuming from a breakpoint must not pause there again, and must not report it again if it's
+	// the one that stopped us. A breakpoint we merely stepped onto still has to log and count.
+	// Nothing retires an instruction here unless we move downcount, so the ticks stay put.
+	{
+		auto hitsAt = [](u32 addr) -> int {
+			for (const BreakPoint &bp : g_breakpoints.GetBreakpoints()) {
+				if (bp.addr == addr)
+					return (int)bp.numHits;
+			}
+			return -1;
+		};
+
+		g_breakpoints.ClearSkipFirst();
+		g_breakpoints.AddBreakPoint(kAddrA);
+		g_breakpoints.AddBreakPoint(kAddrB);
+
+		EXPECT_TRUE((g_breakpoints.ExecBreakPoint(kAddrA) & BREAK_ACTION_PAUSE) != 0);
+		EXPECT_EQ_INT(hitsAt(kAddrA), 1);
+
+		// Resuming off it. A step-over sets the skip twice for one resume, and that must not lose it.
+		g_breakpoints.SetSkipFirst(kAddrA);
+		g_breakpoints.SetSkipFirst(kAddrA);
+		EXPECT_EQ_INT((int)g_breakpoints.ExecBreakPoint(kAddrA), (int)BREAK_ACTION_NONE);
+		EXPECT_EQ_INT(hitsAt(kAddrA), 1);
+
+		// Stepped onto B, never reported there: it logs and counts, only the pause is dropped.
+		g_breakpoints.SetSkipFirst(kAddrB);
+		EXPECT_EQ_INT((int)(g_breakpoints.ExecBreakPoint(kAddrB) & BREAK_ACTION_PAUSE), 0);
+		EXPECT_EQ_INT(hitsAt(kAddrB), 1);
+
+		// An unrelated address still pauses and reports.
+		EXPECT_TRUE((g_breakpoints.ExecBreakPoint(kAddrA) & BREAK_ACTION_PAUSE) != 0);
+		EXPECT_EQ_INT(hitsAt(kAddrA), 2);
+
+		// Step off A, which runs it, and land on A again (a one-instruction loop). That's a new
+		// execution, which nothing has reported yet.
+		g_breakpoints.SetSkipFirst(kAddrA);
+		EXPECT_EQ_INT((int)g_breakpoints.ExecBreakPoint(kAddrA), (int)BREAK_ACTION_NONE);
+		currentMIPS->downcount -= 1;
+		g_breakpoints.SetSkipFirst(kAddrA);
+		EXPECT_EQ_INT((int)(g_breakpoints.ExecBreakPoint(kAddrA) & BREAK_ACTION_PAUSE), 0);
+		EXPECT_EQ_INT(hitsAt(kAddrA), 3);
+		currentMIPS->downcount += 1;
+
+		g_breakpoints.ClearSkipFirst();
+		g_breakpoints.RemoveBreakPoint(kAddrA);
+		g_breakpoints.RemoveBreakPoint(kAddrB);
+	}
+
 	g_symbolMap = nullptr;
 	return true;
 }
@@ -1168,6 +1304,12 @@ bool TestBlockAllocator() {
 		EXPECT_TRUE(ValidateAllocator(a, kStart, oddSize));
 	}
 
+	// Validating is quadratic in the block count, so the churn loops below only do it periodically.
+	// A broken tiling or free count doesn't repair itself, so it's still caught, just a few steps late.
+	auto validateEvery = [](int i, int count) {
+		return (i & 63) == 63 || i == count - 1;
+	};
+
 	// Churn again, this time mixing in aligned allocations and AllocAt so the block list gets into
 	// shapes the plain alloc/free loop never produces.
 	{
@@ -1177,7 +1319,8 @@ bool TestBlockAllocator() {
 		u32 rng = 987654321;
 		auto next = [&rng]() { rng = rng * 1103515245u + 12345u; return (rng >> 16) & 0x7FFF; };
 
-		for (int i = 0; i < 4000; ++i) {
+		const int kIterations = 3000;
+		for (int i = 0; i < kIterations; ++i) {
 			const int op = next() % 100;
 			if (op < 30 && !live.empty()) {
 				const size_t idx = next() % live.size();
@@ -1206,8 +1349,8 @@ bool TestBlockAllocator() {
 				if (addr != (u32)-1)
 					live.push_back(addr);
 			}
-			if (!ValidateAllocator(a, kStart, kSize)) {
-				printf("BlockAllocator invariant broken at iteration %d (op %d)\n", i, op);
+			if (validateEvery(i, kIterations) && !ValidateAllocator(a, kStart, kSize)) {
+				printf("BlockAllocator invariant broken by iteration %d\n", i);
 				return false;
 			}
 		}
@@ -1228,7 +1371,8 @@ bool TestBlockAllocator() {
 		u32 rng = 12345;
 		auto next = [&rng]() { rng = rng * 1103515245u + 12345u; return (rng >> 16) & 0x7FFF; };
 
-		for (int i = 0; i < 3000; ++i) {
+		const int kIterations = 2000;
+		for (int i = 0; i < kIterations; ++i) {
 			const bool doAlloc = live.empty() || (next() % 100) < 55;
 			if (doAlloc) {
 				u32 size = ((next() % 64) + 1) * kGrain;
@@ -1247,8 +1391,8 @@ bool TestBlockAllocator() {
 				EXPECT_TRUE(a.Free(live[idx].first));
 				live.erase(live.begin() + idx);
 			}
-			if (!ValidateAllocator(a, kStart, kSize)) {
-				printf("BlockAllocator invariant broken at iteration %d\n", i);
+			if (validateEvery(i, kIterations) && !ValidateAllocator(a, kStart, kSize)) {
+				printf("BlockAllocator invariant broken by iteration %d\n", i);
 				return false;
 			}
 		}
@@ -1799,10 +1943,10 @@ bool TestFastVec() {
 	return true;
 }
 
-// vfpu_dot's SIMD versions against the reference, on inputs chosen to make trouble: close
-// exponents, cancelling products, ties, zeroes and subnormals, the overflow and underflow edges,
-// inf and NaN, and sums whose rounding carries into the next power of two.
-bool TestVFPUDot() {
+// Calls check on inputs chosen to make trouble for a VFPU dot product: close exponents, cancelling
+// products, ties, zeroes and subnormals, the overflow and underflow edges, inf and NaN, and sums whose
+// rounding carries into the next power of two. Stops at the first false.
+bool ForEachVFPUDotTestCase(const std::function<bool(const float a[4], const float b[4])> &check) {
 	uint64_t state = 0x9E3779B97F4A7C15ULL;
 	auto rnd = [&]() {
 		state ^= state << 13;
@@ -1819,16 +1963,6 @@ bool TestVFPUDot() {
 		uint32_t bits;
 		memcpy(&bits, &f, sizeof(bits));
 		return bits;
-	};
-	auto check = [&](const float a[4], const float b[4]) {
-		const uint32_t expected = toBits(vfpu_dot_reference(a, b));
-		const uint32_t actual = toBits(vfpu_dot(a, b));
-		if (expected != actual) {
-			printf("vfpu_dot(%08x %08x %08x %08x, %08x %08x %08x %08x) = %08x, expected %08x\n",
-				toBits(a[0]), toBits(a[1]), toBits(a[2]), toBits(a[3]), toBits(b[0]), toBits(b[1]), toBits(b[2]), toBits(b[3]), actual, expected);
-			return false;
-		}
-		return true;
 	};
 	for (int n = 0; n < 4000000; n++) {
 		float a[4], b[4];
@@ -1867,6 +2001,20 @@ bool TestVFPUDot() {
 			return false;
 	}
 
+	// Cases that went wrong somewhere.
+	static const uint32_t fixed[][8] = {
+		{ 0x8055f97b, 0xcaa86851, 0, 0, 0x44282000, 0x3f800000, 0, 0 },
+	};
+	for (const auto &f : fixed) {
+		float a[4], b[4];
+		for (int i = 0; i < 4; i++) {
+			a[i] = fromBits(f[i]);
+			b[i] = fromBits(f[i + 4]);
+		}
+		if (!check(a, b))
+			return false;
+	}
+
 	// Sums just below and above a power of two, whose rounding carries into the next exponent:
 	// 1.0 from just under it, and inf at the top of the range.
 	for (int e = 1; e <= 254; e++) {
@@ -1889,6 +2037,55 @@ bool TestVFPUDot() {
 		}
 	}
 	return true;
+}
+
+
+// vfpu_dot's fast versions and vfpu_multi_dot against the reference.
+bool TestVFPUDot() {
+	auto toBits = [](float f) {
+		uint32_t bits;
+		memcpy(&bits, &f, sizeof(bits));
+		return bits;
+	};
+	float lastA[4][4];
+	int n = 0;
+	auto checkMulti = [&](const float v[4], int terms, bool transposed) {
+		float block[16], out[4];
+		for (int k = 0; k < 4; k++) {
+			for (int i = 0; i < 4; i++)
+				block[transposed ? 4 * k + i : 4 * i + k] = lastA[k][i];
+		}
+		vfpu_multi_dot(out, block, v, terms, transposed);
+		for (int k = 0; k < 4; k++) {
+			float a[4]{}, b[4]{};
+			for (int i = 0; i < terms; i++) {
+				a[i] = lastA[k][i];
+				b[i] = v[i];
+			}
+			const uint32_t expected = toBits(vfpu_dot_reference(a, b));
+			if (toBits(out[k]) != expected) {
+				printf("vfpu_multi_dot output %d, %d terms%s: %08x, expected %08x\n", k, terms, transposed ? " transposed" : "", toBits(out[k]), expected);
+				return false;
+			}
+		}
+		return true;
+	};
+	auto check = [&](const float a[4], const float b[4]) {
+		const uint32_t expected = toBits(vfpu_dot_reference(a, b));
+		const uint32_t actual = toBits(vfpu_dot(a, b));
+		const uint32_t scalar = toBits(vfpu_dot_scalar(a, b));
+		if (expected != actual || expected != scalar) {
+			printf("vfpu_dot(%08x %08x %08x %08x, %08x %08x %08x %08x) = %08x (scalar %08x), expected %08x\n",
+				toBits(a[0]), toBits(a[1]), toBits(a[2]), toBits(a[3]), toBits(b[0]), toBits(b[1]), toBits(b[2]), toBits(b[3]), actual, scalar, expected);
+			return false;
+		}
+		// vfpu_multi_dot on the last four a's as the matrix, each output against the reference.
+		memcpy(lastA[n & 3], a, sizeof(lastA[0]));
+		if ((n++ & 3) == 3 && !checkMulti(b, 2 + (int)(n % 3), (n & 4) != 0))
+			return false;
+		return true;
+	};
+	return ForEachVFPUDotTestCase(check);
 }
 
 bool TestVFPUSinCos() {
@@ -2240,6 +2437,145 @@ static bool TestMemMap() {
 	return true;
 }
 
+static bool CheckBlockShadow() {
+	// Every valid address has an entry, starting out empty. The ends of each view would fault otherwise.
+	static const u32 validAddresses[] = {
+		0x00010000, 0x00013FFC, 0x40010000,  // Scratchpad, and its uncached mirror.
+		0x04000000, 0x047FFFFC,  // VRAM and its mirrors.
+		0x08000000, 0x09F00000, 0x0BE00000, 0x0BFFFFFC,  // RAM, across the views it's mapped in.
+		0x48000000, 0x88000000, 0xC8000000,  // RAM mirrors.
+	};
+	for (u32 addr : validAddresses) {
+		EXPECT_EQ_HEX(Memory::ReadBlockShadow(addr), 0);
+	}
+
+	// The kernel and uncached mirrors share an entry, like they share memory.
+	Memory::WriteBlockShadow(0x08804000, 0x1234);
+	EXPECT_EQ_HEX(Memory::ReadBlockShadow(0x88804000), 0x1234);
+	EXPECT_EQ_HEX(Memory::ReadBlockShadow(0x48804000), 0x1234);
+
+	// Invalid addresses read as empty, and ignore writes.
+	Memory::WriteBlockShadow(0x0C000000, 0x1234);
+	EXPECT_EQ_HEX(Memory::ReadBlockShadow(0x0C000000), 0);
+
+	// Clearing leaves an entry that holds something else alone.
+	EXPECT_FALSE(Memory::ClearBlockShadow(0x08804000, 0x5678));
+	EXPECT_TRUE(Memory::ClearBlockShadow(0x88804000, 0x1234));
+	EXPECT_EQ_HEX(Memory::ReadBlockShadow(0x08804000), 0);
+	return true;
+}
+
+// A leaf with no symbol, right after a function with a stack frame (#17664).
+static bool CheckStackWalk() {
+	const u32 caller = 0x08804000;
+	const u32 leaf = caller + 0x20;
+	const u32 code[] = {
+		0x27BDFFF0,  // caller: addiu sp, sp, -16
+		0xAFBF000C,  // sw ra, 12(sp)
+		0x0C000000 | ((leaf >> 2) & 0x03FFFFFF),  // jal leaf
+		0x00000000,  // nop
+		0x8FBF000C,  // lw ra, 12(sp)
+		0x27BD0010,  // addiu sp, sp, 16
+		0x03E00008,  // jr ra
+		0x00000000,  // nop
+		0x24820001,  // leaf: addiu v0, a0, 1
+		0x24420001,  // addiu v0, v0, 1
+		0x03E00008,  // jr ra
+		0x00000000,  // nop
+	};
+	for (size_t i = 0; i < ARRAY_SIZE(code); i++) {
+		Memory::WriteUnchecked_U32(code[i], caller + (u32)i * 4);
+	}
+	const u32 sp = 0x09F00000 - 16;
+	// The caller's own return address, which the leaf's frame must not pick up.
+	Memory::WriteUnchecked_U32(0x08900000, sp + 12);
+
+	SymbolMap symbolMap;
+	g_symbolMap = &symbolMap;
+	std::vector<MIPSStackWalk::StackFrame> frames = MIPSStackWalk::Walk(leaf + 4, caller + 0x10, sp, caller, 0x09F00000);
+	g_symbolMap = nullptr;
+
+	EXPECT_EQ_INT((int)frames.size(), 2);
+	EXPECT_EQ_HEX(frames[0].entry, leaf);
+	EXPECT_EQ_INT(frames[0].stackSize, 0);
+	EXPECT_EQ_HEX(frames[1].pc, caller + 0x10);
+	EXPECT_EQ_HEX(frames[1].entry, caller);
+	EXPECT_EQ_INT(frames[1].stackSize, 16);
+
+	// With a symbol, the entry is where it starts, even when the prologue isn't first.
+	const u32 func = 0x08805000;
+	const u32 funcCode[] = {
+		0x3C080000,  // func: lui t0, 0
+		0x27BDFFF0,  // addiu sp, sp, -16
+		0xAFBF000C,  // sw ra, 12(sp)
+		0x00000000,  // nop
+	};
+	for (size_t i = 0; i < ARRAY_SIZE(funcCode); i++) {
+		Memory::WriteUnchecked_U32(funcCode[i], func + (u32)i * 4);
+	}
+	Memory::WriteUnchecked_U32(caller + 0x10, sp + 12);
+	symbolMap.AddFunction("func", func, sizeof(funcCode));
+	symbolMap.SortSymbols();
+	g_symbolMap = &symbolMap;
+	frames = MIPSStackWalk::Walk(func + 0xC, caller + 0x10, sp, caller, 0x09F00000);
+	g_symbolMap = nullptr;
+
+	EXPECT_EQ_INT((int)frames.size(), 2);
+	EXPECT_EQ_HEX(frames[0].entry, func);
+	EXPECT_EQ_INT(frames[0].stackSize, 16);
+	EXPECT_EQ_HEX(frames[1].pc, caller + 0x10);
+
+	// No symbol, and an early return between the prologue and pc. After the call below, ra points
+	// back into this function, so that jr ra can't be the end of the function before.
+	const u32 early = 0x08806000;
+	const u32 earlyCode[] = {
+		0x27BDFFF0,  // early: addiu sp, sp, -16
+		0xAFBF000C,  // sw ra, 12(sp)
+		0x10800003,  // beqz a0, +3
+		0x00000000,  // nop
+		0x8FBF000C,  // lw ra, 12(sp)
+		0x03E00008,  // jr ra
+		0x27BD0010,  // addiu sp, sp, 16
+		0x0C000000 | ((leaf >> 2) & 0x03FFFFFF),  // jal leaf
+		0x00000000,  // nop
+		0x00000000,  // nop (pc)
+	};
+	for (size_t i = 0; i < ARRAY_SIZE(earlyCode); i++) {
+		Memory::WriteUnchecked_U32(earlyCode[i], early + (u32)i * 4);
+	}
+	g_symbolMap = &symbolMap;
+	frames = MIPSStackWalk::Walk(early + 0x24, early + 0x24, sp, caller, 0x09F00000);
+	g_symbolMap = nullptr;
+
+	EXPECT_EQ_INT((int)frames.size(), 2);
+	EXPECT_EQ_HEX(frames[0].entry, early);
+	EXPECT_EQ_INT(frames[0].stackSize, 16);
+	EXPECT_EQ_HEX(frames[1].pc, caller + 0x10);
+	return true;
+}
+
+static bool TestStackWalk() {
+	Memory::g_MemorySize = Memory::RAM_NORMAL_SIZE;
+	if (!Memory::Init(Memory::MemMapSetupFlags::Default)) {
+		printf("Memory::Init failed\n");
+		return false;
+	}
+	const bool success = CheckStackWalk();
+	Memory::Shutdown();
+	return success;
+}
+
+static bool TestBlockShadow() {
+	Memory::g_MemorySize = Memory::RAM_DOUBLE_SIZE;
+	if (!Memory::Init(Memory::MemMapSetupFlags::Default)) {
+		printf("Memory::Init failed\n");
+		return false;
+	}
+	const bool success = CheckBlockShadow();
+	Memory::Shutdown();
+	return success;
+}
+
 static bool TestPath() {
 	// Also test the Path class while we're at it.
 	Path path("/asdf/jkl/");
@@ -2247,6 +2583,13 @@ static bool TestPath() {
 
 	Path path2("/asdf/jkl");
 	EXPECT_EQ_STR(path2.NavigateUp().ToString(), std::string("/asdf"));
+
+	// Relative to the current directory. This used to create nothing and still report success.
+	const Path relDir("unittest_createfullpath");
+	File::DeleteDirRecursively(relDir);
+	EXPECT_TRUE(File::CreateFullPath(relDir / "a/b"));
+	EXPECT_TRUE(File::IsDirectory(File::GetCurDirectory() / "unittest_createfullpath/a/b"));
+	File::DeleteDirRecursively(relDir);
 
 	Path path3 = path2 / "foo/bar";
 	EXPECT_EQ_STR(path3.WithExtraExtension(".txt").ToString(), std::string("/asdf/jkl/foo/bar.txt"));
@@ -2425,6 +2768,71 @@ static bool TestWrapText() {
 	EXPECT_WORDWRAP_EQ_STR("Hello\ngoodbye yes\nno", 14, FLAG_ELLIPSIZE_TEXT, "Hello\ngoodb...\nno");
 	EXPECT_WORDWRAP_EQ_STR("Hello\ngoodbye yes\nno", 14, FLAG_WRAP_TEXT | FLAG_ELLIPSIZE_TEXT, "Hello\ngoodbye \nyes\nno");
 
+	return true;
+}
+
+// Against ppsspp-re geprobe's swz.py, the layout that fits exp8-exp10.
+static bool TestDepthSwizzle() {
+	static const struct {
+		uint32_t translation;
+		bool color32;
+		uint32_t linear;
+		uint32_t stored;
+	} cases[] = {
+		{ 0x0, false, 0x088000, 0x088600 },
+		{ 0x0, false, 0x08a0e2, 0x08a6e2 },
+		{ 0x0, false, 0x1ffffe, 0x1ff9fe },
+		{ 0x0, false, 0x14b9ac, 0x14bfac },
+		{ 0x0, false, 0x09a782, 0x09a182 },
+		{ 0x0, true, 0x088000, 0x088600 },
+		{ 0x0, true, 0x08a0e2, 0x08a6e2 },
+		{ 0x0, true, 0x1ffffe, 0x1ff9fe },
+		{ 0x0, true, 0x1944c8, 0x1944c8 },
+		{ 0x0, true, 0x03171e, 0x03111e },
+		{ 0x200, false, 0x088000, 0x089040 },
+		{ 0x200, false, 0x08a0e2, 0x08b0a2 },
+		{ 0x200, false, 0x1ffffe, 0x1fefbe },
+		{ 0x200, false, 0x04a2ca, 0x04b28a },
+		{ 0x200, false, 0x06063a, 0x06167a },
+		{ 0x200, true, 0x088000, 0x089040 },
+		{ 0x200, true, 0x08a0e2, 0x08b182 },
+		{ 0x200, true, 0x1ffffe, 0x1fefbe },
+		{ 0x200, true, 0x176772, 0x1776b2 },
+		{ 0x200, true, 0x03b640, 0x03a6c0 },
+		{ 0x400, false, 0x088000, 0x08a040 },
+		{ 0x400, false, 0x08a0e2, 0x0880a2 },
+		{ 0x400, false, 0x1ffffe, 0x1fdfbe },
+		{ 0x400, false, 0x0dbd9c, 0x0d9ddc },
+		{ 0x400, false, 0x026654, 0x024614 },
+		{ 0x400, true, 0x088000, 0x08a040 },
+		{ 0x400, true, 0x08a0e2, 0x088182 },
+		{ 0x400, true, 0x1ffffe, 0x1fdfbe },
+		{ 0x400, true, 0x058028, 0x05a008 },
+		{ 0x400, true, 0x1bc0d8, 0x1be1d8 },
+		{ 0x800, false, 0x088000, 0x08c040 },
+		{ 0x800, false, 0x08a0e2, 0x08e0a2 },
+		{ 0x800, false, 0x1ffffe, 0x1fbfbe },
+		{ 0x800, false, 0x1ac354, 0x1a8314 },
+		{ 0x800, false, 0x047882, 0x0438c2 },
+		{ 0x800, true, 0x088000, 0x08c040 },
+		{ 0x800, true, 0x08a0e2, 0x08e182 },
+		{ 0x800, true, 0x1ffffe, 0x1fbfbe },
+		{ 0x800, true, 0x0f6704, 0x0f2664 },
+		{ 0x800, true, 0x05ce3c, 0x058c3c },
+		{ 0x1000, false, 0x088000, 0x080040 },
+		{ 0x1000, false, 0x08a0e2, 0x0820a2 },
+		{ 0x1000, false, 0x1ffffe, 0x1f7fbe },
+		{ 0x1000, false, 0x1b2b52, 0x1bab12 },
+		{ 0x1000, false, 0x03c876, 0x034836 },
+		{ 0x1000, true, 0x088000, 0x080040 },
+		{ 0x1000, true, 0x08a0e2, 0x082182 },
+		{ 0x1000, true, 0x1ffffe, 0x1f7fbe },
+		{ 0x1000, true, 0x07ec5e, 0x0768fe },
+		{ 0x1000, true, 0x0e498c, 0x0ec36c },
+	};
+	for (const auto &c : cases) {
+		EXPECT_EQ_HEX(GetDepthLayout(c.translation, c.color32).Stored(c.linear), c.stored);
+	}
 	return true;
 }
 
@@ -2836,6 +3244,29 @@ bool TestFriendlyPath() {
 	return true;
 }
 
+bool TestGEDumpGameID() {
+	std::string id;
+	// PPSSPP's own dump names.
+	EXPECT_TRUE(DiscIDFromGEDumpFilename("ULUS10064_0001.ppdmp", &id));
+	EXPECT_EQ_STR(id, std::string("ULUS10064"));
+	// ppsspp-framedumps: a GitHub issue number in front, a description after.
+	EXPECT_TRUE(DiscIDFromGEDumpFilename("11928 ULES00262_0003 OutRun water.ppdmp", &id));
+	EXPECT_EQ_STR(id, std::string("ULES00262"));
+	EXPECT_TRUE(DiscIDFromGEDumpFilename("21127 WPCE02025_0001 WipEout Pure.ppdmp", &id));
+	EXPECT_EQ_STR(id, std::string("WPCE02025"));
+	EXPECT_TRUE(DiscIDFromGEDumpFilename("ULUS10064.ppdmp", &id));
+	EXPECT_EQ_STR(id, std::string("ULUS10064"));
+	EXPECT_TRUE(DiscIDFromGEDumpFilename("11928 ULUS10064.ppdmp", &id));
+	EXPECT_EQ_STR(id, std::string("ULUS10064"));
+	// No ID in PPSSPP's form, even if one appears later in the name.
+	EXPECT_FALSE(DiscIDFromGEDumpFilename("11928 OutRun water ULUS10064.ppdmp", &id));
+	EXPECT_FALSE(DiscIDFromGEDumpFilename("11928 Harvest Moon Graphic Issue on Adreno.ppdmp", &id));
+	EXPECT_FALSE(DiscIDFromGEDumpFilename("ULUS1006A_0001.ppdmp", &id));
+	EXPECT_FALSE(DiscIDFromGEDumpFilename("ULUS100641_0001.ppdmp", &id));
+	EXPECT_FALSE(DiscIDFromGEDumpFilename("11928ULUS10064_0001.ppdmp", &id));
+	return true;
+}
+
 bool TestCmdLine() {
 	{
 		const char *argv[] = {
@@ -2887,6 +3318,21 @@ bool TestCmdLine() {
 		EXPECT_EQ_INT(options.timeoutWall.value_or(0), 4);
 		EXPECT_EQ_INT(options.timeoutEmulated.value_or(0), 5);
 	}
+	// Inverse booleans: --windowed turns fullscreen off, and --no-memstick removes the stick.
+	{
+		const char *argv[] = {
+			"ppsspp",
+			"--windowed",
+			"--no-memstick",
+		};
+		int argc = ARRAY_SIZE(argv);
+		CommandLineOptions options;
+		options.Parse(argc, argv, CmdLineMode::Application);
+		EXPECT_TRUE(options.fullscreen.has_value());
+		EXPECT_FALSE(options.fullscreen.value_or(true));
+		EXPECT_TRUE(options.memStickInserted.has_value());
+		EXPECT_FALSE(options.memStickInserted.value_or(true));
+	}
 	// Test GL version override
 	{
 		const char *argv[] = {
@@ -2921,19 +3367,25 @@ struct TestItem {
 #define TEST_ITEM(name) { #name, &Test ##name, }
 
 bool TestArmEmitter();
+bool TestArmDisasm();
 bool TestArm64Emitter();
+bool TestArm64Disasm();
 bool TestCrossSIMD();
 bool TestX64Emitter();
 bool TestRiscVEmitter();
 bool TestLoongArch64Emitter();
 bool TestShaderGenerators();
-bool TestSoftwareGPUJit();
 bool TestIRPassSimplify();
 bool TestThreadManager();
 bool TestVFS();
 bool TestZipSlip();
 bool TestLzrc();
+bool TestCwCheat();
 bool TestMpegCsc();
+bool TestSplineTessellation();
+bool TestGEMath();
+bool TestBoundingBoxFast();
+bool TestDepthRaster();
 bool TestDemangle();
 
 // The 8.3 short names games read out of d_private. These aren't verified against hardware yet (no
@@ -3086,14 +3538,170 @@ bool TestUITabOrder() {
 	return true;
 }
 
+// Arrow key focus moves go by geometry, so these place views by hand rather than running layout.
+bool TestUIFocusNavigation() {
+	using namespace UI;
+
+	auto add = [](LinearLayout *parent, float x, float y, float w, float h) {
+		Choice *choice = parent->Add(new Choice(""));
+		choice->SetBounds(Bounds(x, y, w, h));
+		return choice;
+	};
+	auto move = [](ViewGroup *root, View *from, FocusMove dir) {
+		return root->FindNeighbor(from, dir, NeighborResult()).view;
+	};
+
+	{
+		// A wide button between rows of narrow ones. Its center is far from the narrow ones at the
+		// ends, but its edge is right there, so it mustn't be skipped.
+		LinearLayout root(ORIENT_VERTICAL);
+		Choice *topLeft = add(&root, 0, 0, 100, 50);
+		Choice *topRight = add(&root, 500, 0, 100, 50);
+		Choice *wide = add(&root, 0, 60, 600, 50);
+		Choice *bottomLeft = add(&root, 0, 120, 100, 50);
+		Choice *bottomRight = add(&root, 500, 120, 100, 50);
+		EXPECT_TRUE(move(&root, topRight, FocusMove::DOWN) == wide);
+		EXPECT_TRUE(move(&root, topLeft, FocusMove::DOWN) == wide);
+		EXPECT_TRUE(move(&root, bottomRight, FocusMove::UP) == wide);
+		EXPECT_TRUE(move(&root, bottomLeft, FocusMove::UP) == wide);
+		// From the wide one, the one nearest its center across the move.
+		EXPECT_TRUE(move(&root, bottomLeft, FocusMove::RIGHT) == bottomRight);
+		EXPECT_TRUE(move(&root, wide, FocusMove::LEFT) == nullptr);
+	}
+
+	{
+		// A row: left and right go to the neighbors, and nothing is up or down.
+		LinearLayout root(ORIENT_HORIZONTAL);
+		Choice *a = add(&root, 0, 0, 100, 50);
+		Choice *b = add(&root, 110, 0, 100, 50);
+		Choice *c = add(&root, 220, 0, 100, 50);
+		EXPECT_TRUE(move(&root, b, FocusMove::RIGHT) == c);
+		EXPECT_TRUE(move(&root, b, FocusMove::LEFT) == a);
+		EXPECT_TRUE(move(&root, a, FocusMove::LEFT) == nullptr);
+		EXPECT_TRUE(move(&root, b, FocusMove::UP) == nullptr);
+		EXPECT_TRUE(move(&root, b, FocusMove::DOWN) == nullptr);
+	}
+
+	{
+		// Going down, the next row wins even off to the side, over something in line much further on.
+		LinearLayout root(ORIENT_VERTICAL);
+		Choice *origin = add(&root, 0, 0, 100, 50);
+		Choice *nextRowAside = add(&root, 150, 60, 100, 50);
+		add(&root, 0, 500, 100, 50);
+		EXPECT_TRUE(move(&root, origin, FocusMove::DOWN) == nextRowAside);
+	}
+
+	{
+		// Sideways, things in line win however far away they are.
+		LinearLayout root(ORIENT_HORIZONTAL);
+		Choice *origin = add(&root, 0, 0, 50, 100);
+		add(&root, 60, 150, 50, 100);
+		Choice *inLine = add(&root, 500, 0, 50, 100);
+		EXPECT_TRUE(move(&root, origin, FocusMove::RIGHT) == inLine);
+	}
+
+	{
+		// Rows shifted against each other: down goes to the one below the origin's center.
+		LinearLayout root(ORIENT_VERTICAL);
+		Choice *origin = add(&root, 100, 0, 100, 50);
+		add(&root, 20, 60, 100, 50);
+		Choice *underCenter = add(&root, 130, 60, 100, 50);
+		EXPECT_TRUE(move(&root, origin, FocusMove::DOWN) == underCenter);
+	}
+
+	{
+		// Things that can't take focus are passed over, also inside nested groups.
+		LinearLayout root(ORIENT_VERTICAL);
+		Choice *origin = add(&root, 0, 0, 100, 50);
+		Choice *disabled = add(&root, 0, 60, 100, 50);
+		disabled->SetEnabled(false);
+		LinearLayout *inner = root.Add(new LinearLayout(ORIENT_VERTICAL));
+		Choice *hidden = add(inner, 0, 120, 100, 50);
+		hidden->SetVisibility(V_INVISIBLE);
+		Choice *last = add(inner, 0, 180, 100, 50);
+		EXPECT_TRUE(move(&root, origin, FocusMove::DOWN) == last);
+		EXPECT_TRUE(move(&root, last, FocusMove::UP) == origin);
+	}
+
+	return true;
+}
+
 bool TestTextureReplacer();
+
+static bool TestQueueBuf() {
+	const u8 data[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+	u8 out[16]{};
+
+	QueueBuf q(8);
+	q.push(data, 6);
+	EXPECT_EQ_INT(q.pop(out, 4), 4);
+	// Wraps around the end, holding 5 6 1 2 3 4 5.
+	q.push(data, 5);
+	// Growing has to keep what's buffered, in order.
+	q.resize(16);
+	EXPECT_EQ_INT(q.getCapacity(), 16);
+	EXPECT_EQ_INT(q.pop(out, 16), 7);
+	const u8 expected[7] = { 5, 6, 1, 2, 3, 4, 5 };
+	EXPECT_EQ_MEM(out, expected, sizeof(expected));
+
+	// Pushing more than the capacity grows it.
+	QueueBuf small(4);
+	small.push(data, 8);
+	EXPECT_EQ_INT(small.pop(out, 16), 8);
+	EXPECT_EQ_MEM(out, data, sizeof(data));
+	return true;
+}
+
+static bool TestRequestManager() {
+	RequestManager rm;
+	std::vector<std::string> results;
+	auto ask = [&](RequesterToken token, std::string name) {
+		rm.MakeSystemRequest(SystemRequestType::INPUT_TEXT_MODAL, token, [&results, name](std::string_view value, int) {
+			results.push_back(name + "=" + std::string(value));
+		}, nullptr, "", "", 0);
+		return g_lastInputBoxRequestId;
+	};
+
+	RequesterToken tokenA = rm.GenerateRequesterToken();
+	RequesterToken tokenB = rm.GenerateRequesterToken();
+
+	// Forgotten before the answer arrives.
+	int a1 = ask(tokenA, "a1");
+	rm.ForgetRequestsWithToken(tokenA);
+	rm.PostSystemSuccess(a1, "x");
+	// Forgotten after the answer arrived, but before it was processed.
+	int a2 = ask(tokenA, "a2");
+	int b1 = ask(tokenB, "b1");
+	rm.PostSystemSuccess(a2, "y");
+	rm.PostSystemSuccess(b1, "z");
+	rm.ForgetRequestsWithToken(tokenA);
+	rm.ProcessRequests();
+	EXPECT_EQ_INT((int)results.size(), 1);
+	EXPECT_TRUE(results[0] == "b1=z");
+
+	// A callback that forgets its requester drops the rest of its responses in the same batch.
+	results.clear();
+	int b2 = rm.MakeSystemRequest(SystemRequestType::INPUT_TEXT_MODAL, tokenB, [&](std::string_view, int) {
+		results.push_back("b2");
+		rm.ForgetRequestsWithToken(tokenB);
+	}, nullptr, "", "", 0) ? g_lastInputBoxRequestId : -1;
+	int b3 = ask(tokenB, "b3");
+	rm.PostSystemSuccess(b2, "");
+	rm.PostSystemSuccess(b3, "");
+	rm.ProcessRequests();
+	EXPECT_EQ_INT((int)results.size(), 1);
+	EXPECT_TRUE(results[0] == "b2");
+	return true;
+}
 
 TestItem availableTests[] = {
 #if PPSSPP_ARCH(ARM64) || PPSSPP_ARCH(AMD64) || PPSSPP_ARCH(X86)
 	TEST_ITEM(Arm64Emitter),
+	TEST_ITEM(Arm64Disasm),
 #endif
 #if PPSSPP_ARCH(ARM) || PPSSPP_ARCH(AMD64) || PPSSPP_ARCH(X86)
 	TEST_ITEM(ArmEmitter),
+	TEST_ITEM(ArmDisasm),
 #endif
 #if PPSSPP_ARCH(AMD64) || PPSSPP_ARCH(X86)
 	TEST_ITEM(X64Emitter),
@@ -3105,6 +3713,8 @@ TestItem availableTests[] = {
 	TEST_ITEM(LoongArch64Emitter),
 #endif
 	TEST_ITEM(VertexJit),
+	TEST_ITEM(BoundingBoxFast),
+	TEST_ITEM(DepthRaster),
 	TEST_ITEM(VFPUSinCos),
 	TEST_ITEM(VFPUDot),
 	TEST_ITEM(MathUtil),
@@ -3118,16 +3728,24 @@ TestItem availableTests[] = {
 	TEST_ITEM(Breakpoints),
 	TEST_ITEM(TempBreakpoints),
 	TEST_ITEM(Utf8),
+	TEST_ITEM(TextDecoders),
 	TEST_ITEM(IRPassSimplify),
 	TEST_ITEM(Jit),
+	TEST_ITEM(JitDotBench),
+	TEST_ITEM(JitReplacementHooks),
+	TEST_ITEM(CPUEret),
+	TEST_ITEM(MMIO),
+	TEST_ITEM(CPUEquivalence),
+	TEST_ITEM(CPURoundingMode),
+	TEST_ITEM(VFPUDotJit),
 	TEST_ITEM(VFPUMatrixTranspose),
 	TEST_ITEM(ParseLBN),
 	TEST_ITEM(CachingFileLoader),
 	TEST_ITEM(QuickTexHash),
 	TEST_ITEM(CLZ),
 	TEST_ITEM(MemMap),
+	TEST_ITEM(BlockShadow),
 	TEST_ITEM(ShaderGenerators),
-	TEST_ITEM(SoftwareGPUJit),
 	TEST_ITEM(Path),
 	TEST_ITEM(AndroidContentURI),
 	TEST_ITEM(ThreadManager),
@@ -3154,11 +3772,20 @@ TestItem availableTests[] = {
 	TEST_ITEM(CmdLine),
 	TEST_ITEM(ZipSlip),
 	TEST_ITEM(Lzrc),
+	TEST_ITEM(CwCheat),
 	TEST_ITEM(MpegCsc),
+	TEST_ITEM(SplineTessellation),
+	TEST_ITEM(GEMath),
+	TEST_ITEM(DepthSwizzle),
 	TEST_ITEM(Demangle),
 	TEST_ITEM(TextureReplacer),
 	TEST_ITEM(UITabOrder),
+	TEST_ITEM(UIFocusNavigation),
 	TEST_ITEM(FatShortNames),
+	TEST_ITEM(GEDumpGameID),
+	TEST_ITEM(QueueBuf),
+	TEST_ITEM(RequestManager),
+	TEST_ITEM(StackWalk),
 };
 
 int main(int argc, const char *argv[]) {

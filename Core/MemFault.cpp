@@ -125,7 +125,7 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 	g_lastCrashAddress = nullptr;
 
 	// TODO: Check that codePtr is within the current JIT space.
-	bool inJitSpace = MIPSComp::jit && MIPSComp::jit->CodeInRange(codePtr);
+	bool inJitSpace = mipsr4k.jit && mipsr4k.jit->CodeInRange(codePtr);
 	if (!inJitSpace) {
 		// This is a crash in non-jitted code. Not something we want to handle here, ignore.
 		// Actually, we could handle crashes from the IR interpreter here, although recovering the call stack
@@ -140,6 +140,14 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 #else
 	const uintptr_t addressSpaceSize = 0x100000000ULL;
 #endif
+
+	// The dispatcher looks a jump target up in the block shadow, which faults where there's no PSP memory.
+	// The JITs also do that lookup inline at a jump to a register.
+	const uintptr_t shadowAddress = (uintptr_t)blockShadow;
+	const bool shadowFault = shadowAddress && hostAddress >= shadowAddress && hostAddress <= shadowAddress + BLOCK_SHADOW_MASK;
+	if (shadowFault) {
+		baseAddress = shadowAddress;
+	}
 
 	// Check whether hostAddress is within the PSP memory space, which (likely) means it was a guest executable that did the bad access.
 	bool invalidHostAddress = hostAddress == (uintptr_t)0xFFFFFFFFFFFFFFFFULL;
@@ -202,8 +210,9 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 	success = false;
 #endif
 
-	if (MIPSComp::jit && MIPSComp::jit->IsAtDispatchFetch(codePtr)) {
-		u32 targetAddr = currentMIPS->pc;  // bad approximation
+	if (mipsr4k.jit && (shadowFault || mipsr4k.jit->IsAtDispatchFetch(codePtr))) {
+		// The shadow entry's offset is the target, masked.
+		u32 targetAddr = shadowFault ? guestAddress : currentMIPS->pc;
 		// TODO: Do the other archs and platforms.
 #if PPSSPP_ARCH(AMD64) && PPSSPP_PLATFORM(WINDOWS)
 		// We know which register the address is in, look in Asm.cpp.
@@ -211,7 +220,7 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 #endif
 		Core_ExecException(targetAddr, currentMIPS->pc, ExecExceptionType::JUMP);
 		// Redirect execution to a crash handler that will switch to CoreState::CORE_RUNTIME_ERROR immediately.
-		uintptr_t crashHandler = (uintptr_t)MIPSComp::jit->GetCrashHandler();
+		uintptr_t crashHandler = (uintptr_t)mipsr4k.jit->GetCrashHandler();
 		if (crashHandler != 0) {
 			context->CTX_PC = crashHandler;
 			ERROR_LOG(Log::MemMap, "Bad execution access detected, halting: %08x (last known pc %08x, host: %p)", targetAddr, currentMIPS->pc, (void *)hostAddress);
@@ -243,7 +252,7 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 		g_numReportedBadAccesses++;
 		if (g_numReportedBadAccesses < 100) {
 			std::string temp;
-			if (MIPSComp::jit && MIPSComp::jit->DescribeCodePtr(codePtr, temp)) {
+			if (mipsr4k.jit && mipsr4k.jit->DescribeCodePtr(codePtr, temp)) {
 				ERROR_LOG(Log::MemMap, "Bad memory access detected and ignored: %08x (%p) at %s", guestAddress, (void *)hostAddress, temp.c_str());
 			} else {
 				ERROR_LOG(Log::MemMap, "Bad memory access detected and ignored: %08x (%p)", guestAddress, (void *)hostAddress);
@@ -252,7 +261,7 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 	} else {
 		std::string infoString = "";
 		std::string temp;
-		if (MIPSComp::jit && MIPSComp::jit->DescribeCodePtr(codePtr, temp)) {
+		if (mipsr4k.jit && mipsr4k.jit->DescribeCodePtr(codePtr, temp)) {
 			infoString += temp + " ";
 		}
 		temp.clear();
@@ -265,15 +274,15 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 		uint32_t approximatePC = currentMIPS->pc;
 		// TODO: Determine access size from the disassembled native instruction. We have some partial info already,
 		// just need to clean it up.
-		Core_MemoryException(guestAddress, info.OperandSizeInBytes(), approximatePC, type, infoString);
+		Core_MemoryException(guestAddress, info.OperandSizeInBytes(), approximatePC, type, infoString, true);
 
 		// There's a small chance we can resume from this type of crash.
 		g_lastCrashAddress = codePtr;
 
 		// Redirect execution to a crash handler that will switch to CoreState::CORE_RUNTIME_ERROR immediately.
 		uintptr_t crashHandler = 0;
-		if (MIPSComp::jit)
-			crashHandler = (uintptr_t)MIPSComp::jit->GetCrashHandler();
+		if (mipsr4k.jit)
+			crashHandler = (uintptr_t)mipsr4k.jit->GetCrashHandler();
 		if (crashHandler != 0)
 			context->CTX_PC = crashHandler;
 		else

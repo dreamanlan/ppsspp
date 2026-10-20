@@ -507,6 +507,8 @@ EXEC_AND_LIB_FILES := \
   $(ARCH_FILES) \
   $(GPU_VULKAN_FILES) \
   $(SRC)/ext/xxhash.c \
+  $(SRC)/ext/libdeflate/lib/deflate_compress.c \
+  $(SRC)/ext/libdeflate/lib/utils.c \
   $(SRC)/Core/MIPS/MIPS.cpp.arm \
   $(SRC)/Core/MIPS/MIPSAnalyst.cpp \
   $(SRC)/Core/MIPS/MIPSDis.cpp \
@@ -607,6 +609,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HW/Camera.cpp \
   $(SRC)/Core/HW/Display.cpp \
   $(SRC)/Core/HW/GpioMMIO.cpp \
+  $(SRC)/Core/HW/MMIO.cpp \
   $(SRC)/Core/HW/MemoryStick.cpp \
   $(SRC)/Core/HW/MpegDemux.cpp.arm \
   $(SRC)/Core/HW/AvcDecoder.cpp.arm \
@@ -792,6 +795,7 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HLE/scePauth.cpp \
   $(SRC)/Core/FileSystems/BlobFileSystem.cpp \
   $(SRC)/Core/FileSystems/BlockDevices.cpp \
+  $(SRC)/Core/FileSystems/CSOCompress.cpp \
   $(SRC)/Core/FileSystems/ISOFileSystem.cpp \
   $(SRC)/Core/FileSystems/FileSystem.cpp \
   $(SRC)/Core/FileSystems/MetaFileSystem.cpp \
@@ -976,6 +980,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/LoadStateConfirmScreen.cpp \
   $(SRC)/UI/GameInfoCache.cpp \
   $(SRC)/UI/GameScreen.cpp \
+  $(SRC)/UI/GamePacker.cpp \
   $(SRC)/UI/UploadScreen.cpp \
   $(SRC)/UI/ControlMappingScreen.cpp \
   $(SRC)/UI/GameSettingsScreen.cpp \

@@ -28,6 +28,8 @@ enum GPUCore : int {
 	GPUCORE_SOFTWARE = 1,
 	GPUCORE_DIRECTX11 = 3,
 	GPUCORE_VULKAN = 4,
+	GPUCORE_NULL = 5,  // Draws nothing, see GPU_Null.h.
+	GPUCORE_METAL = 6,
 };
 
 enum class FPSLimit {
@@ -75,6 +77,10 @@ struct CoreParameter {
 	bool startBreak = false;
 	std::string *collectDebugOutput = nullptr;
 	bool headLess = false;   // Try to avoid messageboxes etc
+	// Headless leaves out compat settings when replaying frame dumps, unless this is set.
+	bool dumpCompat = false;
+	// Headless: GPU_USE_ feature bits to turn off, to test the fallbacks for GPUs without them.
+	u32 disabledGPUFeatures = 0;
 
 	// Internal PSP rendering resolution and scale factor.
 	int renderScaleFactor = 1;

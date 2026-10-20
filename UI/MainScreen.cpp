@@ -39,6 +39,7 @@
 #include "UI/BackgroundAudio.h"
 #include "UI/EmuScreen.h"
 #include "UI/MainScreen.h"
+#include "UI/GamePacker.h"
 #include "UI/GameScreen.h"
 #include "UI/GameInfoCache.h"
 #include "UI/GameSettingsScreen.h"
@@ -61,6 +62,12 @@
 bool MainScreen::showHomebrewTab = false;
 
 static void LaunchFile(ScreenManager *screenManager, Screen *currentScreen, const Path &path) {
+	if (GamePacker::IsPacking(path)) {
+		// Can't play it while it's read (and maybe replaced), so show its progress instead.
+		screenManager->push(new GameScreen(path, false));
+		return;
+	}
+
 	std::string extension = path.GetFileExtension();
 	if (extension == ".zip" || extension == ".7z") {
 		// If is a zip file, we have a screen for that.
@@ -141,6 +148,7 @@ static bool IsTempPath(const Path &str) {
 
 MainScreen::MainScreen() {
 	g_BackgroundAudio.SetGame(Path());
+	packGeneration_ = GamePacker::Generation();
 }
 
 MainScreen::~MainScreen() {
@@ -557,7 +565,7 @@ void MainScreen::CreateViews() {
 
 bool MainScreen::key(const KeyInput &key) {
 	if (key.flags & KeyInputFlags::DOWN) {
-		if (key.keyCode == NKCODE_F && (key.flags & KeyInputFlags::ModCtrl) && System_GetPropertyBool(SYSPROP_HAS_TEXT_INPUT_DIALOG)) {
+		if (key.keyCode == NKCODE_F && (key.flags & KEY_MOD_SHORTCUT) && System_GetPropertyBool(SYSPROP_HAS_TEXT_INPUT_DIALOG)) {
 			auto se = GetI18NCategory(I18NCat::SEARCH);
 			System_InputBoxGetString(GetRequesterToken(), se->T("Search term"), searchFilter_, false, [this](std::string_view value, int) {
 				searchFilter_ = StripSpaces(value);
@@ -624,6 +632,18 @@ void MainScreen::sendMessage(UIMessage message, const char *value) {
 void MainScreen::update() {
 	UIScreen::update();
 	UpdateUIState(UISTATE_MENU);
+
+	if (packGeneration_ != GamePacker::Generation()) {
+		// A pack finished: a new file, and maybe the original gone.
+		packGeneration_ = GamePacker::Generation();
+		const GamePacker::Result result = GamePacker::LastResult();
+		if (restoreFocusGamePath_ == result.oldPath) {
+			restoreFocusGamePath_ = result.newPath;
+		}
+		for (auto browser : gameBrowsers_) {
+			browser->RequestRefresh();
+		}
+	}
 
 	if (searchChanged_) {
 		for (auto browser : gameBrowsers_) {

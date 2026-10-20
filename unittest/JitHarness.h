@@ -18,3 +18,10 @@
 #pragma once
 
 bool TestJit();
+bool TestJitDotBench();
+bool TestJitReplacementHooks();
+bool TestCPUEret();
+bool TestMMIO();
+bool TestCPUEquivalence();
+bool TestCPURoundingMode();
+bool TestVFPUDotJit();

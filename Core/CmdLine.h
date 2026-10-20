@@ -1,6 +1,8 @@
 #pragma once
 
 #include <optional>
+#include <string>
+#include <vector>
 #include "Common/Log.h"
 #include "Core/ConfigValues.h"
 
@@ -31,6 +33,8 @@ struct CommandLineOptions {
 	std::optional<bool> fullscreen;
 	std::optional<GPUBackend> gpuBackend;
 	std::optional<bool> softwareRendering;
+	// --graphics=null: headless only, see GPU_Null.h.
+	std::optional<bool> nullGraphics;
 	std::optional<bool> enableLogging;
 	std::optional<LogLevel> logLevel;  // Override log level with this.
 	std::optional<std::string> log;
@@ -41,6 +45,9 @@ struct CommandLineOptions {
 	std::optional<std::string> startScreen;
 
 	std::optional<bool> escapeExit;
+	// Run as if no memory stick were inserted.
+	std::optional<bool> memStickInserted;
+	// Quit the app instead of going to the main menu when the game ends, for external launchers.
 	std::optional<bool> pauseMenuExit;
 
 	// Enables the WebSocket debugger on startup, on this port (0 = pick automatically).
@@ -100,6 +107,9 @@ struct CommandLineOptions {
 	// way to compare the two without editing a config, and the way out if the real one breaks a game.
 	std::optional<int> forceHLE;
 
+	// Overrides g_Config.iLockedCPUSpeed, in MHz.
+	std::optional<int> lockedCPUSpeed;
+
 	// Headless: install the game update in a .pkg (given as the boot filename) into this
 	// directory, then exit without booting anything. The directory is the game folder itself -
 	// the app puts that under PSP/GAME/<DISC_ID>, but here the caller picks. See
@@ -126,6 +136,11 @@ struct CommandLineOptions {
 	std::optional<std::string> reDecrypt;
 	// Where the plaintext goes. Defaults to "decrypted.bin".
 	std::optional<std::string> reDecryptOut;
+	// The 16-byte secure install ID (32 hex digits) a game patch installed on a PSP was decrypted
+	// with - what the game passes to sceKernelLoadModuleDNAS.
+	std::optional<std::string> reDecryptKey;
+	// The Fuse ID of the PSP a game patch was installed on, overriding the FuseID setting.
+	std::optional<std::string> fuseId;
 	// Headless: copy one file out of the disc image given as the positional argument, to
 	// --dump-file-out, and exit.
 	std::optional<std::string> dumpFile;
@@ -157,9 +172,11 @@ struct CommandLineOptions {
 	bool optionS = false;   // a legacy option
 
 	std::optional<bool> oldAtrac;
+	std::optional<std::string> jitProfile;
 
 	// Headless options that may also be mildly useful in application mode
 	std::optional<int> resolutionScale;
+	std::optional<int> msaa;
 
 
 	// Headless options
@@ -173,9 +190,24 @@ struct CommandLineOptions {
 	std::optional<double> timeoutWall;
 	std::optional<double> timeoutEmulated;
 	std::optional<bool> printEqualLines;
+	// Headless: print flips per emulated second at the end, counted from the loaded state (if any).
+	std::optional<bool> frameStats;
 
 	std::optional<std::string> screenshotFilename;
 	std::optional<std::string> screenshotFilenameSave;
+	// Headless: save each test's screenshot as DIR/<test path>.png, for many dumps in one run.
+	std::optional<std::string> screenshotDir;
+	std::optional<std::string> depthFilenameSave;
+	std::optional<std::string> dumpAudioFilename;
+	std::optional<int> replayEnd;
+	// Headless: apply the game's compatibility settings when replaying a GE frame dump.
+	std::optional<bool> dumpCompat;
+	std::optional<bool> hardwareTransform;
+	std::optional<bool> vertexJit;
+	std::optional<bool> shaderCache;
+	// Headless: comma-separated clip-distance, cull-distance, depth-clamp, framebuffer-fetch, dual-source-blend.
+	std::optional<std::string> disableGPUFeatures;
+	std::optional<bool> screenshotRenderTarget;
 	std::optional<std::string> screenshotFilenameDiff;
 	// Headless: preserve the alpha channel when saving PNG screenshots.
 	std::optional<bool> screenshotSaveKeepAlpha;
@@ -197,3 +229,6 @@ struct CommandLineOptions {
 	std::optional<double> dpi;
 	std::optional<double> scale;
 };
+
+// Splits a command line string into arguments. Handles double quotes and backslash escapes.
+std::vector<std::string> SplitCommandLine(const std::string &value);

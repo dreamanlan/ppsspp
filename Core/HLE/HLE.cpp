@@ -497,7 +497,8 @@ void HLEDoState(PointerWrap &p) {
 				delete action;
 			}
 			mipsCallActions.clear();
-			if (actions < 0) {
+			// Each action takes at least its type id.
+			if (actions < 0 || (size_t)actions > p.Remaining() / sizeof(int)) {
 				p.SetError(p.ERROR_FAILURE);
 				return;
 			}
@@ -880,7 +881,7 @@ void HLEReturnFromMipsCall() {
 		return;
 	}
 
-	if (stackData->actionIndex != 0xFFFFFFFF && stackData->actionIndex < (u32)mipsCallActions.size()) {
+	if (stackData->actionIndex != 0xFFFFFFFF && stackData->actionIndex < (u32)mipsCallActions.size() && mipsCallActions[stackData->actionIndex] != nullptr) {
 		PSPAction *&action = mipsCallActions[stackData->actionIndex];
 		VERBOSE_LOG(Log::HLE, "Executing action for HLE mips call at %08x, sp=%08x", stackData->func, sp);
 

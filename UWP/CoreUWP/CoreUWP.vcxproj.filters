@@ -62,6 +62,7 @@
     <ClCompile Include="..\..\Core\FileLoaders\ZipFileLoader.cpp" />
     <ClCompile Include="..\..\Core\FileSystems\BlobFileSystem.cpp" />
     <ClCompile Include="..\..\Core\FileSystems\BlockDevices.cpp" />
+    <ClCompile Include="..\..\Core\FileSystems\CSOCompress.cpp" />
     <ClCompile Include="..\..\Core\FileSystems\DirectoryFileSystem.cpp" />
     <ClCompile Include="..\..\Core\FileSystems\FileSystem.cpp" />
     <ClCompile Include="..\..\Core\FileSystems\ISOFileSystem.cpp" />
@@ -167,6 +168,7 @@
     <ClCompile Include="..\..\Core\HW\Camera.cpp" />
     <ClCompile Include="..\..\Core\HW\Display.cpp" />
     <ClCompile Include="..\..\Core\HW\GpioMMIO.cpp" />
+    <ClCompile Include="..\..\Core\HW\MMIO.cpp" />
     <ClCompile Include="..\..\Core\HW\AvcDecoder.cpp" />
     <ClCompile Include="..\..\Core\HW\MediaEngine.cpp" />
     <ClCompile Include="..\..\Core\HW\MemoryStick.cpp" />
@@ -419,6 +421,8 @@
     <ClCompile Include="..\..\ext\udis86\syn.c" />
     <ClCompile Include="..\..\ext\udis86\udis86.c" />
     <ClCompile Include="..\..\ext\xbrz\xbrz.cpp" />
+    <ClCompile Include="..\..\ext\libdeflate\lib\deflate_compress.c" />
+    <ClCompile Include="..\..\ext\libdeflate\lib\utils.c" />
     <ClCompile Include="..\..\ext\xxhash.c" />
     <ClCompile Include="pch.cpp" />
     <ClCompile Include="..\..\Core\Util\PathUtil.cpp" />
@@ -494,6 +498,7 @@
     <ClInclude Include="..\..\Core\FileLoaders\ZipFileLoader.h" />
     <ClInclude Include="..\..\Core\FileSystems\BlobFileSystem.h" />
     <ClInclude Include="..\..\Core\FileSystems\BlockDevices.h" />
+    <ClInclude Include="..\..\Core\FileSystems\CSOCompress.h" />
     <ClInclude Include="..\..\Core\FileSystems\DirectoryFileSystem.h" />
     <ClInclude Include="..\..\Core\FileSystems\FileSystem.h" />
     <ClInclude Include="..\..\Core\FileSystems\ISOFileSystem.h" />
@@ -602,6 +607,7 @@
     <ClInclude Include="..\..\Core\HW\Camera.h" />
     <ClInclude Include="..\..\Core\HW\Display.h" />
     <ClInclude Include="..\..\Core\HW\GpioMMIO.h" />
+    <ClInclude Include="..\..\Core\HW\MMIO.h" />
     <ClInclude Include="..\..\Core\HW\MediaEngine.h" />
     <ClInclude Include="..\..\Core\HW\MemoryStick.h" />
     <ClInclude Include="..\..\Core\HW\MpegDemux.h" />
@@ -707,6 +713,19 @@
     <ClInclude Include="..\..\ext\udis86\udis86.h" />
     <ClInclude Include="..\..\ext\xbrz\config.h" />
     <ClInclude Include="..\..\ext\xbrz\xbrz.h" />
+    <ClInclude Include="..\..\ext\libdeflate\libdeflate.h" />
+    <ClInclude Include="..\..\ext\libdeflate\common\common_defs.h" />
+    <ClInclude Include="..\..\ext\libdeflate\common\compiler_gcc.h" />
+    <ClInclude Include="..\..\ext\libdeflate\common\compiler_msc.h" />
+    <ClInclude Include="..\..\ext\libdeflate\lib\bt_matchfinder.h" />
+    <ClInclude Include="..\..\ext\libdeflate\lib\deflate_compress.h" />
+    <ClInclude Include="..\..\ext\libdeflate\lib\deflate_constants.h" />
+    <ClInclude Include="..\..\ext\libdeflate\lib\hc_matchfinder.h" />
+    <ClInclude Include="..\..\ext\libdeflate\lib\lib_common.h" />
+    <ClInclude Include="..\..\ext\libdeflate\lib\matchfinder_common.h" />
+    <ClInclude Include="..\..\ext\libdeflate\lib\unaligned.h" />
+    <ClInclude Include="..\..\ext\libdeflate\lib\x86\matchfinder_impl.h" />
+    <ClInclude Include="..\..\ext\libdeflate\lib\arm\matchfinder_impl.h" />
     <ClInclude Include="..\..\ext\xxhash.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="targetver.h" />

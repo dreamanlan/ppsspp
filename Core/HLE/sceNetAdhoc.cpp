@@ -20,6 +20,8 @@
 // All credit goes to him!
 
 
+#include "ppsspp_config.h"
+
 #include <mutex>
 #include <string>
 
@@ -31,6 +33,7 @@
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Common/Serialize/SerializeMap.h"
 #include "Common/System/OSD.h"
+#include "Common/System/Request.h"
 #include "Common/System/System.h"
 #include "Common/File/VFS/VFS.h"
 #include "Common/Thread/ThreadUtil.h"
@@ -102,6 +105,21 @@ int gameModeNotifyEvent = -1;
 #define AEMU_POSTOFFICE_PORT 27313
 #define AEMU_POSTOFFICE_ID_BASE 2048
 #define RELAY_FAILURE_DISABLE_THRESHOLD_SEC 15
+
+// Without the local network permission, Android 17+ fails sends to LAN peers with EPERM.
+static void WarnIfLocalNetworkBlocked(int error) {
+#if PPSSPP_PLATFORM(ANDROID)
+	static double lastWarning = -100.0;
+	if (error != EPERM || time_now_d() - lastWarning < 10.0) {
+		return;
+	}
+	if (System_GetPermissionStatus(SYSTEM_PERMISSION_LOCAL_NETWORK) != PERMISSION_STATUS_GRANTED) {
+		lastWarning = time_now_d();
+		auto n = GetI18NCategory(I18NCat::NETWORKING);
+		g_OSD.Show(OSDType::MESSAGE_ERROR, n->T("Local network permission is needed to play with nearby players"), 5.0f, "local_network_blocked");
+	}
+#endif
+}
 
 static const char *AdhocDataModeToString(AdhocDataMode mode) {
 	switch (mode) {
@@ -315,8 +333,6 @@ void discardMatchingEvents();
 void DoNetAdhocMatchingInited(PointerWrap &p);
 void DoNetAdhocMatchingThreads(PointerWrap &p);
 void ZeroNetAdhocMatchingThreads();
-void SaveNetAdhocMatchingInited();
-void RestoreNetAdhocMatchingInited();
 
 bool __NetAdhocConnected() {
 	return netAdhocInited && netAdhocctlInited && (adhocctlState == ADHOCCTL_STATE_CONNECTED || adhocctlState == ADHOCCTL_STATE_GAMEMODE);
@@ -560,7 +576,8 @@ static void __AdhocctlNotify(u64 userdata, int cyclesLate) {
 		}
 
 		// Retry until successfully sent. Login packet sent after successfully connected to Adhoc Server (indicated by networkInited), so we're not sending Login again here
-		if ((req.opcode == OPCODE_LOGIN && !g_adhocServerConnected) || (ret == SOCKET_ERROR && (sockerr == EAGAIN || sockerr == EWOULDBLOCK))) {
+		// A login stops waiting early once the friend finder has tried and failed to connect.
+		if ((req.opcode == OPCODE_LOGIN && !g_adhocServerConnected && !g_adhocServerLoginFailed) || (ret == SOCKET_ERROR && (sockerr == EAGAIN || sockerr == EWOULDBLOCK))) {
 			u64 now = (u64)(time_now_d() * 1000000.0);
 			if (now - adhocctlStartTime <= static_cast<u64>(adhocDefaultTimeout) + 500) {
 				// Try again in another 0.5ms until timedout.
@@ -1784,14 +1801,72 @@ int WaitBlockingAdhocSocket(u64 threadSocketId, int type, int pspSocketId, void*
 	return SCE_NET_ADHOC_ERROR_TIMEOUT;
 }
 
+static void SetupAdhocRelayMode() {
+	switch ((AdhocServerRelayMode)g_Config.iAdhocServerRelayMode) {
+	case AdhocServerRelayMode::Auto:
+		serverHasRelay = false;
+		// Fetch data mode from server list
+		if (AdhocGetServerDataMode(g_Config.sProAdhocServer) == AdhocDataMode::AemuPostoffice) {
+			serverHasRelay = true;
+			trackingRelayFailure = false;
+			relayDisabled = false;
+			relayFirstConnect = true;
+		}
+		break;
+	case AdhocServerRelayMode::AlwaysOn:
+		serverHasRelay = true;
+		trackingRelayFailure = false;
+		relayDisabled = false;
+		relayFirstConnect = true;
+		break;
+	default:
+		serverHasRelay = false;
+		break;
+	}
+
+	if (serverHasRelay) {
+		aemu_post_office_init();
+	}
+}
+
+static void StartFriendFinder() {
+	// TODO: Merging friendFinder (real) thread to AdhocThread (fake) thread on PSP side
+	if (!friendFinderRunning) {
+		// Set before the thread starts, not by it: shutting down before it got going used to clear
+		// the flag first, and then the thread set it again and never stopped, hanging the join.
+		if (friendFinderThread.joinable()) {
+			friendFinderThread.join();
+		}
+		friendFinderRunning = true;
+		friendFinderThread = std::thread(friendFinder);
+	}
+}
+
+// Stops the friendFinder thread and drops the connection to the Adhoc Server, leaving the PSP side
+// (handlers, AdhocThread) alone.
+static void StopFriendFinder() {
+	friendFinderRunning = false;
+	if (friendFinderThread.joinable()) {
+		friendFinderThread.join();
+	}
+
+	int32_t peercount = 0;
+	freeFriendsRecursive(friends, &peercount);
+	friends = NULL;
+
+	g_adhocServerConnected = false;
+	shutdown((int)metasocket, SD_BOTH);
+	closesocket((int)metasocket);
+	metasocket = (int)INVALID_SOCKET;
+}
+
 void __NetAdhocDoState(PointerWrap &p) {
-	auto s = p.Section("sceNetAdhoc", 1, 9);
+	auto s = p.Section("sceNetAdhoc", 1, 10);
 	if (!s)
 		return;
 
 	auto cur_netAdhocInited = netAdhocInited;
 	auto cur_netAdhocctlInited = netAdhocctlInited;
-	SaveNetAdhocMatchingInited();
 
 	Do(p, netAdhocInited);
 	Do(p, netAdhocctlInited);
@@ -1875,6 +1950,10 @@ void __NetAdhocDoState(PointerWrap &p) {
 	} else if (p.mode == p.MODE_READ) {
 		adhocctlRequests.clear();
 	}
+	if (s >= 10) {
+		// The login after a load sends it, so a state loaded into a fresh boot needs it.
+		p.DoVoid(&product_code, (int)sizeof(product_code));
+	}
 
 	if (p.mode == p.MODE_READ) {
 		// Discard leftover events
@@ -1887,13 +1966,26 @@ void __NetAdhocDoState(PointerWrap &p) {
 		deleteAllAdhocSockets();
 		discardMatchingEvents();
 
-		// Let's not change "Inited" value when Loading SaveState to prevent memory & port leaks
-		RestoreNetAdhocMatchingInited();
-
-		netAdhocctlInited = cur_netAdhocctlInited;
-		netAdhocInited = cur_netAdhocInited;
-
-		isAdhocctlNeedLogin = false;
+		// The game remembers which libraries it initialized, so the "Inited" flags have to come
+		// from the state too. Bring the host side (relay, friendFinder, server login) in line.
+		// Keeping the current flags instead left a state saved with adhocctl inited, loaded into a
+		// fresh boot, failing every call with NOT_INITIALIZED; MGS Peace Walker retried
+		// sceNetAdhocctlDisconnect forever when starting a cutscene.
+		if (netAdhocInited && !cur_netAdhocInited) {
+			SetupAdhocRelayMode();
+		}
+		if (netAdhocctlInited && !cur_netAdhocctlInited) {
+			isAdhocctlNeedLogin = true;
+			StartFriendFinder();
+		} else {
+			if (!netAdhocctlInited && cur_netAdhocctlInited) {
+				// The thread sets adhocctlState on its way out, so keep the loaded one.
+				const int loadedState = adhocctlState;
+				StopFriendFinder();
+				adhocctlState = loadedState;
+			}
+			isAdhocctlNeedLogin = false;
+		}
 	}
 }
 
@@ -1921,9 +2013,14 @@ void __NetAdhocInit() {
 	__AdhocNotifInit();
 	__AdhocServerInit();
 
-	// Create built-in AdhocServer Thread
+	// Create built-in AdhocServer Thread. The flag is set here rather than by the thread, so that a
+	// shutdown that clears it before the thread gets going can't be undone (see friendFinder).
 	adhocServerRunning = false;
+	if (adhocServerThread.joinable()) {
+		adhocServerThread.join();
+	}
 	if (g_Config.bEnableWlan && g_Config.bEnableAdhocServer) {
+		adhocServerRunning = true;
 		adhocServerThread = std::thread(proAdhocServerThread, SERVER_PORT);
 	}
 }
@@ -1939,31 +2036,7 @@ u32 sceNetAdhocInit() {
 		// Since we are deleting GameMode Master here, we should probably need to make sure GameMode resources all cleared too.
 		deleteAllGMB();
 
-		switch ((AdhocServerRelayMode)g_Config.iAdhocServerRelayMode) {
-		case AdhocServerRelayMode::Auto:
-			serverHasRelay = false;
-			// Fetch data mode from server list
-			if (AdhocGetServerDataMode(g_Config.sProAdhocServer) == AdhocDataMode::AemuPostoffice) {
-				serverHasRelay = true;
-				trackingRelayFailure = false;
-				relayDisabled = false;
-				relayFirstConnect = true;
-			}
-			break;
-		case AdhocServerRelayMode::AlwaysOn:
-			serverHasRelay = true;
-			trackingRelayFailure = false;
-			relayDisabled = false;
-			relayFirstConnect = true;
-			break;
-		default:
-			serverHasRelay = false;
-			break;
-		}
-
-		if (serverHasRelay) {
-			aemu_post_office_init();
-		}
+		SetupAdhocRelayMode();
 
 		auto n = GetI18NCategory(I18NCat::NETWORKING);
 		if (g_Config.bEnableWlan) {
@@ -1988,6 +2061,11 @@ int sceNetAdhocctlInit(int stackSize, int prio, u32 productAddr) {
 		return hleLogError(Log::sceNet, SCE_NET_ADHOCCTL_ERROR_ALREADY_INITIALIZED);
 	}
 
+	if (g_Config.bEnableWlan) {
+		// Needed for peers and ad hoc servers on the same LAN (Android 17+).
+		System_RequestLocalNetworkPermission();
+	}
+
 	auto product = PSPPointer<SceNetAdhocctlAdhocId>::Create(productAddr);
 	if (product.IsValid()) {
 		product_code = *product;
@@ -1996,6 +2074,7 @@ int sceNetAdhocctlInit(int stackSize, int prio, u32 productAddr) {
 
 	adhocctlEvents.clear();
 	netAdhocctlInited = true; //needed for cleanup during AdhocctlTerm even when it failed to connect to Adhoc Server (since it's being faked as success)
+	g_adhocServerLoginFailed = false;
 	isAdhocctlNeedLogin = true;
 
 	// Create fake PSP Thread for callback
@@ -2006,10 +2085,7 @@ int sceNetAdhocctlInit(int stackSize, int prio, u32 productAddr) {
 		__KernelStartThread(threadAdhocID, 0, 0);
 	}
 
-	// TODO: Merging friendFinder (real) thread to AdhocThread (fake) thread on PSP side
-	if (!friendFinderRunning) {
-		friendFinderThread = std::thread(friendFinder);
-	}
+	StartFriendFinder();
 
 	// Need to make sure to be connected to Adhoc Server (indicated by networkInited) before returning to prevent GTA VCS failed to create/join a group and unable to see any game room
 	int us = adhocDefaultDelay;
@@ -2390,6 +2466,7 @@ int sceNetAdhocPdpSend(int id, const char *mac, u32 port, void *data, int len, i
 										}
 
 										DEBUG_LOG(Log::sceNet, "Socket Error (%i) on sceNetAdhocPdpSend[%i:%u->%u] (size=%i)", error, id, getLocalPort(pdpsocket.id), ntohs(target.sin_port), len);
+										WarnIfLocalNetworkBlocked(error);
 									}
 									//changeBlockingMode(socket->id, 0);
 
@@ -2489,6 +2566,7 @@ int sceNetAdhocPdpSend(int id, const char *mac, u32 port, void *data, int len, i
 
 										if (sent == SOCKET_ERROR) {
 											DEBUG_LOG(Log::sceNet, "Socket Error (%i) on sceNetAdhocPdpSend[%i:%u->%u](BC) [size=%i]", error, id, getLocalPort(pdpsocket.id), ntohs(target.sin_port), len);
+											WarnIfLocalNetworkBlocked(error);
 										}
 
 										if (sent >= 0) {
@@ -3180,6 +3258,7 @@ int sceNetAdhocctlScan() {
 		// Only scan when in Disconnected state, otherwise AdhocServer will kick you out
 		if (adhocctlState == ADHOCCTL_STATE_DISCONNECTED && !isAdhocctlBusy) {
 			isAdhocctlBusy = true;
+			g_adhocServerLoginFailed = false;
 			isAdhocctlNeedLogin = true;
 			adhocctlState = ADHOCCTL_STATE_SCANNING;
 			adhocctlCurrentMode = ADHOCCTL_MODE_NORMAL;
@@ -3673,6 +3752,7 @@ int NetAdhocctl_Create(const char *groupName) {
 			// Disconnected State
 			if (adhocctlState == ADHOCCTL_STATE_DISCONNECTED && !isAdhocctlBusy) {
 				isAdhocctlBusy = true;
+				g_adhocServerLoginFailed = false;
 				isAdhocctlNeedLogin = true;
 
 				// Set Network Name

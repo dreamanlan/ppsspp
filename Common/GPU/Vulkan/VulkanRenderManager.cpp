@@ -494,6 +494,9 @@ void VulkanRenderManager::StopThreads() {
 	for (int i = 0; i < vulkan_->GetInflightFrames(); i++) {
 		auto &frameData = frameData_[i];
 		// Zero the queries so we don't try to pull them later.
+		if (insideFrame_ && i == vulkan_->GetCurFrame()) {
+			continue;
+		}
 		frameData.profile.timestampDescriptions.clear();
 	}
 
@@ -581,6 +584,7 @@ void VulkanRenderManager::CompileThreadFunc() {
 			}
 			toCompile = std::move(compileQueue_);
 			compileQueue_.clear();
+			compileScheduling_ = true;
 			if (!runCompileThread_) {
 				exitAfterCompile = true;
 			}
@@ -624,6 +628,11 @@ void VulkanRenderManager::CompileThreadFunc() {
 
 			Task *task = new CreateMultiPipelinesTask(vulkan_, entries);
 			g_threadManager.EnqueueTask(task);
+		}
+
+		{
+			std::unique_lock<std::mutex> lock(compileQueueMutex_);
+			compileScheduling_ = false;
 		}
 
 		if (exitAfterCompile) {
@@ -676,7 +685,7 @@ void VulkanRenderManager::RenderThreadFunc() {
 void VulkanRenderManager::PresentWaitThreadFunc() {
 	SetCurrentThreadName("PresentWait");
 
-#if !PPSSPP_PLATFORM(IOS_APP_STORE)
+#if !PPSSPP_VK_STATIC
 	_dbg_assert_(vkWaitForPresentKHR != nullptr);
 
 	uint64_t waitedId = frameIdGen_;
@@ -903,8 +912,10 @@ void VulkanRenderManager::ReportBadStateForDraw() {
 	ERROR_LOG_REPORT_ONCE(baddraw, Log::G3D, "Can't draw: %s%s. Step count: %d", cause1, cause2, (int)steps_.size());
 }
 
-int VulkanRenderManager::WaitForPipelines() {
-	return CreateMultiPipelinesTask::WaitForAll();
+bool VulkanRenderManager::PipelinesPending() {
+	// Pipelines still in the queue, or taken off it but not yet made into tasks, aren't in flight yet.
+	std::unique_lock<std::mutex> lock(compileQueueMutex_);
+	return !compileQueue_.empty() || compileScheduling_ || CreateMultiPipelinesTask::tasksInFlight_ > 0;
 }
 
 VKRGraphicsPipeline *VulkanRenderManager::CreateGraphicsPipeline(VKRGraphicsPipelineDesc *desc, PipelineFlags pipelineFlags, uint32_t variantBitmask, VkSampleCountFlagBits sampleCount, bool cacheLoad, const char *tag) {
@@ -1210,6 +1221,12 @@ void VulkanRenderManager::BindFramebufferAsRenderTarget(VKRFramebuffer *fb, VKRR
 bool VulkanRenderManager::CopyFramebufferToMemory(VKRFramebuffer *src, VkImageAspectFlags aspectBits, int x, int y, int w, int h, Draw::DataFormat destFormat, uint8_t *pixels, int pixelStride, Draw::ReadbackMode mode, const char *tag) {
 	_dbg_assert_(insideFrame_);
 
+	if (!src && mode == Draw::ReadbackMode::OLD_DATA_OK) {
+		// The backbuffer is a different image every frame, so there's no earlier copy of it to hand back.
+		_dbg_assert_msg_(false, "Delayed readback of the backbuffer (%s)", tag);
+		return false;
+	}
+
 	for (int i = (int)steps_.size() - 1; i >= 0; i--) {
 		if (steps_[i]->stepType == VKRStepType::RENDER && steps_[i]->render.framebuffer == src) {
 			steps_[i]->render.numReads++;
@@ -1271,7 +1288,7 @@ bool VulkanRenderManager::CopyFramebufferToMemory(VKRFramebuffer *src, VkImageAs
 
 	// Need to call this after FlushSync so the pixels are guaranteed to be ready in CPU-accessible VRAM.
 	return queueRunner_.CopyReadbackBuffer(frameData_[vulkan_->GetCurFrame()],
-		mode == Draw::ReadbackMode::OLD_DATA_OK ? src : nullptr, w, h, srcFormat, destFormat, pixelStride, pixels);
+		mode == Draw::ReadbackMode::OLD_DATA_OK ? src : nullptr, x, y, w, h, aspectBits, srcFormat, destFormat, pixelStride, pixels);
 }
 
 void VulkanRenderManager::CopyImageToMemorySync(VkImage image, int mipLevel, int x, int y, int w, int h, Draw::DataFormat destFormat, uint8_t *pixels, int pixelStride, const char *tag) {
@@ -1290,7 +1307,7 @@ void VulkanRenderManager::CopyImageToMemorySync(VkImage image, int mipLevel, int
 	FlushSync();
 
 	// Need to call this after FlushSync so the pixels are guaranteed to be ready in CPU-accessible VRAM.
-	queueRunner_.CopyReadbackBuffer(frameData_[vulkan_->GetCurFrame()], nullptr, w, h, destFormat, destFormat, pixelStride, pixels);
+	queueRunner_.CopyReadbackBuffer(frameData_[vulkan_->GetCurFrame()], nullptr, x, y, w, h, VK_IMAGE_ASPECT_COLOR_BIT, destFormat, destFormat, pixelStride, pixels);
 
 	_dbg_assert_(steps_.empty());
 }
@@ -1415,6 +1432,16 @@ void VulkanRenderManager::CopyFramebuffer(VKRFramebuffer *src, VkRect2D srcRect,
 	_dbg_assert_msg_(dstPos.x + srcRect.extent.width <= (uint32_t)dst->width, "dstPos + extent x > width");
 	_dbg_assert_msg_(dstPos.y + srcRect.extent.height <= (uint32_t)dst->height, "dstPos + extent y > height");
 
+	if (aspectMask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+		_dbg_assert_msg_(src->depth.image != VK_NULL_HANDLE, "%s", src->Tag());
+		_dbg_assert_msg_(dst->depth.image != VK_NULL_HANDLE, "%s", dst->Tag());
+
+		if (!src->depth.image || !dst->depth.image) {
+			// Something has gone wrong, but let's try to stumble along.
+			return;
+		}
+	}
+
 	VkImageLayout finalSrcLayoutBeforeCopy = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 	if (src == dst) {
 		// We only use the first loop before, and transition to VK_IMAGE_LAYOUT_GENERAL.
@@ -1534,7 +1561,7 @@ void VulkanRenderManager::BlitFramebuffer(VKRFramebuffer *src, VkRect2D srcRect,
 	steps_.push_back(step);
 }
 
-VkImageView VulkanRenderManager::BindFramebufferAsTexture(VKRFramebuffer *fb, int binding, VkImageAspectFlags aspectBit, int layer) {
+VkImageView VulkanRenderManager::BindFramebufferAsTexture(VKRFramebuffer *fb, int binding, VkImageAspectFlags aspectBit, int layer, bool samples) {
 	_dbg_assert_(curRenderStep_ != nullptr);
 	_dbg_assert_(fb != nullptr);
 
@@ -1542,6 +1569,13 @@ VkImageView VulkanRenderManager::BindFramebufferAsTexture(VKRFramebuffer *fb, in
 	_dbg_assert_(aspectBit == VK_IMAGE_ASPECT_COLOR_BIT || aspectBit == VK_IMAGE_ASPECT_DEPTH_BIT);
 
 	// Mark the dependency, check for required transitions, and return the image.
+	if (samples && fb->msaaColor.image != VK_NULL_HANDLE) {
+		_dbg_assert_(aspectBit == VK_IMAGE_ASPECT_COLOR_BIT);
+		curRenderStep_->dependencies.insert(fb);
+		TransitionRequest rq{ fb, aspectBit, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, true };
+		curRenderStep_->preTransitions.insert(rq);
+		return layer == -1 ? fb->msaaColor.texAllLayersView : fb->msaaColor.texLayerViews[layer];
+	}
 
 	// Optimization: If possible, use final*Layout to put the texture into the correct layout "early".
 	for (int i = (int)steps_.size() - 1; i >= 0; i--) {
@@ -1655,7 +1689,9 @@ void VulkanRenderManager::Run(VKRRenderThreadTask &task) {
 				// Do the increment.
 				outOfDateFrames_++;
 			} else if (res == VK_SUBOPTIMAL_KHR) {
-				outOfDateFrames_++;
+				if (!vulkan_->SwapchainTransformMismatch()) {
+					outOfDateFrames_++;
+				}
 			} else if (res == VK_ERROR_SURFACE_LOST_KHR) {
 				// _dbg_assert_msg_(false, "vkQueuePresentKHR failed with VK_ERROR_SURFACE_LOST_KHR! result=%s", VulkanResultToString(res));
 				// Can't really do anything about this here, but let's try to continue anyway, maybe the app is in the process of being switched
@@ -1820,10 +1856,6 @@ VKRPipelineLayout *VulkanRenderManager::CreatePipelineLayout(BindingType *bindin
 		case BindingType::UNIFORM_BUFFER_DYNAMIC_ALL:
 			bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 			bindings[i].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-			break;
-		case BindingType::STORAGE_BUFFER_VERTEX:
-			bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-			bindings[i].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 			break;
 		case BindingType::STORAGE_BUFFER_COMPUTE:
 			bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -2016,7 +2048,6 @@ void VKRPipelineLayout::FlushDescSets(VulkanContext *vulkan, int frame, QueuePro
 				writes[numWrites].pBufferInfo = nullptr;
 				numImages++;
 				break;
-			case BindingType::STORAGE_BUFFER_VERTEX:
 			case BindingType::STORAGE_BUFFER_COMPUTE:
 				_dbg_assert_(data[i].buffer.buffer != VK_NULL_HANDLE);
 				bufferInfo[numBuffers].buffer = data[i].buffer.buffer;

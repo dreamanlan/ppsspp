@@ -110,7 +110,16 @@ public:
 	virtual bool run(PendingInterrupt& pend);
 	virtual void copyArgsToCPU(PendingInterrupt& pend);
 	virtual void handleResult(PendingInterrupt& pend);
-	void queueUp(int subintr);
+	// What the kernel spends around a handler: before it runs, and after the last one queued for
+	// this interrupt returns.
+	int entryCycles() const { return entryCycles_; }
+	int exitCycles() const { return exitCycles_; }
+	void setCosts(int entryCycles, int exitCycles) {
+		entryCycles_ = entryCycles;
+		exitCycles_ = exitCycles;
+	}
+	// Returns how many handlers were queued.
+	int queueUp(int subintr);
 
 	SubIntrHandler* add(int subIntrNum);
 	void remove(int subIntrNum);
@@ -120,12 +129,26 @@ public:
 	SubIntrHandler *get(int subIntrNum);
 	void clear();
 
+	// The handler a kernel driver registered for the whole interrupt (sceKernelRegisterIntrHandler).
+	// Nothing raises those interrupts yet, so it's only kept.
+	bool hasBaseHandler() const { return baseHandler_ != 0; }
+	void setBaseHandler(u32 handler, u32 arg) {
+		baseHandler_ = handler;
+		baseArg_ = arg;
+		baseEnabled_ = false;
+	}
+	void enableBase(bool enable) { baseEnabled_ = enable; }
 
 	void DoState(PointerWrap &p);
 
 private:
 	int intrNumber;
 	std::map<int, SubIntrHandler> subIntrHandlers;
+	u32 baseHandler_ = 0;
+	u32 baseArg_ = 0;
+	bool baseEnabled_ = false;
+	int entryCycles_ = 0;
+	int exitCycles_ = 0;
 };
 
 void __DisableInterrupts();
@@ -136,13 +159,15 @@ void __InterruptsInit();
 void __InterruptsDoState(PointerWrap &p);
 void __InterruptsDoStateLate(PointerWrap &p);
 void __InterruptsShutdown();
-void __TriggerInterrupt(int type, PSPInterrupt intno, int subInterrupts = -1);
+// Returns how many handlers were queued.
+int __TriggerInterrupt(int type, PSPInterrupt intno, int subInterrupts = -1);
 // Forgets interrupts that have been raised but not taken, except for one that's being handled. Returns how many.
 int __CancelRaisedInterrupts(PSPInterrupt intno);
 bool __RunOnePendingInterrupt();
 void __KernelReturnFromInterrupt();
 
 void __RegisterIntrHandler(u32 intrNumber, IntrHandler* handler);
+void __SetIntrHandlerCosts(PSPInterrupt intno, int entryCycles, int exitCycles);
 SubIntrHandler *__RegisterSubIntrHandler(u32 intrNumber, u32 subIntrNumber, u32 handler, u32 handlerArg, u32 &error);
 int __ReleaseSubIntrHandler(int intrNumber, int subIntrNumber);
 

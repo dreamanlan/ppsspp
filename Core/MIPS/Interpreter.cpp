@@ -36,7 +36,7 @@
 #include "Core/HLE/HLETables.h"
 #include "Core/HLE/ReplaceTables.h"
 #include "Core/HLE/sceKernelInterrupt.h"
-#include "Core/HW/GpioMMIO.h"
+#include "Core/HW/MMIO.h"
 
 #define R(i) (mips->r[i])
 #define F(i) (mips->f[i])
@@ -67,13 +67,14 @@ static inline void DelayBranchTo(MIPSState *mips, u32 where) {
 }
 
 static inline void SkipLikely(MIPSState *mips) {
-	MIPSInfo delaySlot = MIPSGetInfo(Memory::Read_Instruction(PC + 4, true));
+	const MIPSOpcode delaySlotOp = Memory::Read_Instruction(PC + 4);
 	// Don't actually skip if it is a jump (seen in Brooktown High.)
-	if (delaySlot & IS_JUMP) {
+	if (MIPSGetInfo(delaySlotOp) & IS_JUMP) {
 		PC += 4;
 	} else {
 		PC += 8;
-		--mips->downcount;
+		// The skipped slot costs what it would have run for, as in the IR cores.
+		mips->downcount -= MIPSGetInstructionCycleEstimate(delaySlotOp);
 	}
 }
 
@@ -82,7 +83,7 @@ int MIPS_InterpretSingleStep(MIPSState *mips) {
 		Core_ExecException(mips->pc, mips->	pc, ExecExceptionType::JUMP);
 		return 0;
 	}
-	MIPSOpcode op = Memory::Read_Opcode_JIT(mips->pc);  // now unchecked
+	MIPSOpcode op = ReadExecutedOp(mips->pc);
 	// Same reason as the run loop in MIPSInterpret_RunUntil - see ApplyHostRoundingMode.
 	ApplyHostRoundingMode(mips);
 	if (mips->inDelaySlot) {
@@ -98,76 +99,21 @@ int MIPS_InterpretSingleStep(MIPSState *mips) {
 	return 1;
 }
 
-// MMIO handling, for limited LLE, just enough for VSH.
-//
-// Unregistered reads return a distinctive poison value (not 0) so it's obvious in a live trace
-// when some later computation's input traces back to an unimplemented MMIO register, rather
-// than looking like an ordinary, legitimate zero.
-constexpr u32 UNKNOWN_MMIO_POISON = 0x1337BEEF;
-
-static u8 ReadMMIO_U8(MIPSState *mips, u32 addr) {
+// Hardware registers, for kernel code only.
+static u32 ReadMMIO(MIPSState *mips, u32 addr, int size) {
 	if (!Memory::IsKernelCodeAddress(mips->pc)) {
-		Core_MemoryException(addr, 1, mips->pc, MemoryExceptionType::READ_WORD, "Kernel mode only");
-		return (u8)UNKNOWN_MMIO_POISON;
+		Core_MemoryException(addr, size, mips->pc, MemoryExceptionType::READ_WORD, "Kernel mode only");
+		return MMIO::UNHANDLED_READ;
 	}
-	WARN_LOG(Log::CPU, "Unhandled MMIO Read8 at %08x", addr);
-	return (u8)UNKNOWN_MMIO_POISON;
+	return MMIO::Read(mips, addr, size);
 }
 
-static u16 ReadMMIO_U16(MIPSState *mips, u32 addr) {
+static void WriteMMIO(MIPSState *mips, u32 addr, int size, u32 value) {
 	if (!Memory::IsKernelCodeAddress(mips->pc)) {
-		Core_MemoryException(addr, 2, mips->pc, MemoryExceptionType::READ_WORD, "Kernel mode only");
-		return (u16)UNKNOWN_MMIO_POISON;
-	}
-	WARN_LOG(Log::CPU, "Unhandled MMIO Read16 at %08x", addr);
-	return (u16)UNKNOWN_MMIO_POISON;
-}
-
-static u32 ReadMMIO_U32(MIPSState *mips, u32 addr) {
-	if (!Memory::IsKernelCodeAddress(mips->pc)) {
-		Core_MemoryException(addr, 4, mips->pc, MemoryExceptionType::READ_WORD, "Kernel mode only");
-		return UNKNOWN_MMIO_POISON;
-	}
-	if (GpioMMIO::IsGpioAddress(addr)) {
-		return GpioMMIO::Read32(addr);
-	}
-	if (SysconSerialMMIO::IsSysconSerialAddress(addr)) {
-		return SysconSerialMMIO::Read32(addr);
-	}
-	WARN_LOG(Log::CPU, "Unhandled MMIO Read32 at %08x", addr);
-	return UNKNOWN_MMIO_POISON;
-}
-
-void WriteMMIO_U8(MIPSState *mips, u32 addr, u8 value) {
-	if (!Memory::IsKernelCodeAddress(mips->pc)) {
-		Core_MemoryException(addr, 1, mips->pc, MemoryExceptionType::WRITE_WORD, "Kernel mode only");
+		Core_MemoryException(addr, size, mips->pc, MemoryExceptionType::WRITE_WORD, "Kernel mode only");
 		return;
 	}
-	WARN_LOG(Log::CPU, "Unhandled MMIO Write8 at %08x = %02x", addr, value);
-}
-
-void WriteMMIO_U16(MIPSState *mips, u32 addr, u16 value) {
-	if (!Memory::IsKernelCodeAddress(mips->pc)) {
-		Core_MemoryException(addr, 2, mips->pc, MemoryExceptionType::WRITE_WORD, "Kernel mode only");
-		return;
-	}
-	WARN_LOG(Log::CPU, "Unhandled MMIO Write16 at %08x = %04x", addr, value);
-}
-
-void WriteMMIO_U32(MIPSState *mips, u32 addr, u32 value) {
-	if (!Memory::IsKernelCodeAddress(mips->pc)) {
-		Core_MemoryException(addr, 4, mips->pc, MemoryExceptionType::WRITE_WORD, "Kernel mode only");
-		return;
-	}
-	if (GpioMMIO::IsGpioAddress(addr)) {
-		GpioMMIO::Write32(addr, value);
-		return;
-	}
-	if (SysconSerialMMIO::IsSysconSerialAddress(addr)) {
-		SysconSerialMMIO::Write32(addr, value);
-		return;
-	}
-	WARN_LOG(Log::CPU, "Unhandled MMIO Write32 at %08x = %08x", addr, value);
+	MMIO::Write(mips, addr, size, value);
 }
 
 namespace MIPSInt {
@@ -189,13 +135,15 @@ namespace MIPSInt {
 		switch (func) {
 		// Icache
 		case 8:
+		{
 			// Invalidate the instruction cache at this address.
 			// We assume the CPU won't be reset during this, so no locking.
-			if (MIPSComp::jit) {
-				// Let's over invalidate to be super safe.
-				uint32_t alignedAddr = addr & ~0x3F;
-				int size = 0x40 + (addr & 0x3F);
-				MIPSComp::jit->InvalidateCacheAt(alignedAddr, size);
+			// Let's over invalidate to be super safe.
+			uint32_t alignedAddr = addr & ~0x3F;
+			int size = 0x40 + (addr & 0x3F);
+			// Through MIPSState, which also drops replacement hooks in functions the game changed.
+			mips->InvalidateICacheRangeImmediate(alignedAddr, size);
+			if (mips->jit) {
 				// Using a bool to avoid locking/etc. in case it's slow.
 				if (!loggedAlignment && (addr & 0x3F) != 0) {
 					// These are seen exclusively in Lego games, and are really no big deal. Reporting removed.
@@ -208,6 +156,7 @@ namespace MIPSInt {
 				}
 			}
 			break;
+		}
 
 		// Dcache
 		case 24:
@@ -285,16 +234,18 @@ namespace MIPSInt {
 		int imm = _SIMM16_SHL2;
 		int rs = _RS;
 		u32 addr = PC + imm + 4;
+		// The linking ones test rs from before they link, ra included (cpu/cpu_alu/branch_link_ra).
+		const s32 value = (s32)R(rs);
 
 		switch ((op>>16) & 0x1F) {
-		case 0: if ((s32)R(rs) <  0) DelayBranchTo(mips, addr); else PC += 4; break;//bltz
-		case 1: if ((s32)R(rs) >= 0) DelayBranchTo(mips, addr); else PC += 4; break;//bgez
-		case 2: if ((s32)R(rs) <  0) DelayBranchTo(mips, addr); else SkipLikely(mips); break;//bltzl
-		case 3: if ((s32)R(rs) >= 0) DelayBranchTo(mips, addr); else SkipLikely(mips); break;//bgezl
-		case 16: R(MIPS_REG_RA) = PC + 8; if ((s32)R(rs) <  0) DelayBranchTo(mips, addr); else PC += 4; break;//bltzal
-		case 17: R(MIPS_REG_RA) = PC + 8; if ((s32)R(rs) >= 0) DelayBranchTo(mips, addr); else PC += 4; break;//bgezal
-		case 18: R(MIPS_REG_RA) = PC + 8; if ((s32)R(rs) <	0) DelayBranchTo(mips, addr); else SkipLikely(mips); break;//bltzall
-		case 19: R(MIPS_REG_RA) = PC + 8; if ((s32)R(rs) >= 0) DelayBranchTo(mips, addr); else SkipLikely(mips); break;//bgezall
+		case 0: if (value <  0) DelayBranchTo(mips, addr); else PC += 4; break;//bltz
+		case 1: if (value >= 0) DelayBranchTo(mips, addr); else PC += 4; break;//bgez
+		case 2: if (value <  0) DelayBranchTo(mips, addr); else SkipLikely(mips); break;//bltzl
+		case 3: if (value >= 0) DelayBranchTo(mips, addr); else SkipLikely(mips); break;//bgezl
+		case 16: R(MIPS_REG_RA) = PC + 8; if (value <  0) DelayBranchTo(mips, addr); else PC += 4; break;//bltzal
+		case 17: R(MIPS_REG_RA) = PC + 8; if (value >= 0) DelayBranchTo(mips, addr); else PC += 4; break;//bgezal
+		case 18: R(MIPS_REG_RA) = PC + 8; if (value <  0) DelayBranchTo(mips, addr); else SkipLikely(mips); break;//bltzall
+		case 19: R(MIPS_REG_RA) = PC + 8; if (value >= 0) DelayBranchTo(mips, addr); else SkipLikely(mips); break;//bgezall
 		default:
 			_dbg_assert_msg_(false,"Trying to interpret instruction that can't be interpreted");
 			break;
@@ -421,8 +372,12 @@ namespace MIPSInt {
 		case 48: // ll
 			if (rt != 0) {
 				if (!Memory::IsValid4AlignedAddress(addr)) {
-					Core_MemoryException(addr, 4, PC, MemoryExceptionType::READ_WORD, "ll");
-					R(rt) = 0;
+					if (Memory::IsMMIOAccess(addr)) {
+						R(rt) = ReadMMIO(mips, addr, 4);
+					} else {
+						Core_MemoryException(addr, 4, PC, MemoryExceptionType::READ_WORD, "ll");
+						R(rt) = 0;
+					}
 				} else {
 					R(rt) = Memory::ReadUnchecked_U32(addr);
 				}
@@ -432,7 +387,10 @@ namespace MIPSInt {
 		case 56: // sc
 			if (mips->llBit) {
 				if (!Memory::IsValid4AlignedAddress(addr)) {
-					Core_MemoryException(addr, 4, PC, MemoryExceptionType::WRITE_WORD, "sc");
+					if (Memory::IsMMIOAccess(addr))
+						WriteMMIO(mips, addr, 4, R(rt));
+					else
+						Core_MemoryException(addr, 4, PC, MemoryExceptionType::WRITE_WORD, "sc");
 				} else {
 					Memory::WriteUnchecked_U32(R(rt), addr);
 				}
@@ -507,7 +465,7 @@ namespace MIPSInt {
 			if (!Memory::IsValidAddress(addr)) {
 				if (Memory::IsMMIOAccess(addr)) {
 					// This is a read from MMIO, so we can handle it.
-					R(rt) = SignExtend8ToU32(ReadMMIO_U8(mips, addr));
+					R(rt) = SignExtend8ToU32(ReadMMIO(mips, addr, 1));
 					break;
 				}
 				Core_MemoryException(addr, 1, PC, MemoryExceptionType::READ_WORD, "lb");
@@ -520,7 +478,7 @@ namespace MIPSInt {
 			if (!Memory::IsValid2AlignedAddress(addr)) {
 				if (Memory::IsMMIOAccess(addr)) {
 					// This is a read from MMIO, so we can handle it.
-					R(rt) = SignExtend16ToU32(ReadMMIO_U16(mips, addr));
+					R(rt) = SignExtend16ToU32(ReadMMIO(mips, addr, 2));
 					break;
 				}
 				Core_MemoryException(addr, 2, PC, MemoryExceptionType::READ_WORD, "lh");
@@ -533,7 +491,7 @@ namespace MIPSInt {
 			if (!Memory::IsValid4AlignedAddress(addr)) {
 				if (Memory::IsMMIOAccess(addr)) {
 					// This is a read from MMIO, so we can handle it.
-					R(rt) = ReadMMIO_U32(mips, addr);
+					R(rt) = ReadMMIO(mips, addr, 4);
 					break;
 				}
 				Core_MemoryException(addr, 4, PC, MemoryExceptionType::READ_WORD, "lw");
@@ -546,7 +504,7 @@ namespace MIPSInt {
 			if (!Memory::IsValidAddress(addr)) {
 				if (Memory::IsMMIOAccess(addr)) {
 					// This is a read from MMIO, so we can handle it.
-					R(rt) = ReadMMIO_U8(mips, addr);
+					R(rt) = ReadMMIO(mips, addr, 1);
 					break;
 				}
 				Core_MemoryException(addr, 1, PC, MemoryExceptionType::READ_WORD, "lbu");
@@ -559,7 +517,7 @@ namespace MIPSInt {
 			if (!Memory::IsValid2AlignedAddress(addr)) {
 				if (Memory::IsMMIOAccess(addr)) {
 					// This is a read from MMIO, so we can handle it.
-					R(rt) = ReadMMIO_U16(mips, addr);
+					R(rt) = ReadMMIO(mips, addr, 2);
 					break;
 				}
 				Core_MemoryException(addr, 2, PC, MemoryExceptionType::READ_WORD, "lhu");
@@ -572,7 +530,7 @@ namespace MIPSInt {
 			if (!Memory::IsValidAddress(addr)) {
 				if (Memory::IsMMIOAccess(addr)) {
 					// This is a write to MMIO, so we can handle it.
-					WriteMMIO_U8(mips, addr, (u8)(R(rt)));
+					WriteMMIO(mips, addr, 1, (u8)R(rt));
 					break;
 				}
 				Core_MemoryException(addr, 1, PC, MemoryExceptionType::WRITE_WORD, "sb");
@@ -584,7 +542,7 @@ namespace MIPSInt {
 			if (!Memory::IsValid2AlignedAddress(addr)) {
 				if (Memory::IsMMIOAccess(addr)) {
 					// This is a write to MMIO, so we can handle it.
-					WriteMMIO_U16(mips, addr, (u16)(R(rt)));
+					WriteMMIO(mips, addr, 2, (u16)R(rt));
 					break;
 				}
 				Core_MemoryException(addr, 2, PC, MemoryExceptionType::WRITE_WORD, "sh");
@@ -596,7 +554,7 @@ namespace MIPSInt {
 			if (!Memory::IsValid4AlignedAddress(addr)) {
 				if (Memory::IsMMIOAccess(addr)) {
 					// This is a write to MMIO, so we can handle it.
-					WriteMMIO_U32(mips, addr, R(rt));
+					WriteMMIO(mips, addr, 4, R(rt));
 					break;
 				}
 				Core_MemoryException(addr, 4, PC, MemoryExceptionType::WRITE_WORD, "sw");
@@ -613,6 +571,8 @@ namespace MIPSInt {
 				u32 mem = 0;
 				if (Memory::IsValidAddress(addr)) {
 					mem = Memory::ReadUnchecked_U32(addr & 0xfffffffc);
+				} else if (Memory::IsMMIOAccess(addr)) {
+					mem = ReadMMIO(mips, addr & 0xfffffffc, 4);
 				} else {
 					Core_MemoryException(addr, 4, PC, MemoryExceptionType::READ_WORD, "lwl");
 				}
@@ -628,6 +588,8 @@ namespace MIPSInt {
 				u32 mem = 0;
 				if (Memory::IsValidAddress(addr)) {
 					mem = Memory::ReadUnchecked_U32(addr & 0xfffffffc);
+				} else if (Memory::IsMMIOAccess(addr)) {
+					mem = ReadMMIO(mips, addr & 0xfffffffc, 4);
 				} else {
 					Core_MemoryException(addr, 4, PC, MemoryExceptionType::READ_WORD, "lwr");
 				}
@@ -682,6 +644,10 @@ namespace MIPSInt {
 		switch (op >> 26) {
 		case 49:
 			if (!Memory::IsValid4AlignedAddress(addr)) {
+				if (Memory::IsMMIOAccess(addr)) {
+					FI(ft) = ReadMMIO(mips, addr, 4);
+					break;
+				}
 				Core_MemoryException(addr, 4, PC, MemoryExceptionType::READ_WORD, "lwc1");
 				FI(ft) = 0;
 				break;
@@ -690,6 +656,10 @@ namespace MIPSInt {
 			break; //lwc1
 		case 57:
 			if (!Memory::IsValid4AlignedAddress(addr)) {
+				if (Memory::IsMMIOAccess(addr)) {
+					WriteMMIO(mips, addr, 4, FI(ft));
+					break;
+				}
 				Core_MemoryException(addr, 4, PC, MemoryExceptionType::WRITE_WORD, "swc1");
 				break;
 			}
@@ -739,15 +709,12 @@ namespace MIPSInt {
 					mips->fcr31 = value & 0x0181FFFF;
 					mips->fpcond = (value >> 23) & 1;
 					// Don't bother locking, assuming the CPU can't be reset now anyway.
-					if (MIPSComp::jit) {
+					if (mips->jit) {
 						// In case of DISABLE, we need to tell jit we updated FCR31.
-						MIPSComp::jit->UpdateFCR31();
+						mips->jit->UpdateFCR31();
 					} else {
 						// The interpreter emulates the rounding mode by putting the host FPU in it,
 						// so it has to switch right here rather than at the next block boundary.
-						// Restore first: the new value may be back to the default, which Apply
-						// deliberately doesn't write.
-						RestoreHostRoundingMode();
 						ApplyHostRoundingMode(mips);
 					}
 				} else {
@@ -764,15 +731,9 @@ namespace MIPSInt {
 		PC += 4;
 	}
 
-	// Dummy COP0 register file, for kernel-mode code (e.g. flash0:/reboot.bin) that reads/
-	// writes COP0 state directly - ordinary PSP user-mode code never executes these
-	// instructions (kernel state is reached via HLE syscalls instead), so this doesn't need
-	// to model real COP0 semantics (interrupts, exceptions, TLB, ...), just be non-fatal and
-	// give writes-then-reads-back-same-value behavior. Not part of MIPSState (which is
-	// layout-sensitive for JIT register allocation) and not save-stated, in keeping with
-	// "dummy" - revisit if this ever needs to be more than a bail-out.
-	static u32 g_cop0Regs[32];
-
+	// COP0, for kernel-mode code (e.g. flash0:/reboot.bin) that reads/writes it directly - ordinary
+	// PSP user-mode code never executes these instructions (kernel state is reached via HLE
+	// syscalls instead). Writes read back; nothing models interrupts, exceptions or the TLB.
 	void Int_Cop0(MIPSState *mips, MIPSOpcode op) {
 		int rt = _RT;
 		int rd = _RD;
@@ -790,12 +751,12 @@ namespace MIPSInt {
 				if (rd == 9)
 					R(rt) = (u32)CoreTiming::GetTicks(mips);
 				else
-					R(rt) = g_cop0Regs[rd];
+					R(rt) = mips->cop0[rd];
 			}
 			break;
 
 		case 4: //mtc0
-			g_cop0Regs[rd] = R(rt);
+			mips->cop0[rd] = R(rt);
 			break;
 
 		case 10: //rdpgpr
@@ -805,7 +766,7 @@ namespace MIPSInt {
 
 		case 11: //mfmc0 (di/ei)
 			if (rt != 0)
-				R(rt) = g_cop0Regs[12];  // Status
+				R(rt) = mips->cop0[12];  // Status
 			break;
 
 		case 14: //wrpgpr
@@ -817,6 +778,20 @@ namespace MIPSInt {
 			break;
 		}
 		PC += 4;
+	}
+
+	// Return from an exception, as MIPS32 defines it (cpu/cop0/eret): to ErrorEPC (30) if Status.ERL
+	// is set, clearing only that, otherwise to EPC (14), clearing Status.EXL. No delay slot.
+	void Int_Eret(MIPSState *mips, MIPSOpcode op) {
+		u32 &status = mips->cop0[12];
+		if (status & 4) {
+			mips->pc = mips->cop0[30];
+			status &= ~4;
+		} else {
+			mips->pc = mips->cop0[14];
+			status &= ~2;
+		}
+		mips->llBit = 0;
 	}
 
 	void Int_RType2(MIPSState *mips, MIPSOpcode op) {
@@ -967,34 +942,26 @@ namespace MIPSInt {
 		{
 		case 0: R(rd) = R(rt) << sa; break; //sll
 		case 2:
-			if (_RS == 0) //srl
-			{
-				R(rd) = R(rt) >> sa;
-				break;
-			}
-			else if (_RS == 1) //rotr
-			{
+			// Only the low bit of the unused rs field counts (cpu/cpu_alu/shift_encodings).
+			if (_RS & 1) { //rotr
 				R(rd) = __rotr(R(rt), sa);
-				break;
+			} else { //srl
+				R(rd) = R(rt) >> sa;
 			}
-			else
-				goto wrong;
+			break;
 
 		case 3: R(rd) = (u32)(((s32)R(rt)) >> sa); break; //sra
 		case 4: R(rd) = R(rt) << (R(rs) & 0x1F); break; //sllv
 		case 6:
-			if (_FD == 0) { //srlv
-				R(rd) = R(rt) >> (R(rs)&0x1F);
-				break;
-			} else if (_FD == 1) { // rotrv
+			// Same for the unused sa field.
+			if (_FD & 1) { // rotrv
 				R(rd) = __rotr(R(rt), R(rs));
-				break;
-			} else {
-				goto wrong;
+			} else { //srlv
+				R(rd) = R(rt) >> (R(rs) & 0x1F);
 			}
+			break;
 		case 7: R(rd) = (u32)(((s32)R(rt)) >> (R(rs) & 0x1F)); break; //srav
 		default:
-			wrong:
 			_dbg_assert_msg_(false,"Trying to interpret instruction that can't be interpreted");
 			break;
 		}
@@ -1011,7 +978,7 @@ namespace MIPSInt {
 			return;
 		}
 
-		switch ((op >> 6) & 31) {
+		switch (AllegrexBitOp(op)) {
 		case 16: // seb
 			R(rd) = SignExtend8ToU32(R(rt));
 			break;
@@ -1041,11 +1008,11 @@ namespace MIPSInt {
 			return;
 		}
 
-		switch (op & 0x3ff) {
-		case 0xA0: //wsbh
+		switch (AllegrexBitOp(op)) {
+		case 2: //wsbh
 			R(rd) = ((R(rt) & 0xFF00FF00) >> 8) | ((R(rt) & 0x00FF00FF) << 8);
 			break;
-		case 0xE0: //wsbw
+		case 3: //wsbw
 			R(rd) = swap32(R(rt));
 			break;
 		default:
@@ -1138,10 +1105,10 @@ namespace MIPSInt {
 			{
 			// round.w.s is round-half-to-even, not half-away-from-zero - and its mode is fixed,
 			// so unlike cvt.w.s below it must not follow fcr31. round_ieee_754 is both.
-			case 12: FsI(fd) = SaturatedFloatToInt(round_ieee_754(F(fs))); break; //round.w.s
-			case 13: FsI(fd) = SaturatedFloatToInt(truncf(F(fs))); break; //trunc.w.s
-			case 14: FsI(fd) = SaturatedFloatToInt(ceilf(F(fs))); break; //ceil.w.s
-			case 15: FsI(fd) = SaturatedFloatToInt(floorf(F(fs))); break; //floor.w.s
+			case 12: FsI(fd) = SaturatedFloatToInt(round_ieee_754(FlushForConversion(mips, F(fs)))); break; //round.w.s
+			case 13: FsI(fd) = SaturatedFloatToInt(truncf(FlushForConversion(mips, F(fs)))); break; //trunc.w.s
+			case 14: FsI(fd) = SaturatedFloatToInt(ceilf(FlushForConversion(mips, F(fs)))); break; //ceil.w.s
+			case 15: FsI(fd) = SaturatedFloatToInt(floorf(FlushForConversion(mips, F(fs)))); break; //floor.w.s
 			}
 			break;
 		case 32: F(fd) = (float)FsI(fs); break; //cvt.s.w
@@ -1149,10 +1116,10 @@ namespace MIPSInt {
 		case 36:
 			switch (mips->fcr31 & 3)
 			{
-			case 0: FsI(fd) = SaturatedFloatToInt(round_ieee_754(F(fs))); break;  // RINT_0
-			case 1: FsI(fd) = SaturatedFloatToInt(truncf(F(fs))); break;  // CAST_1
-			case 2: FsI(fd) = SaturatedFloatToInt(ceilf(F(fs))); break;  // CEIL_2
-			case 3: FsI(fd) = SaturatedFloatToInt(floorf(F(fs))); break;  // FLOOR_3
+			case 0: FsI(fd) = SaturatedFloatToInt(round_ieee_754(FlushForConversion(mips, F(fs)))); break;  // RINT_0
+			case 1: FsI(fd) = SaturatedFloatToInt(truncf(FlushForConversion(mips, F(fs)))); break;  // CAST_1
+			case 2: FsI(fd) = SaturatedFloatToInt(ceilf(FlushForConversion(mips, F(fs)))); break;  // CEIL_2
+			case 3: FsI(fd) = SaturatedFloatToInt(floorf(FlushForConversion(mips, F(fs)))); break;  // FLOOR_3
 			}
 			break; //cvt.w.s
 		default:
@@ -1286,15 +1253,18 @@ namespace MIPSInt {
 		PC += 4;
 	}
 
-	void Int_Emuhack(MIPSState *mips, MIPSOpcode op) {
-		if (((op >> 24) & 3) != EMUOP_CALL_REPLACEMENT) {
-			_dbg_assert_msg_(false, "Trying to interpret emuhack instruction that can't be interpreted");
-		}
-
+	void Int_CallReplacement(MIPSState *mips, MIPSOpcode op) {
 		_assert_((PC & 3) == 0);
 
+		// The CPU cores substitute these for replaced instructions, memory never holds them.
+		// If it does, the game is executing data.
+		if (Memory::Read_Instruction(PC).encoding == op.encoding) {
+			Core_ExecException(PC, PC, ExecExceptionType::ILLEGAL);
+			return;
+		}
+
 		// It's a replacement func!
-		int index = op.encoding & 0xFFFFFF;
+		int index = op.encoding & MIPS_REPLACEMENT_INDEX_MASK;
 		const ReplacementTableEntry *entry = GetReplacementFunc(index);
 		if (entry && entry->replaceFunc && (entry->flags & REPFLAG_DISABLED) == 0) {
 			// Like a syscall, a replacement function is host code - see Int_Syscall.
@@ -1304,7 +1274,7 @@ namespace MIPSInt {
 
 			if (entry->flags & (REPFLAG_HOOKENTER | REPFLAG_HOOKEXIT)) {
 				// Interpret the original instruction under the hook.
-				MIPSInterpret(mips, Memory::Read_Instruction(PC, true));
+				MIPSInterpret(mips, Memory::Read_Instruction(PC));
 			} else if (cycles < 0) {
 				// Leave PC unchanged, call the replacement again (assumes args are modified.)
 				mips->downcount += cycles;
@@ -1317,7 +1287,7 @@ namespace MIPSInt {
 				ERROR_LOG(Log::CPU, "Bad replacement function index %i", index);
 			}
 			// Interpret the original instruction under it.
-			MIPSInterpret(mips, Memory::Read_Instruction(PC, true));
+			MIPSInterpret(mips, Memory::Read_Instruction(PC));
 		}
 	}
 }

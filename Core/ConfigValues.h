@@ -132,6 +132,7 @@ enum class GPUBackend {
 	OPENGL = 0,
 	DIRECT3D11 = 2,
 	VULKAN = 3,
+	METAL = 4,
 };
 
 enum class DepthRasterMode {
@@ -282,6 +283,7 @@ enum class DebugOverlay : int {
 	GPU_PROFILE,
 	GPU_ALLOCATOR,
 	FRAMEBUFFER_LIST,
+	JIT_STATS,
 };
 
 // Android-only for now

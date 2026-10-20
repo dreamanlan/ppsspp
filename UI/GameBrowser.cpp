@@ -38,8 +38,10 @@
 #include "Core/Util/RecentFiles.h"
 #include "Core/HLE/sceCtrl.h"
 #include "Core/ELF/PBPReader.h"
+#include "Core/Util/VideoPlayer.h"
 
 #include "UI/GameBrowser.h"
+#include "UI/GamePacker.h"
 #include "UI/RemoteISOScreen.h"
 #include "UI/SavedataScreen.h"
 #include "UI/Store.h"
@@ -49,7 +51,33 @@
 #include "Common/Data/Text/I18n.h"
 #include "Core/Util/DarwinFileSystemServices.h" // For the browser
 
-static void DrawIconWithText(UIContext &dc, ImageID image, std::string_view text, const Bounds &bounds, bool gridStyle, const UI::Style &style) {
+// Icon dimensions in the large list, and its padding around the icon.
+static constexpr float LARGE_LIST_ICON_W = 144.0f;
+static constexpr float LARGE_LIST_ICON_H = 80.0f;
+static constexpr float LARGE_LIST_PAD = 6.0f;
+static constexpr float LARGE_LIST_LEFT_PAD = 11.0f;
+static constexpr float LARGE_LIST_INFO_SIZE = 64.0f;
+// Folders get bigger lines too, though not as big as the games.
+static constexpr float LARGE_LIST_FOLDER_H = 50.0f;
+
+// Where the text starts in the list modes.
+static float ListTextX(GameBrowserViewMode viewMode) {
+	if (viewMode == GameBrowserViewMode::LARGE_LIST) {
+		return LARGE_LIST_LEFT_PAD + LARGE_LIST_ICON_W * g_Config.fGameGridScale + 20.0f;
+	}
+	return 150.0f;
+}
+
+// Space to the right of the text in the list modes, for the info button.
+static float ListTextRightMargin(GameBrowserViewMode viewMode) {
+	if (viewMode == GameBrowserViewMode::LARGE_LIST) {
+		return LARGE_LIST_INFO_SIZE + LARGE_LIST_PAD * 2;
+	}
+	return 0.0f;
+}
+
+static void DrawIconWithText(UIContext &dc, ImageID image, std::string_view text, const Bounds &bounds, GameBrowserViewMode viewMode, const UI::Style &style) {
+	const bool gridStyle = viewMode == GameBrowserViewMode::GRID;
 	float tw, th;
 	dc.MeasureText(dc.GetFontStyle(), gridStyle ? g_Config.fGameGridScale : 1.0, gridStyle ? g_Config.fGameGridScale : 1.0, text, &tw, &th, 0);
 
@@ -82,15 +110,21 @@ static void DrawIconWithText(UIContext &dc, ImageID image, std::string_view text
 		dc.SetFontStyle(dc.GetTheme().uiFont);
 		dc.PopScissor();
 	} else {
-		dc.Draw()->DrawImage(image, bounds.x + 72, bounds.centerY(), 0.88f * (gridStyle ? g_Config.fGameGridScale : 1.0), style.fgColor, ALIGN_CENTER);
+		const float textX = ListTextX(viewMode);
+		if (viewMode == GameBrowserViewMode::LARGE_LIST) {
+			const float scale = g_Config.fGameGridScale;
+			dc.Draw()->DrawImage(image, bounds.x + LARGE_LIST_LEFT_PAD + LARGE_LIST_ICON_W * 0.5f * scale, bounds.centerY(), 0.88f * scale, style.fgColor, ALIGN_CENTER);
+		} else {
+			dc.Draw()->DrawImage(image, bounds.x + 72, bounds.centerY(), 0.88f * (gridStyle ? g_Config.fGameGridScale : 1.0), style.fgColor, ALIGN_CENTER);
+		}
 
-		float tx = 150;
-		int availableWidth = bounds.w - 150;
+		float tx = textX;
+		int availableWidth = bounds.w - textX - ListTextRightMargin(viewMode);
 		float sineWidth = std::max(0.0f, (tw - availableWidth)) / 2.0f;
 		if (availableWidth < tw) {
 			tx -= (1.0f + sin(time_now_d() * 1.5f)) * sineWidth;
 			Bounds tb = bounds;
-			tb.x = bounds.x + 150;
+			tb.x = bounds.x + textX;
 			tb.w = availableWidth;
 			dc.PushScissor(tb);
 		}
@@ -103,15 +137,28 @@ static void DrawIconWithText(UIContext &dc, ImageID image, std::string_view text
 
 class GameButton : public UI::Clickable {
 public:
-	GameButton(const Path &gamePath, bool gridStyle, UI::LayoutParams *layoutParams = nullptr)
-		: UI::Clickable(layoutParams), gridStyle_(gridStyle), gamePath_(gamePath) {}
+	GameButton(const Path &gamePath, GameBrowserViewMode viewMode, UI::LayoutParams *layoutParams = nullptr)
+		: UI::Clickable(layoutParams), viewMode_(viewMode), gridStyle_(viewMode == GameBrowserViewMode::GRID), gamePath_(gamePath) {}
 
 	void Draw(UIContext &dc) override;
 	std::string DescribeText() const override;
+	std::string SearchAlias() const override {
+		// Without the extension, or searching for "iso" would match every ISO. Only three or more
+		// letters counts as one, so a folder like "Game v1.2" keeps its version number.
+		std::string filename = gamePath_.GetFilename();
+		const std::string ext = gamePath_.GetFileExtension();
+		if (ext.size() >= 4 && ext.size() <= filename.size() && std::all_of(ext.begin() + 1, ext.end(), [](char c) { return c >= 'a' && c <= 'z'; })) {
+			filename.resize(filename.size() - ext.size());
+		}
+		return filename;
+	}
 	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override {
 		if (gridStyle_) {
 			w = 144 * g_Config.fGameGridScale;
 			h = 80 * g_Config.fGameGridScale;
+		} else if (viewMode_ == GameBrowserViewMode::LARGE_LIST) {
+			w = 500;
+			h = LARGE_LIST_ICON_H * g_Config.fGameGridScale + LARGE_LIST_PAD * 2;
 		} else {
 			w = 500;
 			h = 50;
@@ -124,8 +171,11 @@ public:
 		holdEnabled_ = hold;
 	}
 	bool Touch(const TouchInput &input) override {
-		const bool retval = UI::Clickable::Touch(input);
 		hovering_ = bounds_.Contains(input.x, input.y);
+		if (HasInfoButton() && TouchInfoButton(input)) {
+			return true;
+		}
+		const bool retval = UI::Clickable::Touch(input);
 		if (hovering_ && (input.flags & TouchInputFlags::DOWN)) {
 			holdStart_ = time_now_d();
 		}
@@ -163,6 +213,27 @@ public:
 			return true;
 		}
 
+		if (infoSelected_ && HasFocus() && UI::IsAcceptKey(key)) {
+			if (key.flags & KeyInputFlags::DOWN) {
+				infoButtonDown_ = true;
+			}
+			if ((key.flags & KeyInputFlags::UP) && infoButtonDown_) {
+				infoButtonDown_ = false;
+				TriggerOnHoldClick();
+			}
+			return true;
+		}
+
+		// Holding the accept button works like a long press, so a gamepad can do it too.
+		if (holdEnabled_ && HasFocus() && UI::IsAcceptKey(key) && !(key.flags & KeyInputFlags::IS_REPEAT)) {
+			if (key.flags & KeyInputFlags::DOWN) {
+				holdStart_ = time_now_d();
+			}
+			if (key.flags & KeyInputFlags::UP) {
+				holdStart_ = 0.0;
+			}
+		}
+
 		return Clickable::Key(key);
 	}
 
@@ -175,7 +246,39 @@ public:
 
 	void FocusChanged(UI::FocusFlags focusFlags) override {
 		UI::Clickable::FocusChanged(focusFlags);
+		if (focusFlags & UI::FocusFlags::LOST_FOCUS) {
+			// Don't let a held accept button carry over from a button we've left.
+			holdStart_ = 0.0;
+			// Moving to another game selects the game, not its info button.
+			infoSelected_ = false;
+			infoButtonDown_ = false;
+		}
 		TriggerOnHighlight(focusFlags);
+	}
+
+	// Left and right move between the game and its info button, so up and down still go from game to game.
+	bool CanMoveFocus(UI::FocusMove dir) const override {
+		if (!HasInfoButton()) {
+			return true;
+		}
+		// We handle these moves ourselves, so MoveFocus won't play the sound for them.
+		if (dir == UI::FocusMove::RIGHT && !infoSelected_) {
+			infoSelected_ = true;
+			UI::PlayUISound(UI::UISound::SELECT);
+			return false;
+		}
+		if (dir == UI::FocusMove::LEFT && infoSelected_) {
+			infoSelected_ = false;
+			UI::PlayUISound(UI::UISound::SELECT);
+			return false;
+		}
+		return true;
+	}
+
+	void DeviceLost() override {
+		if (video_) {
+			video_->DeviceLost();
+		}
 	}
 
 	UI::Event OnHoldClick;
@@ -198,19 +301,86 @@ private:
 		OnHighlight.Trigger(e);
 	}
 
+	void UpdateVideo(const std::shared_ptr<GameInfo> &ginfo, bool wantVideo);
+
+	// The large list has room for an info button on each line, doing the same as a long press.
+	bool HasInfoButton() const {
+		return viewMode_ == GameBrowserViewMode::LARGE_LIST && holdEnabled_;
+	}
+	Bounds InfoButtonBounds() const {
+		return Bounds(bounds_.x2() - LARGE_LIST_INFO_SIZE - LARGE_LIST_PAD, bounds_.centerY() - LARGE_LIST_INFO_SIZE * 0.5f, LARGE_LIST_INFO_SIZE, LARGE_LIST_INFO_SIZE);
+	}
+	// Returns true if the info button took the input.
+	bool TouchInfoButton(const TouchInput &input) {
+		if ((input.flags & TouchInputFlags::MOUSE) && (input.buttons & 1) == 0) {
+			return false;
+		}
+		const bool inside = InfoButtonBounds().Contains(input.x, input.y);
+		if (input.flags & TouchInputFlags::DOWN) {
+			infoButtonDown_ = inside;
+		}
+		if (!infoButtonDown_) {
+			return false;
+		}
+		if (input.flags & TouchInputFlags::UP) {
+			infoButtonDown_ = false;
+			if (inside && !(input.flags & TouchInputFlags::CANCEL)) {
+				TriggerOnHoldClick();
+			}
+		}
+		return true;
+	}
+
+	GameBrowserViewMode viewMode_;
 	bool gridStyle_;
 	Path gamePath_;
 	std::string title_;
+
+	// The ICON1.PMF video, played in place of the icon in the large list, like the XMB does.
+	std::unique_ptr<PMFVideoTexture> video_;
+	Instant videoStart_;
 
 	double holdStart_ = 0.0;
 	bool holdEnabled_ = true;
 	bool showInfoPressed_ = false;
 	bool infoKeyPressed_ = false;
 	bool hovering_ = false;
+	bool infoButtonDown_ = false;
+	// The info button has the keyboard focus, rather than the game. Changed from CanMoveFocus, hence mutable.
+	mutable bool infoSelected_ = false;
 };
 
+void GameButton::UpdateVideo(const std::shared_ptr<GameInfo> &ginfo, bool wantVideo) {
+	if (!wantVideo) {
+		video_.reset();
+		return;
+	}
+	if (video_ || !ginfo->Ready(GameInfoFlags::ICON1_PMF)) {
+		return;
+	}
+	std::string data;
+	{
+		std::lock_guard<std::mutex> guard(ginfo->lock);
+		data = ginfo->icon1pmf;
+	}
+	if (!data.empty()) {
+		video_ = std::make_unique<PMFVideoTexture>(std::move(data));
+		videoStart_ = Instant::Now();
+	}
+}
+
 void GameButton::Draw(UIContext &dc) {
-	std::shared_ptr<GameInfo> ginfo = g_gameInfoCache->GetInfo(dc.GetDrawContext(), gamePath_, GameInfoFlags::PARAM_SFO | GameInfoFlags::ICON);
+	const bool largeList = viewMode_ == GameBrowserViewMode::LARGE_LIST;
+	// Like the XMB, only the selected game plays its video. Only keyboard/gamepad focus selects, since with
+	// touch or the mouse, getting a video to play without launching the game was too fiddly.
+	const bool wantVideo = largeList && HasFocus() && pmf_player_available();
+
+	GameInfoFlags infoFlags = GameInfoFlags::PARAM_SFO | GameInfoFlags::ICON;
+	if (wantVideo) {
+		infoFlags |= GameInfoFlags::ICON1_PMF;
+	}
+	std::shared_ptr<GameInfo> ginfo = g_gameInfoCache->GetInfo(dc.GetDrawContext(), gamePath_, infoFlags);
+	UpdateVideo(ginfo, wantVideo);
 	Draw::Texture *texture = nullptr;
 	u32 color = 0, shadowColor = 0;
 	using namespace UI;
@@ -283,9 +453,17 @@ void GameButton::Draw(UIContext &dc) {
 	int y = bounds_.y;
 	int w = gridStyle_ ? bounds_.w : 144;
 	int h = bounds_.h;
+	if (largeList) {
+		x += LARGE_LIST_LEFT_PAD;
+		y += LARGE_LIST_PAD;
+		w = LARGE_LIST_ICON_W * g_Config.fGameGridScale;
+		h = LARGE_LIST_ICON_H * g_Config.fGameGridScale;
+	}
+	const float textX = ListTextX(viewMode_);
 
+	const bool rowFocused = HasFocus() && !infoSelected_;
 	if (!gridStyle_ || !texture) {
-		if (HasFocus())
+		if (rowFocused)
 			style = down_ ? dc.GetTheme().itemDownStyle : dc.GetTheme().itemFocusedStyle;
 
 		Drawable bg = style.background;
@@ -294,6 +472,13 @@ void GameButton::Draw(UIContext &dc) {
 		dc.RebindTexture();
 		dc.FillRect(bg, bounds_);
 		dc.Draw()->Flush();
+	}
+
+	if (texture && video_) {
+		Draw::Texture *frame = video_->Update(dc.GetDrawContext(), videoStart_.ElapsedSeconds());
+		if (frame) {
+			texture = frame;
+		}
 	}
 
 	if (texture) {
@@ -315,7 +500,7 @@ void GameButton::Draw(UIContext &dc) {
 	// Render button
 	int dropsize = 10;
 	if (texture) {
-		if (!gridStyle_) {
+		if (!gridStyle_ && !largeList) {
 			x += 4;
 		}
 		if (txOffset) {
@@ -357,11 +542,11 @@ void GameButton::Draw(UIContext &dc) {
 	if (imageIcon.isValid()) {
 		Style style = dc.GetTheme().itemStyle;
 
-		if (HasFocus()) style = dc.GetTheme().itemFocusedStyle;
+		if (rowFocused) style = dc.GetTheme().itemFocusedStyle;
 		if (down_) style = dc.GetTheme().itemDownStyle;
 		if (!IsEnabled()) style = dc.GetTheme().itemDisabledStyle;
 
-		DrawIconWithText(dc, imageIcon, ginfo->GetTitle(), bounds_, gridStyle_, style);
+		DrawIconWithText(dc, imageIcon, ginfo->GetTitle(), bounds_, viewMode_, style);
 
 		if (overlayColor) {
 			dc.FillRect(Drawable(overlayColor), overlayBounds);
@@ -387,22 +572,22 @@ void GameButton::Draw(UIContext &dc) {
 
 			dc.MeasureText(dc.GetFontStyle(), 1.0f, 1.0f, title_, &tw, &th, 0);
 
-			int availableWidth = bounds_.w - 150;
+			int availableWidth = bounds_.w - textX - ListTextRightMargin(viewMode_);
 			if (g_Config.bShowIDOnGameIcon) {
 				float vw, vh;
 				dc.MeasureText(dc.GetFontStyle(), 0.7f, 0.7f, ginfo->id_version, &vw, &vh, 0);
 				availableWidth -= vw + 20;
 				dc.SetFontScale(0.7f, 0.7f);
-				dc.DrawText(ginfo->id_version, bounds_.x + availableWidth + 160, bounds_.centerY(), style.fgColor, ALIGN_VCENTER);
+				dc.DrawText(ginfo->id_version, bounds_.x + availableWidth + textX + 10, bounds_.centerY(), style.fgColor, ALIGN_VCENTER);
 				dc.SetFontScale(1.0f, 1.0f);
 			}
 			float sineWidth = std::max(0.0f, (tw - availableWidth)) / 2.0f;
 
-			float tx = 150;
+			float tx = textX;
 			if (availableWidth < tw) {
 				tx -= (1.0f + sin(time_now_d() * 1.5f)) * sineWidth;
 				Bounds tb = bounds_;
-				tb.x = bounds_.x + 150;
+				tb.x = bounds_.x + textX;
 				tb.w = availableWidth;
 				dc.PushScissor(tb);
 			}
@@ -428,6 +613,8 @@ void GameButton::Draw(UIContext &dc) {
 		if (gearImage) {
 			if (gridStyle_) {
 				dc.Draw()->DrawImage(ImageID("I_GEAR_SMALL"), bounds_.x, y + h - gearImage->h * g_Config.fGameGridScale, g_Config.fGameGridScale);
+			} else if (largeList) {
+				dc.Draw()->DrawImage(ImageID("I_GEAR_SMALL"), bounds_.x + LARGE_LIST_LEFT_PAD, y + h - gearImage->h * g_Config.fGameGridScale, g_Config.fGameGridScale);
 			} else {
 				dc.Draw()->DrawImage(ImageID("I_GEAR_SMALL"), bounds_.x + 4, y, 1.0f);
 			}
@@ -449,21 +636,51 @@ void GameButton::Draw(UIContext &dc) {
 			if (gridStyle_) {
 				dc.Draw()->DrawImage(regionIcons[regionIndex], bounds_.x + bounds_.w - (image->w + 5) * g_Config.fGameGridScale,
 					y + h - (image->h + 5) * g_Config.fGameGridScale, g_Config.fGameGridScale);
+			} else if (largeList) {
+				dc.Draw()->DrawImage(regionIcons[regionIndex], bounds_.x + LARGE_LIST_LEFT_PAD + (LARGE_LIST_ICON_W - image->w - 5) * g_Config.fGameGridScale,
+					y + h - (image->h + 5) * g_Config.fGameGridScale, g_Config.fGameGridScale);
 			} else {
 				dc.Draw()->DrawImage(regionIcons[regionIndex], bounds_.x + 4, y + h - image->h - 5, 1.0f);
 			}
 		}
 	}
 
+	if (HasInfoButton()) {
+		const Bounds infoBounds = InfoButtonBounds();
+		Style infoStyle = HasFocus() ? dc.GetTheme().itemFocusedStyle : dc.GetTheme().itemStyle;
+		if (infoButtonDown_) {
+			infoStyle = dc.GetTheme().itemDownStyle;
+			dc.FillRect(infoStyle.background, infoBounds);
+		} else if (HasFocus() && infoSelected_) {
+			dc.FillRect(infoStyle.background, infoBounds);
+		}
+		dc.Draw()->DrawImage(ImageID("I_INFO"), infoBounds.centerX(), infoBounds.centerY(), 1.0f, infoStyle.fgColor, ALIGN_CENTER);
+	}
+
 	if (overlayColor) {
 		dc.FillRect(Drawable(overlayColor), overlayBounds);
+	}
+
+	// Covers the icon while the game is being compressed. Clicking opens the game screen instead of playing.
+	GamePacker::Status packStatus;
+	if (GamePacker::IsPacking(gamePath_) && GamePacker::GetStatus(&packStatus)) {
+		auto ga = GetI18NCategory(I18NCat::GAME);
+		const Bounds iconBounds(x, y, w, h);
+		dc.FillRect(Drawable(0xD0505050), iconBounds);
+		const float scale = gridStyle_ || largeList ? 0.8f * g_Config.fGameGridScale : 0.6f;
+		dc.SetFontStyle(dc.GetTheme().uiFont);
+		dc.SetFontScale(scale, scale);
+		const std::string text = std::string(ga->T("Compressing...")) + StringFromFormat("\n%d%%", (int)(packStatus.progress * 100.0f));
+		dc.DrawTextRectSqueeze(text, iconBounds, 0xFFFFFFFF, ALIGN_CENTER);
+		dc.SetFontScale(1.0f, 1.0f);
 	}
 
 	dc.RebindTexture();
 }
 
 std::string GameButton::DescribeText() const {
-	std::shared_ptr<GameInfo> ginfo = g_gameInfoCache->GetInfo(nullptr, gamePath_, GameInfoFlags::PARAM_SFO);
+	// LOW: search calls this for every game in the list, which mustn't hold up the visible ones.
+	std::shared_ptr<GameInfo> ginfo = g_gameInfoCache->GetInfo(nullptr, gamePath_, GameInfoFlags::PARAM_SFO, nullptr, GameInfoFlags::EMPTY, TaskPriority::LOW);
 	if (!ginfo->Ready(GameInfoFlags::PARAM_SFO))
 		return "...";
 	auto u = GetI18NCategory(I18NCat::UI_ELEMENTS);
@@ -472,12 +689,18 @@ std::string GameButton::DescribeText() const {
 
 class DirButton : public UI::Button {
 public:
-	DirButton(const Path &path, bool gridStyle, UI::LayoutParams *layoutParams)
-		: UI::Button(path.ToString(), layoutParams), path_(path), gridStyle_(gridStyle), absolute_(false) {}
-	DirButton(const Path &path, const std::string &text, bool gridStyle, UI::LayoutParams *layoutParams = 0)
-		: UI::Button(text, layoutParams), path_(path), gridStyle_(gridStyle), absolute_(true) {}
+	DirButton(const Path &path, GameBrowserViewMode viewMode, UI::LayoutParams *layoutParams)
+		: UI::Button(path.ToString(), layoutParams), path_(path), viewMode_(viewMode), absolute_(false) {}
+	DirButton(const Path &path, const std::string &text, GameBrowserViewMode viewMode, UI::LayoutParams *layoutParams = 0)
+		: UI::Button(text, layoutParams), path_(path), viewMode_(viewMode), absolute_(true) {}
 
 	void Draw(UIContext &dc) override;
+	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override {
+		UI::Button::GetContentDimensions(dc, w, h);
+		if (viewMode_ == GameBrowserViewMode::LARGE_LIST) {
+			h = std::max(h, LARGE_LIST_FOLDER_H * g_Config.fGameGridScale + LARGE_LIST_PAD * 2);
+		}
+	}
 
 	const Path &GetPath() const {
 		return path_;
@@ -497,7 +720,7 @@ public:
 
 private:
 	Path path_;
-	bool gridStyle_;
+	GameBrowserViewMode viewMode_;
 	bool absolute_;
 	bool pinned_ = false;
 };
@@ -519,11 +742,11 @@ void DirButton::Draw(UIContext &dc) {
 	if (!IsEnabled()) style = dc.GetTheme().itemDisabledStyle;
 
 	dc.FillRect(style.background, bounds_);
-	DrawIconWithText(dc, image, text, bounds_, gridStyle_, style);
+	DrawIconWithText(dc, image, text, bounds_, viewMode_, style);
 }
 
-GameBrowser::GameBrowser(int token, const Path &path, BrowseFlags browseFlags, bool portrait, bool *gridStyle, ScreenManager *screenManager, std::string_view lastText, std::string_view lastLink, UI::LayoutParams *layoutParams)
-	: LinearLayout(ORIENT_VERTICAL, layoutParams), gridStyle_(gridStyle), browseFlags_(browseFlags), portrait_(portrait), lastText_(lastText), lastLink_(lastLink), screenManager_(screenManager), token_(token) {
+GameBrowser::GameBrowser(int token, const Path &path, BrowseFlags browseFlags, bool portrait, int *viewMode, ScreenManager *screenManager, std::string_view lastText, std::string_view lastLink, UI::LayoutParams *layoutParams)
+	: LinearLayout(ORIENT_VERTICAL, layoutParams), viewMode_(viewMode), browseFlags_(browseFlags), portrait_(portrait), lastText_(lastText), lastLink_(lastLink), screenManager_(screenManager), token_(token) {
 	using namespace UI;
 	path_.SetUserAgent(StringFromFormat("PPSSPP/%s", PPSSPP_GIT_VERSION));
 	Path memstickRoot = GetSysDirectory(DIRECTORY_MEMSTICK_ROOT);
@@ -543,9 +766,19 @@ GameBrowser::GameBrowser(int token, const Path &path, BrowseFlags browseFlags, b
 }
 
 void GameBrowser::FocusGame(const Path &gamePath) {
-	focusGamePath_ = gamePath;
+	// If the button's still there, just focus it. That keeps the search results and scroll position.
+	if (gameList_) {
+		for (int i = 0; i < gameList_->GetNumSubviews(); i++) {
+			GameButton *button = dynamic_cast<GameButton *>(gameList_->GetViewByIndex(i));
+			if (button && button->GamePath() == gamePath && button->GetVisibility() == UI::V_VISIBLE) {
+				button->SetFocus(UI::FocusFlags::CAUSE_RESTORE);
+				return;
+			}
+		}
+	}
+	// Otherwise, Refresh focuses it when it recreates the buttons.
+	focusPath_ = gamePath;
 	refreshPending_ = true;
-	focusGamePath_.clear();
 }
 
 void GameBrowser::SetPath(const Path &path) {
@@ -555,6 +788,30 @@ void GameBrowser::SetPath(const Path &path) {
 }
 
 bool GameBrowser::Key(const KeyInput &input) {
+	// Alt+Up goes to the parent directory, as in file managers.
+	if ((input.flags & KeyInputFlags::DOWN) && (input.flags & KeyInputFlags::ModAlt) && input.keyCode == NKCODE_DPAD_UP && input.deviceId == DEVICE_ID_KEYBOARD) {
+		if ((browseFlags_ & BrowseFlags::NAVIGATE) && path_.CanNavigateUp()) {
+			NavigateUp();
+			return true;
+		}
+	}
+
+	// Backspace with no search going also goes to the parent directory, as in file managers. Never on
+	// a repeat, or holding it would climb to the root (or carry on up after clearing a search). Not
+	// every platform flags repeats, so this also tracks whether it's held.
+	if (input.keyCode == NKCODE_DEL && input.deviceId == DEVICE_ID_KEYBOARD) {
+		if (input.flags & KeyInputFlags::UP) {
+			backspaceHeld_ = false;
+		} else if (input.flags & KeyInputFlags::DOWN) {
+			const bool repeat = backspaceHeld_ || (input.flags & KeyInputFlags::IS_REPEAT);
+			backspaceHeld_ = true;
+			if (!repeat && search_.searchFilter.empty() && (browseFlags_ & BrowseFlags::NAVIGATE) && path_.CanNavigateUp()) {
+				NavigateUp();
+				return true;
+			}
+		}
+	}
+
 	bool retval = LinearLayout::Key(input);
 	if (retval) {
 		return true;
@@ -569,8 +826,15 @@ void GameBrowser::SetSearchFilter(const std::string &filter, bool setKeyboardFoc
 	search_.ApplySearchFilter(gameList_, setKeyboardFocus);
 }
 
+GameBrowserViewMode GameBrowser::ViewMode() const {
+	if (*viewMode_ < (int)GameBrowserViewMode::GRID || *viewMode_ > (int)GameBrowserViewMode::LARGE_LIST) {
+		return GameBrowserViewMode::GRID;
+	}
+	return (GameBrowserViewMode)*viewMode_;
+}
+
 void GameBrowser::LayoutChange(UI::EventParams &e) {
-	*gridStyle_ = e.a == 0 ? true : false;
+	*viewMode_ = e.a;
 	refreshPending_ = true;
 }
 
@@ -640,10 +904,6 @@ void GameBrowser::PinToggleClick(UI::EventParams &e) {
 	refreshPending_ = true;
 }
 
-bool GameBrowser::DisplayTopBar() {
-	return path_.GetPath().ToString() != "!RECENT";
-}
-
 bool GameBrowser::HasSpecialFiles(std::vector<Path> &filenames) {
 	if (path_.GetPath().ToString() == "!RECENT") {
 		filenames.clear();
@@ -672,7 +932,7 @@ void GameBrowser::Update() {
 void GameBrowser::Draw(UIContext &dc) {
 	using namespace UI;
 
-	if (lastScale_ != g_Config.fGameGridScale || lastLayoutWasGrid_ != *gridStyle_) {
+	if (lastScale_ != g_Config.fGameGridScale || lastViewMode_ != ViewMode()) {
 		refreshPending_ = true;
 	}
 
@@ -736,7 +996,8 @@ void GameBrowser::Refresh() {
 	using namespace UI;
 
 	lastScale_ = g_Config.fGameGridScale;
-	lastLayoutWasGrid_ = *gridStyle_;
+	lastViewMode_ = ViewMode();
+	const bool gridStyle = lastViewMode_ == GameBrowserViewMode::GRID;
 
 	// Kill all the contents
 	Clear();
@@ -745,103 +1006,94 @@ void GameBrowser::Refresh() {
 	Add(new Spacer(1.0f));
 	auto mm = GetI18NCategory(I18NCat::MAINMENU);
 
-	// No topbar on recent screen
 	gameList_ = nullptr;
 
-	if (DisplayTopBar()) {
-		LinearLayout *topBar = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(8, 0, 8, 0)));
-		Add(topBar);
+	LinearLayout *topBar = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(8, 0, 8, 0)));
+	Add(topBar);
 
-		const bool pathOnSeparateLine = g_display.dp_xres < 1050 || portrait_;
+	const bool pathOnSeparateLine = g_display.dp_xres < 1050 || portrait_;
+	// Recent isn't a real folder, so it gets no path or refresh.
+	const bool isRecent = path_.GetPath().ToString() == "!RECENT";
 
-		std::string pathStr = GetFriendlyPath(path_.GetPath(), aliasMatch_, aliasDisplay_);
+	std::string pathStr = GetFriendlyPath(path_.GetPath(), aliasMatch_, aliasDisplay_);
 
-		if (pathOnSeparateLine) {
-			Add(new TextView(pathStr, ALIGN_VCENTER | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(8, 0, 8, 0))));
+	if (pathOnSeparateLine && !isRecent) {
+		Add(new TextView(pathStr, ALIGN_VCENTER | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(8, 0, 8, 0))));
+	}
+	if (browseFlags_ & BrowseFlags::NAVIGATE) {
+		if (!pathOnSeparateLine) {
+			topBar->Add(new Spacer(2.0f));
+			topBar->Add(new TextView(pathStr, ALIGN_VCENTER | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, 64.0f, 1.0f)));
 		}
-		if (browseFlags_ & BrowseFlags::NAVIGATE) {
-			if (!pathOnSeparateLine) {
-				topBar->Add(new Spacer(2.0f));
-				topBar->Add(new TextView(pathStr, ALIGN_VCENTER | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, 64.0f, 1.0f)));
-			}
-			topBar->Add(new Choice(ImageID("I_HOME"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::OnHomeClick);
-			if (System_GetPropertyBool(SYSPROP_HAS_ADDITIONAL_STORAGE)) {
-				topBar->Add(new Choice(ImageID("I_SDCARD"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::StorageClick);
-			}
+		topBar->Add(new Choice(ImageID("I_HOME"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::OnHomeClick);
+		if (System_GetPropertyBool(SYSPROP_HAS_ADDITIONAL_STORAGE)) {
+			topBar->Add(new Choice(ImageID("I_SDCARD"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::StorageClick);
+		}
 #if PPSSPP_PLATFORM(IOS_APP_STORE)
-			// Don't show a browse button, not meaningful to browse outside the documents folder it seems,
-			// as we can't list things like document folders of another app, as far as I can tell.
-			// However, we do show a Load.. button for picking individual files, that seems to work.
+		// Don't show a browse button, not meaningful to browse outside the documents folder it seems,
+		// as we can't list things like document folders of another app, as far as I can tell.
+		// However, we do show a Load.. button for picking individual files, that seems to work.
 #elif PPSSPP_PLATFORM(IOS) || PPSSPP_PLATFORM(MAC)
-			// on Darwin, we don't show the 'Browse' text alongside the image
-			// we show just the image, because we don't need to emphasize the button on Darwin
+		// on Darwin, we don't show the 'Browse' text alongside the image
+		// we show just the image, because we don't need to emphasize the button on Darwin
+		// (tvOS has no folder browser.)
+		if (System_GetPropertyBool(SYSPROP_HAS_FOLDER_BROWSER)) {
 			topBar->Add(new Choice(ImageID("I_FOLDER_OPEN"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::BrowseClick);
+		}
 #else
-			if ((browseFlags_ & BrowseFlags::BROWSE) && System_GetPropertyBool(SYSPROP_HAS_FOLDER_BROWSER)) {
-				// Collapse the button title on very small screens (Retroid Pocket) or portrait mode.
-				std::string_view browseTitle = (g_display.dp_xres <= 550 || portrait_) ? "" : mm->T("Browse");
-				topBar->Add(new Choice(browseTitle, ImageID("I_FOLDER_OPEN"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::BrowseClick);
-			}
-			if (System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_TV) {
-				topBar->Add(new Choice(mm->T("Enter Path"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Add([=](UI::EventParams &) {
-					auto mm = GetI18NCategory(I18NCat::MAINMENU);
-					System_InputBoxGetString(token_, mm->T("Enter Path"), path_.GetPath().ToString(), false, [=](std::string_view responseString, int responseValue) {
-						this->SetPath(Path(responseString));
-						});
+		if ((browseFlags_ & BrowseFlags::BROWSE) && System_GetPropertyBool(SYSPROP_HAS_FOLDER_BROWSER)) {
+			// Collapse the button title on very small screens (Retroid Pocket) or portrait mode.
+			std::string_view browseTitle = (g_display.dp_xres <= 550 || portrait_) ? "" : mm->T("Browse");
+			topBar->Add(new Choice(browseTitle, ImageID("I_FOLDER_OPEN"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::BrowseClick);
+		}
+		if (System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_TV) {
+			topBar->Add(new Choice(mm->T("Enter Path"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Add([=](UI::EventParams &) {
+				auto mm = GetI18NCategory(I18NCat::MAINMENU);
+				System_InputBoxGetString(token_, mm->T("Enter Path"), path_.GetPath().ToString(), false, [=](std::string_view responseString, int responseValue) {
+					this->SetPath(Path(responseString));
 					});
-			}
+				});
+		}
 #endif
-		} else if (!pathOnSeparateLine) {
-			topBar->Add(new Spacer(new LinearLayoutParams(FILL_PARENT, 64.0f, 1.0f)));
-		}
+	} else if (!pathOnSeparateLine || isRecent) {
+		topBar->Add(new Spacer(new LinearLayoutParams(FILL_PARENT, 64.0f, 1.0f)));
+	}
 
-		if (browseFlags_ & BrowseFlags::HOMEBREW_STORE) {
-			topBar->Add(new Choice(mm->T("Homebrew store"), ImageID("I_HOMEBREW_STORE"), new UI::LinearLayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::OnHomebrewStore);
-		}
+	if (browseFlags_ & BrowseFlags::HOMEBREW_STORE) {
+		topBar->Add(new Choice(mm->T("Homebrew store"), ImageID("I_HOMEBREW_STORE"), new UI::LinearLayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::OnHomebrewStore);
+	}
 
-		if (browseFlags_ & BrowseFlags::UPLOAD_BUTTON) {
-			topBar->Add(new Choice(ImageID("I_FOLDER_UPLOAD"), new UI::LinearLayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Add([this](UI::EventParams &e) {
-				screenManager_->push(new UploadScreen(path_.GetPath()));
-			});
-		}
+	if (browseFlags_ & BrowseFlags::UPLOAD_BUTTON) {
+		Choice *uploadChoice = topBar->Add(new Choice(ImageID("I_FOLDER_UPLOAD"), new UI::LinearLayoutParams(WRAP_CONTENT, 64.0f)));
+		uploadChoice->OnClick.Add([this](UI::EventParams &e) {
+			screenManager_->push(new UploadScreen(path_.GetPath()));
+		});
+		// Nowhere to put the files until a game folder has been chosen.
+		uploadChoice->SetEnabledFunc([this]() {
+			return !path_.GetPath().empty();
+		});
+	}
 
-		ChoiceStrip *layoutChoice = topBar->Add(new ChoiceStrip(ORIENT_HORIZONTAL));
-		layoutChoice->AddChoice(ImageID("I_GRID"));
-		layoutChoice->AddChoice(ImageID("I_LINES"));
-		layoutChoice->SetSelection(*gridStyle_ ? 0 : 1, false);
-		layoutChoice->OnChoice.Handle(this, &GameBrowser::LayoutChange);
+	ChoiceStrip *layoutChoice = topBar->Add(new ChoiceStrip(ORIENT_HORIZONTAL));
+	layoutChoice->AddChoice(ImageID("I_GRID"));
+	layoutChoice->AddChoice(ImageID("I_LINES"));
+	layoutChoice->AddChoice(ImageID("I_LARGE_LIST"));
+	layoutChoice->SetSelection((int)lastViewMode_, false);
+	layoutChoice->OnChoice.Handle(this, &GameBrowser::LayoutChange);
+	if (!isRecent) {
 		topBar->Add(new Choice(ImageID("I_ROTATE_LEFT"), new LayoutParams(64.0f, 64.0f)))->OnClick.Add([=](UI::EventParams &e) {
 			path_.Refresh();
 			refreshPending_ = true;
 		});
-		topBar->Add(new Choice(ImageID("I_GEAR"), new LayoutParams(64.0f, 64.0f)))->OnClick.Handle(this, &GameBrowser::GridSettingsClick);
+	}
+	topBar->Add(new Choice(ImageID("I_GEAR"), new LayoutParams(64.0f, 64.0f)))->OnClick.Handle(this, &GameBrowser::GridSettingsClick);
 
-		if (*gridStyle_) {
-			gameList_ = new UI::GridLayoutList(UI::GridLayoutSettings(150 * g_Config.fGameGridScale, 85 * g_Config.fGameGridScale), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(10, 0, 6, 0)));
-		} else {
-			UI::LinearLayout *gl = new UI::LinearLayoutList(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
-			gl->SetSpacing(4.0f);
-			gameList_ = gl;
-		}
+	if (gridStyle) {
+		gameList_ = new UI::GridLayoutList(UI::GridLayoutSettings(150 * g_Config.fGameGridScale, 85 * g_Config.fGameGridScale), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(10, 0, 6, 0)));
 	} else {
-		if (*gridStyle_) {
-			gameList_ = new UI::GridLayoutList(UI::GridLayoutSettings(150 * g_Config.fGameGridScale, 85 * g_Config.fGameGridScale), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(10, 0, 6, 0)));
-		} else {
-			UI::LinearLayout *gl = new UI::LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
-			gl->SetSpacing(4.0f);
-			gameList_ = gl;
-		}
-		// Until we can come up with a better space to put it (next to the tabs?) let's get rid of the icon config
-		// button on the Recent tab, it's ugly. You can use the button from the other tabs.
-
-		// LinearLayout *gridOptionColumn = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(64.0, 64.0f));
-		// gridOptionColumn->Add(new Spacer(12.0));
-		// gridOptionColumn->Add(new Choice(ImageID("I_GEAR"), new LayoutParams(64.0f, 64.0f)))->OnClick.Handle(this, &GameBrowser::GridSettingsClick);
-		// LinearLayout *grid = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
-		// gameList_->ReplaceLayoutParams(new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, 0.75));
-		// grid->Add(gameList_);
-		// grid->Add(gridOptionColumn);
-		// Add(grid);
+		UI::LinearLayout *gl = new UI::LinearLayoutList(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
+		gl->SetSpacing(4.0f);
+		gameList_ = gl;
 	}
 	Add(gameList_);
 
@@ -856,7 +1108,7 @@ void GameBrowser::Refresh() {
 	std::vector<Path> filenames;
 	if (HasSpecialFiles(filenames)) {
 		for (size_t i = 0; i < filenames.size(); i++) {
-			gameButtons.push_back(new GameButton(filenames[i], *gridStyle_, new UI::LinearLayoutParams(*gridStyle_ == true ? UI::WRAP_CONTENT : UI::FILL_PARENT, UI::WRAP_CONTENT)));
+			gameButtons.push_back(new GameButton(filenames[i], lastViewMode_, new UI::LinearLayoutParams(gridStyle ? UI::WRAP_CONTENT : UI::FILL_PARENT, UI::WRAP_CONTENT)));
 		}
 	} else if (!listingPending_) {
 		std::vector<File::FileInfo> fileInfo;
@@ -874,10 +1126,10 @@ void GameBrowser::Refresh() {
 
 			if (!isGame && !isSaveData) {
 				if (browseFlags_ & BrowseFlags::NAVIGATE) {
-					dirButtons.push_back(new DirButton(fileInfo[i].fullName, fileInfo[i].name, *gridStyle_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
+					dirButtons.push_back(new DirButton(fileInfo[i].fullName, fileInfo[i].name, lastViewMode_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
 				}
 			} else {
-				gameButtons.push_back(new GameButton(fileInfo[i].fullName, *gridStyle_, new UI::LinearLayoutParams(*gridStyle_ == true ? UI::WRAP_CONTENT : UI::FILL_PARENT, UI::WRAP_CONTENT)));
+				gameButtons.push_back(new GameButton(fileInfo[i].fullName, lastViewMode_, new UI::LinearLayoutParams(gridStyle ? UI::WRAP_CONTENT : UI::FILL_PARENT, UI::WRAP_CONTENT)));
 			}
 		}
 
@@ -890,7 +1142,7 @@ void GameBrowser::Refresh() {
 			if (!fileInfo.empty()) {
 				for (size_t i = 0; i < fileInfo.size(); i++) {
 					if (!fileInfo[i].isDirectory) {
-						GameButton *b = new GameButton(fileInfo[i].fullName, *gridStyle_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::WRAP_CONTENT));
+						GameButton *b = new GameButton(fileInfo[i].fullName, lastViewMode_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::WRAP_CONTENT));
 						b->SetHoldEnabled(false);
 						gameButtons.push_back(b);
 					}
@@ -899,16 +1151,17 @@ void GameBrowser::Refresh() {
 		}
 	}
 
+	DirButton *upButton = nullptr;
 	if (browseFlags_ & BrowseFlags::NAVIGATE) {
 		if (path_.CanNavigateUp()) {
-			gameList_->Add(new DirButton(Path(".."), *gridStyle_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)))->
-				OnClick.Handle(this, &GameBrowser::NavigateClick);
+			upButton = gameList_->Add(new DirButton(Path(".."), lastViewMode_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
+			upButton->OnClick.Handle(this, &GameBrowser::NavigateClick);
 		}
 
 		// Add any pinned paths before other directories.
 		auto pinnedPaths = GetPinnedPaths();
 		for (const auto &pinnedPath : pinnedPaths) {
-			DirButton *pinnedDir = gameList_->Add(new DirButton(pinnedPath, pinnedPath.GetFilename(), *gridStyle_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
+			DirButton *pinnedDir = gameList_->Add(new DirButton(pinnedPath, pinnedPath.GetFilename(), lastViewMode_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
 			pinnedDir->OnClick.Handle(this, &GameBrowser::NavigateClick);
 			pinnedDir->SetPinned(true);
 		}
@@ -920,6 +1173,9 @@ void GameBrowser::Refresh() {
 
 	for (size_t i = 0; i < dirButtons.size(); i++) {
 		gameList_->Add(dirButtons[i])->OnClick.Handle(this, &GameBrowser::NavigateClick);
+		if (!focusPath_.empty() && dirButtons[i]->GetPath() == focusPath_ && dirButtons[i]->SetFocus(FocusFlags::CAUSE_RESTORE)) {
+			UI::ScrollFocusedViewIntoView();
+		}
 	}
 
 	for (size_t i = 0; i < gameButtons.size(); i++) {
@@ -928,15 +1184,27 @@ void GameBrowser::Refresh() {
 		b->OnHoldClick.Handle(this, &GameBrowser::GameButtonHoldClick);
 		b->OnHighlight.Handle(this, &GameBrowser::GameButtonHighlight);
 
-		if (!focusGamePath_.empty() && b->GamePath() == focusGamePath_) {
-			b->SetFocus(FocusFlags::CAUSE_RESTORE);
+		if (!focusPath_.empty() && b->GamePath() == focusPath_ && b->SetFocus(FocusFlags::CAUSE_RESTORE)) {
+			UI::ScrollFocusedViewIntoView();
 		}
+	}
+	// A listing that's still loading has no buttons to focus yet.
+	if (!listingPending_) {
+		if (focusFirstItem_) {
+			// The folder's own contents rather than "..", which only shows up first if it's empty.
+			UI::View *first = !dirButtons.empty() ? (UI::View *)dirButtons[0] : !gameButtons.empty() ? (UI::View *)gameButtons[0] : upButton;
+			if (first && first->SetFocus(FocusFlags::CAUSE_RESTORE)) {
+				UI::ScrollFocusedViewIntoView();
+			}
+		}
+		focusFirstItem_ = false;
+		focusPath_.clear();
 	}
 
 	// Show a button to toggle pinning at the very end.
 	if ((browseFlags_ & BrowseFlags::PIN) && !path_.GetPath().empty()) {
 		std::string caption = ""; // IsCurrentPathPinned() ? "-" : "+";
-		if (!*gridStyle_) {
+		if (!gridStyle) {
 			caption = IsCurrentPathPinned() ? mm->T("UnpinPath", "Unpin") : mm->T("PinPath", "Pin");
 		}
 		UI::Button *pinButton = gameList_->Add(new Button(caption, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
@@ -951,6 +1219,11 @@ void GameBrowser::Refresh() {
 	if (!lastText_.empty()) {
 		Add(new Spacer());
 		Add(new Choice(lastText_, ImageID("I_LINK_OUT"), new UI::LinearLayoutParams(UI::WRAP_CONTENT, UI::WRAP_CONTENT, Margins(10, 0, 0, 10))))->OnClick.Handle(this, &GameBrowser::LastClick);
+	}
+
+	// The new buttons are all visible, so filter them again if a search is active.
+	if (!search_.searchFilter.empty()) {
+		search_.ApplySearchFilter(gameList_, false);
 	}
 }
 
@@ -1018,9 +1291,24 @@ void GameBrowser::NavigateClick(UI::EventParams &e) {
 	Path text = button->GetPath();
 	if (button->PathAbsolute()) {
 		path_.SetPath(text);
+	} else if (text.ToString() == "..") {
+		NavigateUp();
+		return;
 	} else {
 		path_.Navigate(text.ToString());
 	}
+	focusFirstItem_ = true;
+	PathChanged();
+}
+
+void GameBrowser::NavigateUp() {
+	// Focus the directory we came out of, in the parent's listing.
+	focusPath_ = path_.GetPath();
+	path_.Navigate("..");
+	PathChanged();
+}
+
+void GameBrowser::PathChanged() {
 	g_Config.currentDirectory = path_.GetPath();
 	// Clear the search filter. This allow for smooth directory navigation using search
 	// (although there's no good way of going up...)

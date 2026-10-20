@@ -82,6 +82,9 @@
     <Filter Include="Ext\jpge">
       <UniqueIdentifier>{6c6e0188-fabf-4203-aaa2-896c42be2c20}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Ext\libdeflate">
+      <UniqueIdentifier>{5b0c7e1a-3d2f-4c8e-9a61-d4f0b2e7c913}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Ext\libzip">
       <UniqueIdentifier>{0201ff27-4fa8-4cf3-bbb9-accfdc0c7046}</UniqueIdentifier>
     </Filter>
@@ -163,6 +166,9 @@
       <Filter>MIPS\JitCommon</Filter>
     </ClCompile>
     <ClCompile Include="FileSystems\DirectoryFileSystem.cpp">
+      <Filter>FileSystems</Filter>
+    </ClCompile>
+    <ClCompile Include="FileSystems\CSOCompress.cpp">
       <Filter>FileSystems</Filter>
     </ClCompile>
     <ClCompile Include="FileSystems\BlockDevices.cpp">
@@ -531,6 +537,12 @@
     </ClCompile>
     <ClCompile Include="MIPS\MIPSStackWalk.cpp">
       <Filter>MIPS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libdeflate\lib\deflate_compress.c">
+      <Filter>Ext\libdeflate</Filter>
+    </ClCompile>
+    <ClCompile Include="..\ext\libdeflate\lib\utils.c">
+      <Filter>Ext\libdeflate</Filter>
     </ClCompile>
     <ClCompile Include="..\ext\xxhash.c">
       <Filter>Ext</Filter>
@@ -1231,6 +1243,9 @@
     <ClCompile Include="HW\GpioMMIO.cpp">
       <Filter>HW</Filter>
     </ClCompile>
+    <ClCompile Include="HW\MMIO.cpp">
+      <Filter>HW</Filter>
+    </ClCompile>
     <ClCompile Include="HLE\sceNp2.cpp">
       <Filter>HLE\Libraries</Filter>
     </ClCompile>
@@ -1495,6 +1510,9 @@
       <Filter>MIPS\JitCommon</Filter>
     </ClInclude>
     <ClInclude Include="FileSystems\DirectoryFileSystem.h">
+      <Filter>FileSystems</Filter>
+    </ClInclude>
+    <ClInclude Include="FileSystems\CSOCompress.h">
       <Filter>FileSystems</Filter>
     </ClInclude>
     <ClInclude Include="FileSystems\BlockDevices.h">
@@ -1857,6 +1875,45 @@
     <ClInclude Include="..\ext\disarm.h">
       <Filter>Ext</Filter>
     </ClInclude>
+    <ClInclude Include="..\ext\libdeflate\libdeflate.h">
+      <Filter>Ext\libdeflate</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libdeflate\common\common_defs.h">
+      <Filter>Ext\libdeflate</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libdeflate\common\compiler_gcc.h">
+      <Filter>Ext\libdeflate</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libdeflate\common\compiler_msc.h">
+      <Filter>Ext\libdeflate</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libdeflate\lib\bt_matchfinder.h">
+      <Filter>Ext\libdeflate</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libdeflate\lib\deflate_compress.h">
+      <Filter>Ext\libdeflate</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libdeflate\lib\deflate_constants.h">
+      <Filter>Ext\libdeflate</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libdeflate\lib\hc_matchfinder.h">
+      <Filter>Ext\libdeflate</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libdeflate\lib\lib_common.h">
+      <Filter>Ext\libdeflate</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libdeflate\lib\matchfinder_common.h">
+      <Filter>Ext\libdeflate</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libdeflate\lib\unaligned.h">
+      <Filter>Ext\libdeflate</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libdeflate\lib\x86\matchfinder_impl.h">
+      <Filter>Ext\libdeflate</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ext\libdeflate\lib\arm\matchfinder_impl.h">
+      <Filter>Ext\libdeflate</Filter>
+    </ClInclude>
     <ClInclude Include="..\ext\xxhash.h">
       <Filter>Ext</Filter>
     </ClInclude>
@@ -2209,6 +2266,9 @@
       <Filter>HW</Filter>
     </ClInclude>
     <ClInclude Include="HW\GpioMMIO.h">
+      <Filter>HW</Filter>
+    </ClInclude>
+    <ClInclude Include="HW\MMIO.h">
       <Filter>HW</Filter>
     </ClInclude>
     <ClInclude Include="HLE\sceNp2.h">

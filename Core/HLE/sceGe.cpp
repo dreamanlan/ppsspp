@@ -158,8 +158,17 @@ public:
 	}
 
 	void handleResult(PendingInterrupt& pend) override {
+		// Only from a broken savestate: the interrupt was running, but nothing is pending.
+		if (ge_pending_cb.empty()) {
+			ERROR_LOG(Log::sceGe, "GE interrupt finished with nothing pending");
+			return;
+		}
 		GeInterruptData intrdata = ge_pending_cb.front();
 		ge_pending_cb.pop_front();
+		if (!gpu->IsValidListId(intrdata.listid)) {
+			ERROR_LOG(Log::sceGe, "GE interrupt finished for invalid list %d", intrdata.listid);
+			return;
+		}
 
 		DisplayList* dl = gpu->getList(intrdata.listid);
 		if (!dl->interruptsEnabled) {
@@ -457,7 +466,16 @@ static u32 sceGeDrawSync(u32 mode) {
 	else if (!PSP_CoreParameter().compat.flags().DrawSyncInstant)
 		hleEatCycles(1240);
 	gstate_c.textureSyncTimeDomain++;
-	return hleLogDebug(Log::sceGe, gpu->DrawSync(mode));
+	u32 result = gpu->DrawSync(mode);
+	if (mode == 0 && PSP_CoreParameter().compat.flags().ColorPickingDrawSyncReadback) {
+		// The game waits for its picking pass here and then reads it from VRAM. It renders to one
+		// of two buffers, so read back the one the last list drew to.
+		const u32 fb = 0x04000000 | gstate.getFrameBufRawAddress();
+		if (fb == 0x04000000 || fb == 0x04080000) {
+			gpu->PerformReadbackToMemory(fb, 0x00044000);
+		}
+	}
+	return hleLogDebug(Log::sceGe, result);
 }
 
 static int sceGeContinue() {
