@@ -80,8 +80,9 @@ public:
 		return hash_;
 	}
 
-	void Finalize();
-	void Destroy();
+	// Enter the block in the space's block shadow, and take it out.
+	void Finalize(const Memory::AddressSpace &space);
+	void Destroy(const Memory::AddressSpace &space);
 
 	// Only filled in by the IR interpreter, when profiling.
 	JitBlockProfileStats profileStats_{};
@@ -103,6 +104,14 @@ class JitBlockTable {
 public:
 	~JitBlockTable() {
 		Clear();
+	}
+
+	// Whose block shadow the blocks go in.
+	void SetAddressSpace(const Memory::AddressSpace *space) {
+		space_ = space;
+	}
+	const Memory::AddressSpace &Space() const {
+		return *space_;
 	}
 
 	void Clear();
@@ -142,6 +151,7 @@ private:
 	u32 AddressToPage(u32 addr) const;
 	std::vector<JitBlock> blocks_;
 	std::unordered_map<u32, std::vector<int>> byPage_;
+	const Memory::AddressSpace *space_ = nullptr;
 };
 
 class IRJit;
@@ -237,6 +247,7 @@ public:
 	IRInterpreterJit(MIPSState *mipsState);
 
 	void RunLoopUntil(u64 globalticks) override;
+	void RunDowncount() override;
 
 	bool DescribeCodePtr(const u8 *ptr, std::string &name) override {
 		return false;
@@ -254,6 +265,8 @@ public:
 protected:
 	template <bool profile>
 	void RunBlocks();
+	template <bool profile>
+	void RunBlocksUntilDowncount();
 	void WriteProfileReport() override;
 	CompileResult CompileTargetBlock(int block_num, const std::vector<IRInst> &instructions) override;
 	void GetBlockInstructions(const JitBlock &block, std::vector<IRInst> &instructions) const override;

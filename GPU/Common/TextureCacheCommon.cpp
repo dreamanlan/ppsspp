@@ -978,10 +978,20 @@ TextureApplyResult TextureCacheCommon::ApplyTextureFinish(TexCacheEntry *entry, 
 	const bool isVideo = (entry->status & TexStatus::VIDEO) != 0;
 	gstate_c.SetTextureIsVideo(isVideo);
 	if (isVideo) {
-		// Restrict sampling to the 480x272 frame (see CalcTexClamp), since with the forced linear
+		// Restrict sampling to the frame (see CalcTexClamp), since with the forced linear
 		// filtering, whatever is next to it in memory bleeds in at the edges.
 		gstate_c.curTextureXOffset = 0;
 		gstate_c.curTextureYOffset = 0;
+		const u32 bytesPerPixel = textureBitsPerPixel[entry->format] / 8;
+		const u32 rowBytes = (u32)entry->bufw * bytesPerPixel;
+		const int videoRows = rowBytes ? (int)(gpu->VideoBytesFrom(entry->addr) / rowBytes) : 0;
+		const int videoColumns = bytesPerPixel ? (int)(gpu->VideoRowBytesFrom(entry->addr, rowBytes) / bytesPerPixel) : 0;
+		if (videoRows != gstate_c.videoRows || videoColumns != gstate_c.videoColumns) {
+			gstate_c.videoRows = videoRows;
+			gstate_c.videoColumns = videoColumns;
+			// The clamp, and whether the shader clamps or wraps, depend on it.
+			gstate_c.Dirty(DIRTY_TEXCLAMP | DIRTY_FRAGMENTSHADER_STATE);
+		}
 		gstate_c.SetNeedShaderTexclamp(true);
 	}
 	gstate_c.SetTextureIsArray(false);  // Ordinary 2D textures still aren't used by array view in VK. We probably might as well, though, at this point..
@@ -1932,7 +1942,7 @@ static TextureAlpha DecodeDXTBlocks(uint8_t *out, int outPitch, uint32_t texaddr
 	const uint32_t neededBlocks = SourceExtent(rowBlocks, blocksPerRow, blockRows);
 
 	if (!Memory::IsValidRange(texaddr, neededBlocks * sizeof(DXTBlock))) {
-		ERROR_LOG_REPORT(Log::TexCache, "DXT%d texture extends beyond valid RAM: %08x + %d x %d (w=%d)", n, texaddr, bufw, h, w);
+		ERROR_LOG(Log::TexCache, "DXT%d texture extends beyond valid RAM: %08x + %d x %d (w=%d)", n, texaddr, bufw, h, w);
 		const uint32_t limited = Memory::ClampValidSizeAt(texaddr, neededBlocks * sizeof(DXTBlock));
 		// Drop block rows until the last one's blocks fit too. This might land on 0, but try to
 		// decode what we can (might even be how the PSP behaves.)
@@ -2060,7 +2070,7 @@ TextureAlpha TextureCacheCommon::DecodeTextureLevel(u8 *out, int outPitch, GETex
 	const uint32_t rows = swizzled ? ((h + 7) & ~7) : h;
 	const uint32_t neededBytes = (bpp * SourceExtent(w, bufw, rows) + 7) / 8;
 	if (bytesPerRow > 0 && !isPPGE && !Memory::IsValidRange(texaddr, neededBytes)) {
-		ERROR_LOG_REPORT(Log::TexCache, "Texture extends beyond valid RAM: %08x + %d x %d (w=%d)", texaddr, bufw, h, w);
+		ERROR_LOG(Log::TexCache, "Texture extends beyond valid RAM: %08x + %d x %d (w=%d)", texaddr, bufw, h, w);
 		const uint32_t limited = Memory::ClampValidSizeAt(texaddr, neededBytes);
 		// Drop rows until the last one's w texels fit too, not just its bufw stride.
 		const uint32_t availableTexels = (limited * 8) / bpp;

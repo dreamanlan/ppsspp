@@ -93,6 +93,7 @@ tests_good = [
   "cpu/cpu_alu/cpu_div",
   "cpu/cpu_alu/shift_encodings",
   "cpu/cpu_alu/allegrex_encodings",
+  "cpu/jump/unaligned",
   "cpu/vfpu/callout",
   "cpu/vfpu/colors",
   "cpu/vfpu/convert",
@@ -344,6 +345,8 @@ tests_good = [
   "malloc/malloc",
   "misc/dcache",
   "misc/deadbeef",
+  "modules/cutrel/cutrel",
+  "modules/cutrel/kernel/cutrel",
   "modules/loadrace/loadrace",
   "modules/startoptions/startoptions",
   "modules/unresolved/unresolved",
@@ -487,6 +490,8 @@ tests_good = [
   "threads/tls/create",
   "threads/tls/partition",
   "threads/tls/kernel/partition",
+  "threads/threads/kernel/priority",
+  "gpu/ge/kernel/edramsize",
   "threads/tls/delete",
   "threads/tls/get",
   "threads/tls/free",
@@ -537,6 +542,7 @@ tests_good = [
   "umd/callbacks/umd",
   "umd/wait/wait",
   "umd/register",
+  "video/mpeg/cscvme",
   "video/mpeg/ringbuffer/avail",
   "video/mpeg/ringbuffer/construct",
   "video/mpeg/ringbuffer/destruct",
@@ -628,6 +634,8 @@ tests_next = [
   "gpu/signals/simple",
   "gpu/simple/simple",
   "intr/waits",
+  "me/audiofifo",  # needs the Media Engine on, and Sony's ME firmware installed
+  "me/vram",  # needs the Media Engine on, and Sony's ME firmware installed
   "sysmem/kernel/heapgrow",
   "io/file/file",
   "io/io/io",
@@ -669,9 +677,9 @@ tests_next = [
   #"utility/savedata/saveemptyfilename",
   "utility/savedata/secureversion",
   "utility/savedata/sizes",
-  "video/mp4/avchold",
+  "video/mp4/avchold",  # needs Sony's mp4 and mpeg modules: --disable-hle=0x110, see docs/pspautotests.md
   "video/mpeg/basic",
-  "video/mpeg/decodeend",
+  "video/mpeg/decodeend",  # needs Sony's mpeg module, as avchold
   "video/mpeg/deletetiming",
   "video/pmf/pmf",
   "video/pmf_simple/pmf_simple",
@@ -730,12 +738,9 @@ def init():
 def cpu_backend(args):
   # Which backend headless will end up on, given the args we hand through to it. Headless defaults
   # to the JIT, and a later flag overrides an earlier one, like its own parsing in Core/CmdLine.cpp.
-  short_flags = {'-i': 'interpreter', '-r': 'ir', '-j': 'jit', '-J': 'jit-ir'}
   backend = 'jit'
   for arg in args:
-    if arg in short_flags:
-      backend = short_flags[arg]
-    elif arg.startswith('--cpu='):
+    if arg.startswith('--cpu='):
       backend = arg[len('--cpu='):]
   return backend
 

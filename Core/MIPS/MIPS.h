@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "Common/CommonTypes.h"
+#include "Core/MemMap.h"
 #include "Core/Opcode.h"
 
 class PointerWrap;
@@ -255,6 +256,8 @@ public:
 
 	// COP0, for kernel code. Reads of Count (9) come from CoreTiming instead.
 	u32 cop0[32];
+	// COP0's control registers (cfc0/ctc0), which the firmware's exception code keeps state in.
+	u32 cop0Control[32];
 
 	// Temps needed for JitBranch.cpp experiments
 	u32 intBranchExit;
@@ -292,7 +295,12 @@ public:
 		return VFPUPrefixWriteMask(vfpuCtrl[VFPU_CTRL_DPREFIX], i);
 	}
 
-	bool HasDefaultPrefix() const;
+	bool HasDefaultPrefix() const {
+		return vfpuCtrl[VFPU_CTRL_SPREFIX] == 0xe4 && vfpuCtrl[VFPU_CTRL_TPREFIX] == 0xe4 && vfpuCtrl[VFPU_CTRL_DPREFIX] == 0;
+	}
+	bool IsMediaEngine() const {
+		return space && space->IsMediaEngine();
+	}
 
 	void SingleStep();
 	int RunLoopUntil(u64 globalTicks);
@@ -317,6 +325,8 @@ public:
 
 	// Owned. Null on the interpreter.
 	MIPSComp::JitInterface *jit = nullptr;
+	// What this CPU sees of memory. The main CPU's is Memory::g_mainSpace.
+	const Memory::AddressSpace *space = nullptr;
 };
 
 // Access control ('private') break standard layout. Let's not allow it, to avoid excessive

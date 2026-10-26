@@ -285,7 +285,7 @@ void RemoteISOScreen::CreateTabs() {
 	});
 
 	AddTab("Settings", ri->T("Settings"), [this](UI::LinearLayout *settings) {
-		CreateSettingsTab(settings);
+		CreateSettingsTab(settings->Add(new UI::ChoiceGroupList()));
 	});
 }
 
@@ -382,19 +382,19 @@ void RemoteISOScreen::CreateSettingsTab(UI::ViewGroup *remoteisoSettings) {
 
 	auto ri = GetI18NCategory(I18NCat::REMOTEISO);
 
-	remoteisoSettings->Add(new ItemHeader(ri->T("Remote disc streaming")));
-	remoteisoSettings->Add(new CheckBox(&g_Config.bRemoteShareOnStartup, ri->T("Share on PPSSPP startup")))->OnClick.Add([](UI::EventParams &e) {
+	ChoiceGroup *streamingSettings = remoteisoSettings->Add(new ChoiceGroup(ri->T("Remote disc streaming")));
+	streamingSettings->Add(new CheckBox(&g_Config.bRemoteShareOnStartup, ri->T("Share on PPSSPP startup")))->OnClick.Add([](UI::EventParams &e) {
 		if (g_Config.bRemoteShareOnStartup) {
 			System_RequestLocalNetworkPermission();
 		}
 	});
-	remoteisoSettings->Add(new CheckBox(&g_Config.bRemoteISOManual, ri->T("Manual Mode Client", "Manually configure client")));
-	remoteisoSettings->Add(new CheckBox(&g_Config.bRemoteTab, ri->T("Show Remote tab on main screen")));
+	streamingSettings->Add(new CheckBox(&g_Config.bRemoteISOManual, ri->T("Manual Mode Client", "Manually configure client")));
+	streamingSettings->Add(new CheckBox(&g_Config.bRemoteTab, ri->T("Show Remote tab on main screen")));
 
 	if (System_GetPropertyBool(SYSPROP_HAS_FOLDER_BROWSER)) {
 		static const char *shareTypes[] = { "Recent games", "Choose directory" };
-		remoteisoSettings->Add(new PopupMultiChoice(&g_Config.iRemoteISOShareType, ri->T("Files to share"), shareTypes, 0, ARRAY_SIZE(shareTypes), I18NCat::REMOTEISO, screenManager()));
-		FolderChooserChoice *folderChooser = remoteisoSettings->Add(new FolderChooserChoice(GetRequesterToken(), &g_Config.sRemoteISOSharedDir, ri->T("Files to share")));
+		streamingSettings->Add(new PopupMultiChoice(&g_Config.iRemoteISOShareType, ri->T("Files to share"), shareTypes, 0, ARRAY_SIZE(shareTypes), I18NCat::REMOTEISO, screenManager()));
+		FolderChooserChoice *folderChooser = streamingSettings->Add(new FolderChooserChoice(GetRequesterToken(), &g_Config.sRemoteISOSharedDir, ri->T("Files to share")));
 		folderChooser->SetEnabledFunc([=]() {
 			return g_Config.iRemoteISOShareType == (int)RemoteISOShareType::LOCAL_FOLDER;
 		});
@@ -403,11 +403,13 @@ void RemoteISOScreen::CreateSettingsTab(UI::ViewGroup *remoteisoSettings) {
 		g_Config.iRemoteISOShareType = (int)RemoteISOShareType::RECENT;
 	}
 
+	ChoiceGroup *remoteSettings = remoteisoSettings->Add(new ChoiceGroup());
+
 	UI::Choice *remoteServer = new PopupTextInputChoice(GetRequesterToken(), &g_Config.sLastRemoteISOServer, ri->T("Remote Server"), "", 255, screenManager());
-	remoteisoSettings->Add(remoteServer);
+	remoteSettings->Add(remoteServer);
 	remoteServer->SetEnabledPtr(&g_Config.bRemoteISOManual);
 
-	PopupSliderChoice *remotePort = remoteisoSettings->Add(new PopupSliderChoice(&g_Config.iLastRemoteISOPort, 0, 65535, 0, ri->T("Remote Port"), 1, screenManager()));
+	PopupSliderChoice *remotePort = remoteSettings->Add(new PopupSliderChoice(&g_Config.iLastRemoteISOPort, 0, 65535, 0, ri->T("Remote Port"), 1, screenManager()));
 	remotePort->SetEnabledPtr(&g_Config.bRemoteISOManual);
 
 	UI::Choice *remoteSubdir;
@@ -416,11 +418,13 @@ void RemoteISOScreen::CreateSettingsTab(UI::ViewGroup *remoteisoSettings) {
 		remoteSubdirInput->OnChange.Handle(this, &RemoteISOScreen::OnChangeRemoteISOSubdir);
 		remoteSubdir = remoteSubdirInput;
 	}
-	remoteisoSettings->Add(remoteSubdir);
+	remoteSettings->Add(remoteSubdir);
 	remoteSubdir->SetEnabledPtr(&g_Config.bRemoteISOManual);
 
+	ChoiceGroup *serverSettings = remoteisoSettings->Add(new ChoiceGroup());
+
 	PopupSliderChoice *portChoice = new PopupSliderChoice(&g_Config.iRemoteISOPort, 0, 65535, 0, ri->T("Local Server Port", "Local Server Port"), 100, screenManager());
-	remoteisoSettings->Add(portChoice);
+	serverSettings->Add(portChoice);
 	portChoice->SetDisabledPtr(&serverRunning_);
 }
 

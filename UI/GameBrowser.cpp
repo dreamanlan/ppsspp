@@ -38,6 +38,8 @@
 #include "Core/Util/RecentFiles.h"
 #include "Core/HLE/sceCtrl.h"
 #include "Core/ELF/PBPReader.h"
+#include "Core/FileLoaders/PS1EbootFileLoader.h"
+#include "Core/MemMap.h"
 #include "Core/Util/VideoPlayer.h"
 
 #include "UI/GameBrowser.h"
@@ -76,7 +78,8 @@ static float ListTextRightMargin(GameBrowserViewMode viewMode) {
 	return 0.0f;
 }
 
-static void DrawIconWithText(UIContext &dc, ImageID image, std::string_view text, const Bounds &bounds, GameBrowserViewMode viewMode, const UI::Style &style) {
+// In the list views, rightText (like a game ID) goes at the right edge, as for a game with a picture.
+static void DrawIconWithText(UIContext &dc, ImageID image, std::string_view text, const Bounds &bounds, GameBrowserViewMode viewMode, const UI::Style &style, std::string_view rightText = {}) {
 	const bool gridStyle = viewMode == GameBrowserViewMode::GRID;
 	float tw, th;
 	dc.MeasureText(dc.GetFontStyle(), gridStyle ? g_Config.fGameGridScale : 1.0, gridStyle ? g_Config.fGameGridScale : 1.0, text, &tw, &th, 0);
@@ -120,6 +123,14 @@ static void DrawIconWithText(UIContext &dc, ImageID image, std::string_view text
 
 		float tx = textX;
 		int availableWidth = bounds.w - textX - ListTextRightMargin(viewMode);
+		if (!rightText.empty()) {
+			float vw, vh;
+			dc.MeasureText(dc.GetFontStyle(), 0.7f, 0.7f, rightText, &vw, &vh, 0);
+			availableWidth -= vw + 20;
+			dc.SetFontScale(0.7f, 0.7f);
+			dc.DrawText(rightText, bounds.x + availableWidth + textX + 10, bounds.centerY(), style.fgColor, ALIGN_VCENTER);
+			dc.SetFontScale(1.0f, 1.0f);
+		}
 		float sineWidth = std::max(0.0f, (tw - availableWidth)) / 2.0f;
 		if (availableWidth < tw) {
 			tx -= (1.0f + sin(time_now_d() * 1.5f)) * sineWidth;
@@ -394,7 +405,11 @@ void GameButton::Draw(UIContext &dc) {
 	ImageID imageIcon = ImageID::invalid();
 	bool drawBackground = true;
 	switch (ginfo->fileType) {
-	case IdentifiedFileType::PSP_ELF: imageIcon = ImageID("I_APP"); drawBackground = false; break;
+	case IdentifiedFileType::PSP_ELF:
+		imageIcon = ImageID("I_APP");
+		// The XMB is an ELF too, but has an icon.
+		drawBackground = ginfo->region == GameRegion::VSH;
+		break;
 	case IdentifiedFileType::UNKNOWN_ELF: imageIcon = ImageID("I_APP"); drawBackground = false; break;
 	case IdentifiedFileType::PPSSPP_GE_DUMP: imageIcon = ImageID("I_DISPLAY"); break;
 	case IdentifiedFileType::PSX_ISO:
@@ -416,10 +431,14 @@ void GameButton::Draw(UIContext &dc) {
 	if (ginfo->Ready(GameInfoFlags::ICON)) {
 		if (ginfo->icon.texture && drawBackground) {
 			texture = ginfo->icon.texture;
+			// The type icon is only for when there's no picture, and would be drawn on top of it.
+			imageIcon = ImageID::invalid();
 		} else if (drawBackground) {
 			// No icon, but drawBackground is set. Let's show a plain icon depending on type.
 			if (ginfo->fileType == IdentifiedFileType::PSP_ISO || ginfo->fileType == IdentifiedFileType::PSP_ISO_NP) {
 				imageIcon = ImageID("I_UMD");
+			} else if (ginfo->fileType == IdentifiedFileType::PSX_ISO || ginfo->fileType == IdentifiedFileType::PSP_PS1_PBP) {
+				imageIcon = ImageID("I_PSX_ISO");
 			} else if (gamePath_.Type() == PathType::HTTP) {
 				imageIcon = ginfo->fileType == IdentifiedFileType::UNKNOWN ? ImageID("I_LINK_OUT_QUESTION") : ImageID("I_LINK_OUT");
 			} else {
@@ -546,7 +565,7 @@ void GameButton::Draw(UIContext &dc) {
 		if (down_) style = dc.GetTheme().itemDownStyle;
 		if (!IsEnabled()) style = dc.GetTheme().itemDisabledStyle;
 
-		DrawIconWithText(dc, imageIcon, ginfo->GetTitle(), bounds_, viewMode_, style);
+		DrawIconWithText(dc, imageIcon, ginfo->GetTitle(), bounds_, viewMode_, style, g_Config.bShowIDOnGameIcon ? std::string_view(ginfo->id_version) : std::string_view());
 
 		if (overlayColor) {
 			dc.FillRect(Drawable(overlayColor), overlayBounds);
@@ -650,9 +669,9 @@ void GameButton::Draw(UIContext &dc) {
 		Style infoStyle = HasFocus() ? dc.GetTheme().itemFocusedStyle : dc.GetTheme().itemStyle;
 		if (infoButtonDown_) {
 			infoStyle = dc.GetTheme().itemDownStyle;
-			dc.FillRect(infoStyle.background, infoBounds);
+			dc.FillRoundRect(infoStyle.background, infoBounds, dc.GetTheme().choiceRoundRadius);
 		} else if (HasFocus() && infoSelected_) {
-			dc.FillRect(infoStyle.background, infoBounds);
+			dc.FillRoundRect(infoStyle.background, infoBounds, dc.GetTheme().choiceRoundRadius);
 		}
 		dc.Draw()->DrawImage(ImageID("I_INFO"), infoBounds.centerX(), infoBounds.centerY(), 1.0f, infoStyle.fgColor, ALIGN_CENTER);
 	}
@@ -730,7 +749,9 @@ void DirButton::Draw(UIContext &dc) {
 
 	std::string_view text(GetText());
 	ImageID image = ImageID(pinned_ ? "I_FOLDER_PINNED" : "I_FOLDER");
-	if (text == "..") {
+	if (path_.IsNetworkRoot()) {
+		image = ImageID("I_NETWORK");
+	} else if (text == "..") {
 		image = ImageID("I_UP_DIRECTORY");
 		text = "";
 	}
@@ -986,7 +1007,8 @@ static bool IsValidPBP(const Path &path, bool allowHomebrew) {
 	if (!allowHomebrew && sfo.GetValueString("DISC_ID").empty())
 		return false;
 
-	if (sfo.GetValueString("CATEGORY") == "ME")
+	// PS1 games, which need the Media Engine.
+	if (sfo.GetValueString("CATEGORY") == "ME" && !Memory::CanCreateMESpace())
 		return false;
 
 	return true;
@@ -1003,31 +1025,26 @@ void GameBrowser::Refresh() {
 	Clear();
 	search_.searchStates.clear();
 
-	Add(new Spacer(1.0f));
 	auto mm = GetI18NCategory(I18NCat::MAINMENU);
 
 	gameList_ = nullptr;
 
-	LinearLayout *topBar = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(8, 0, 8, 0)));
+	LinearLayout *topBar = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(0, 12, 8, 0)));
 	Add(topBar);
 
-	const bool pathOnSeparateLine = g_display.dp_xres < 1050 || portrait_;
 	// Recent isn't a real folder, so it gets no path or refresh.
 	const bool isRecent = path_.GetPath().ToString() == "!RECENT";
 
-	std::string pathStr = GetFriendlyPath(path_.GetPath(), aliasMatch_, aliasDisplay_);
+	std::string pathStr = path_.GetPath().IsNetworkRoot() ? std::string(mm->T("Network")) : GetFriendlyPath(path_.GetPath(), aliasMatch_, aliasDisplay_);
 
-	if (pathOnSeparateLine && !isRecent) {
-		Add(new TextView(pathStr, ALIGN_VCENTER | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(8, 0, 8, 0))));
-	}
 	if (browseFlags_ & BrowseFlags::NAVIGATE) {
-		if (!pathOnSeparateLine) {
-			topBar->Add(new Spacer(2.0f));
-			topBar->Add(new TextView(pathStr, ALIGN_VCENTER | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, 64.0f, 1.0f)));
-		}
-		topBar->Add(new Choice(ImageID("I_HOME"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::OnHomeClick);
+		Choice *homeChoice = topBar->Add(new Choice(ImageID("I_HOME_ICON"), new LayoutParams(WRAP_CONTENT, 64.0f)));
+		homeChoice->SetRoundCorners(RoundCorners::All);
+		homeChoice->OnClick.Handle(this, &GameBrowser::OnHomeClick);
 		if (System_GetPropertyBool(SYSPROP_HAS_ADDITIONAL_STORAGE)) {
-			topBar->Add(new Choice(ImageID("I_SDCARD"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::StorageClick);
+			Choice *sdCardChoice = topBar->Add(new Choice(ImageID("I_SDCARD"), new LayoutParams(WRAP_CONTENT, 64.0f)));
+			sdCardChoice->SetRoundCorners(RoundCorners::All);
+			sdCardChoice->OnClick.Handle(this, &GameBrowser::StorageClick);
 		}
 #if PPSSPP_PLATFORM(IOS_APP_STORE)
 		// Don't show a browse button, not meaningful to browse outside the documents folder it seems,
@@ -1038,16 +1055,22 @@ void GameBrowser::Refresh() {
 		// we show just the image, because we don't need to emphasize the button on Darwin
 		// (tvOS has no folder browser.)
 		if (System_GetPropertyBool(SYSPROP_HAS_FOLDER_BROWSER)) {
-			topBar->Add(new Choice(ImageID("I_FOLDER_OPEN"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::BrowseClick);
+			Choice *browseChoice = topBar->Add(new Choice(ImageID("I_FOLDER_OPEN"), new LayoutParams(WRAP_CONTENT, 64.0f)));
+			browseChoice->SetRoundCorners(RoundCorners::All);
+			browseChoice->OnClick.Handle(this, &GameBrowser::BrowseClick);
 		}
 #else
 		if ((browseFlags_ & BrowseFlags::BROWSE) && System_GetPropertyBool(SYSPROP_HAS_FOLDER_BROWSER)) {
 			// Collapse the button title on very small screens (Retroid Pocket) or portrait mode.
 			std::string_view browseTitle = (g_display.dp_xres <= 550 || portrait_) ? "" : mm->T("Browse");
-			topBar->Add(new Choice(browseTitle, ImageID("I_FOLDER_OPEN"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::BrowseClick);
+			Choice *browseChoice = topBar->Add(new Choice(browseTitle, ImageID("I_FOLDER_OPEN"), new LayoutParams(WRAP_CONTENT, 64.0f)));
+			browseChoice->SetRoundCorners(RoundCorners::All);
+			browseChoice->OnClick.Handle(this, &GameBrowser::BrowseClick);
 		}
 		if (System_GetPropertyInt(SYSPROP_DEVICE_TYPE) == DEVICE_TYPE_TV) {
-			topBar->Add(new Choice(mm->T("Enter Path"), new LayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Add([=](UI::EventParams &) {
+			Choice *enterPathChoice = topBar->Add(new Choice(mm->T("Enter Path"), new LayoutParams(WRAP_CONTENT, 64.0f)));
+			enterPathChoice->SetRoundCorners(RoundCorners::All);
+			enterPathChoice->OnClick.Add([=](UI::EventParams &) {
 				auto mm = GetI18NCategory(I18NCat::MAINMENU);
 				System_InputBoxGetString(token_, mm->T("Enter Path"), path_.GetPath().ToString(), false, [=](std::string_view responseString, int responseValue) {
 					this->SetPath(Path(responseString));
@@ -1055,12 +1078,16 @@ void GameBrowser::Refresh() {
 				});
 		}
 #endif
-	} else if (!pathOnSeparateLine || isRecent) {
-		topBar->Add(new Spacer(new LinearLayoutParams(FILL_PARENT, 64.0f, 1.0f)));
+	}
+
+	if (!isRecent) {
+		Add(new TextView(pathStr, ALIGN_VCENTER | FLAG_WRAP_TEXT, true, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(8, 0, 8, 0))));
 	}
 
 	if (browseFlags_ & BrowseFlags::HOMEBREW_STORE) {
-		topBar->Add(new Choice(mm->T("Homebrew store"), ImageID("I_HOMEBREW_STORE"), new UI::LinearLayoutParams(WRAP_CONTENT, 64.0f)))->OnClick.Handle(this, &GameBrowser::OnHomebrewStore);
+		Choice *hbStore = topBar->Add(new Choice(mm->T("Homebrew store"), ImageID("I_HOMEBREW_STORE"), new UI::LinearLayoutParams(WRAP_CONTENT, 64.0f)));
+		hbStore->OnClick.Handle(this, &GameBrowser::OnHomebrewStore);
+		hbStore->SetRoundCorners(RoundCorners::All);
 	}
 
 	if (browseFlags_ & BrowseFlags::UPLOAD_BUTTON) {
@@ -1072,6 +1099,7 @@ void GameBrowser::Refresh() {
 		uploadChoice->SetEnabledFunc([this]() {
 			return !path_.GetPath().empty();
 		});
+		uploadChoice->SetRoundCorners(RoundCorners::All);
 	}
 
 	ChoiceStrip *layoutChoice = topBar->Add(new ChoiceStrip(ORIENT_HORIZONTAL));
@@ -1079,14 +1107,20 @@ void GameBrowser::Refresh() {
 	layoutChoice->AddChoice(ImageID("I_LINES"));
 	layoutChoice->AddChoice(ImageID("I_LARGE_LIST"));
 	layoutChoice->SetSelection((int)lastViewMode_, false);
+	layoutChoice->ApplyRoundCorners();
 	layoutChoice->OnChoice.Handle(this, &GameBrowser::LayoutChange);
 	if (!isRecent) {
-		topBar->Add(new Choice(ImageID("I_ROTATE_LEFT"), new LayoutParams(64.0f, 64.0f)))->OnClick.Add([=](UI::EventParams &e) {
+		Choice *rotateChoice = topBar->Add(new Choice(ImageID("I_ROTATE_LEFT"), new LayoutParams(64.0f, 64.0f)));
+		rotateChoice->SetRoundCorners(RoundCorners::All);
+		rotateChoice->OnClick.Add([=](UI::EventParams &e) {
 			path_.Refresh();
 			refreshPending_ = true;
 		});
 	}
-	topBar->Add(new Choice(ImageID("I_GEAR"), new LayoutParams(64.0f, 64.0f)))->OnClick.Handle(this, &GameBrowser::GridSettingsClick);
+
+	Choice *gridSettingsChoice = topBar->Add(new Choice(ImageID("I_GEAR"), new LayoutParams(64.0f, 64.0f)));
+	gridSettingsChoice->SetRoundCorners(RoundCorners::All);
+	gridSettingsChoice->OnClick.Handle(this, &GameBrowser::GridSettingsClick);
 
 	if (gridStyle) {
 		gameList_ = new UI::GridLayoutList(UI::GridLayoutSettings(150 * g_Config.fGameGridScale, 85 * g_Config.fGameGridScale), new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, Margins(10, 0, 6, 0)));
@@ -1112,12 +1146,18 @@ void GameBrowser::Refresh() {
 		}
 	} else if (!listingPending_) {
 		std::vector<File::FileInfo> fileInfo;
-		path_.GetListing(fileInfo, "iso:cso:chd:pbp:elf:prx:ppdmp:");
+		path_.GetListing(fileInfo, "iso:cso:chd:pbp:elf:prx:ppdmp:cue:ccd:mds:bin:img:");
+		// PS1 discs: a .bin or .img shows up as its cue sheet or .ccd, when it has one.
+		RemoveDescribedDiscImages(&fileInfo);
+		// Drives and servers aren't games, and probing a server that's gone away can take seconds.
+		const bool probeDirs = !path_.GetPath().IsRoot() && !path_.GetPath().IsNetworkRoot();
 		for (size_t i = 0; i < fileInfo.size(); i++) {
 			bool isGame = !fileInfo[i].isDirectory;
 			bool isSaveData = false;
 			// Check if eboot directory. TODO: Should ideally be done off-thread somehow.
-			if (!isGame && path_.GetPath().size() >= 4 && IsValidPBP(path_.GetPath() / fileInfo[i].name / "EBOOT.PBP", true))
+			if (!probeDirs) {
+				// Just a directory.
+			} else if (!isGame && path_.GetPath().size() >= 4 && IsValidPBP(path_.GetPath() / fileInfo[i].name / "EBOOT.PBP", true))
 				isGame = true;
 			else if (!isGame && File::Exists(path_.GetPath() / fileInfo[i].name / "PSP_GAME/SYSDIR"))
 				isGame = true;
@@ -1126,7 +1166,8 @@ void GameBrowser::Refresh() {
 
 			if (!isGame && !isSaveData) {
 				if (browseFlags_ & BrowseFlags::NAVIGATE) {
-					dirButtons.push_back(new DirButton(fileInfo[i].fullName, fileInfo[i].name, lastViewMode_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
+					const std::string name = fileInfo[i].fullName.IsNetworkRoot() ? std::string(mm->T("Network")) : fileInfo[i].name;
+					dirButtons.push_back(new DirButton(fileInfo[i].fullName, name, lastViewMode_, new UI::LinearLayoutParams(UI::FILL_PARENT, UI::FILL_PARENT)));
 				}
 			} else {
 				gameButtons.push_back(new GameButton(fileInfo[i].fullName, lastViewMode_, new UI::LinearLayoutParams(gridStyle ? UI::WRAP_CONTENT : UI::FILL_PARENT, UI::WRAP_CONTENT)));

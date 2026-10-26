@@ -33,6 +33,7 @@
 #include "Core/HLE/sceKernelThread.h"
 #include "Core/HLE/__sceAudio.h"
 #include "Core/MIPS/MIPS.h"
+#include "Core/MIPS/MeCore.h"
 
 static const int initialHz = 222000000;
 int CPU_HZ = 222000000;
@@ -57,6 +58,8 @@ static Event *eventPool = 0;
 // Downcount has been moved to currentMIPS, to save a couple of clocks in every ARM JIT block
 // as we can already reach that structure through a register.
 int slicelength;
+// How much of the current slice the other CPUs have already run (CatchUpOtherCPUs).
+static int otherCPUsRan = 0;
 
 alignas(16) static s64 globalTimer;
 static s64 idledCycles;
@@ -217,6 +220,7 @@ void UnregisterAllEvents() {
 void Init(MIPSState *mips) {
 	mips->downcount = INITIAL_SLICE_LENGTH;
 	slicelength = INITIAL_SLICE_LENGTH;
+	otherCPUsRan = 0;
 	globalTimer = 0;
 	idledCycles = 0;
 	lastGlobalTimeTicks = 0;
@@ -413,8 +417,25 @@ void ProcessEvents() {
 	}
 }
 
+// The Media Engine catches up with the main CPU.
+static void RunOtherCPUs(int cycles) {
+	if (MeCore::g_meState) {
+		MeCore::RunFor(cycles - otherCPUsRan);
+	}
+	otherCPUsRan = 0;
+}
+
+void CatchUpOtherCPUs(MIPSState *mips) {
+	const int ran = slicelength - mips->downcount;
+	if (MeCore::g_meState && ran > otherCPUsRan) {
+		MeCore::RunFor(ran - otherCPUsRan);
+		otherCPUsRan = ran;
+	}
+}
+
 void ForceCheck(MIPSState *mips) {
 	int cyclesExecuted = slicelength - mips->downcount;
+	RunOtherCPUs(cyclesExecuted);
 	globalTimer += cyclesExecuted;
 	// This will cause us to check for new events immediately.
 	mips->downcount = -1;
@@ -429,6 +450,7 @@ void ForceCheck(MIPSState *mips) {
 void Advance(MIPSState *mips) {
 	PROFILE_THIS_SCOPE("advance");
 	int cyclesExecuted = slicelength - mips->downcount;
+	RunOtherCPUs(cyclesExecuted);
 	globalTimer += cyclesExecuted;
 	mips->downcount = slicelength;
 
@@ -543,6 +565,8 @@ void DoState(PointerWrap &p) {
 	auto s = p.Section("CoreTiming", 1, 3);
 	if (!s)
 		return;
+	// States are saved between slices.
+	otherCPUsRan = 0;
 
 	int n = (int)event_types.size();
 	int current = n;

@@ -30,6 +30,8 @@
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/HLE/ErrorCodes.h"
 #include "Core/MIPS/MIPS.h"
+#include "Core/MIPS/MeCore.h"
+#include "Core/HW/MMIO.h"
 
 #include "Core/Debugger/MemBlockInfo.h"
 #include "Core/HLE/sceKernel.h"
@@ -132,6 +134,19 @@ static void sceKernelCpuResumeIntrWithSync(u32 enable)
 
 bool IntrHandler::run(PendingInterrupt& pend)
 {
+	if (pend.subintr == PSP_INTR_SUB_NONE) {
+		if (!baseEnabled_ || baseHandler_ == 0 || baseHandler_ == FIRMWARE_HANDLER) {
+			return false;
+		}
+		// As interruptman calls it (6.61): the interrupt, the arg, the interrupted pc.
+		DEBUG_LOG(Log::CPU, "Entering base interrupt handler %08x", baseHandler_);
+		currentMIPS->pc = baseHandler_;
+		currentMIPS->r[MIPS_REG_A0] = intrNumber;
+		currentMIPS->r[MIPS_REG_A1] = baseArg_;
+		currentMIPS->r[MIPS_REG_A2] = intState.savedCpu.pc;
+		return true;
+	}
+
 	SubIntrHandler *handler = get(pend.subintr);
 	if (!handler) {
 		WARN_LOG(Log::sceIntc, "Ignoring interrupt, already been released.");
@@ -155,7 +170,16 @@ void IntrHandler::copyArgsToCPU(PendingInterrupt& pend)
 
 void IntrHandler::handleResult(PendingInterrupt& pend)
 {
-	//u32 result = currentMIPS->r[MIPS_REG_V0];
+	if (pend.subintr != PSP_INTR_SUB_NONE)
+		return;
+	// From interruptman (6.61): -1 is done, -2 disables the interrupt, and n >= 0 runs the handler's
+	// own sub-interrupt n, which nothing here registers.
+	const int result = (int)currentMIPS->r[MIPS_REG_V0];
+	if (result == -2) {
+		enableBase(false);
+	} else if (result >= 0) {
+		WARN_LOG(Log::sceIntc, "Base handler for interrupt %d asked for sub-interrupt %d", intrNumber, result);
+	}
 }
 
 SubIntrHandler* IntrHandler::add(int subIntrNum)
@@ -248,6 +272,11 @@ void __InterruptsInit()
 	inInterrupt = false;
 	for (int i = 0; i < (int)ARRAY_SIZE(intrHandlers); ++i)
 		intrHandlers[i] = new IntrHandler(i);
+	if (MeCore::g_meState) {
+		// me_wrapper's, in the firmware.
+		intrHandlers[PSP_MECODEC_INTR]->setBaseHandler(IntrHandler::FIRMWARE_HANDLER, 0);
+		intrHandlers[PSP_MECODEC_INTR]->enableBase(true);
+	}
 	intState.clear();
 	threadBeforeInterrupt = 0;
 }
@@ -451,9 +480,9 @@ int __CancelRaisedInterrupts(PSPInterrupt intno) {
 	return count;
 }
 
-void __KernelReturnFromInterrupt()
+void __KernelReturnFromInterrupt(MIPSState *mips)
 {
-	VERBOSE_LOG(Log::sceIntc, "Left interrupt handler at %08x", currentMIPS->pc);
+	VERBOSE_LOG(Log::sceIntc, "Left interrupt handler at %08x", mips->pc);
 
 	hleSkipDeadbeef();
 
@@ -469,7 +498,7 @@ void __KernelReturnFromInterrupt()
 			moreOfThis = moreOfThis || other.intr == pend.intr;
 		}
 		if (!moreOfThis) {
-			currentMIPS->downcount -= intrHandlers[pend.intr]->exitCycles();
+			mips->downcount -= intrHandlers[pend.intr]->exitCycles();
 		}
 	} else {
 		_assert_msg_(false, "Bad pend.intr: %d", pend.intr);
@@ -705,8 +734,7 @@ struct PspIntrHandlerOptionParam {
 	u32 max_clock_hi;      //+34
 };  //=38
 
-static int QueryIntrHandlerInfo()
-{
+static int QueryIntrHandlerInfo() {
 	ERROR_LOG_REPORT(Log::sceIntc, "QueryIntrHandlerInfo()");
 	return 0;
 }
@@ -784,8 +812,10 @@ const HLEFunction Kernel_Library[] =
 	{0X4AC57943, &WrapI_I<sceKernelRegisterExitCallback>,      "sceKernelRegisterExitCallback",       'i', "i"    },
 };
 
-static u32 sysclib_memcpy(u32 dst, u32 src, u32 size) {	
-	if (Memory::IsValidRange(dst, size) && Memory::IsValidRange(src, size)) {
+static u32 sysclib_memcpy(MIPSState *mips, u32 dst, u32 src, u32 size) {
+	if (MMIO::Copy(mips, dst, src, size)) {
+		// To or from hardware registers.
+	} else if (Memory::IsValidRange(dst, size) && Memory::IsValidRange(src, size)) {
 		memcpy(Memory::GetPointerWriteUnchecked(dst), Memory::GetPointerUnchecked(src), size);
 	}
 	if (MemBlockInfoDetailed(size)) {
@@ -844,6 +874,14 @@ static u32 sysclib_strlen(u32 src) {
 	}
 }
 
+static u32 sysclib_strnlen(u32 src, u32 maxLen) {
+	u32 len = 0;
+	while (len < maxLen && Memory::IsValidAddress(src + len) && Memory::ReadUnchecked_U8(src + len) != 0) {
+		len++;
+	}
+	return hleLogVerbose(Log::sceKernel, len);
+}
+
 static int sysclib_memcmp(u32 dst, u32 src, u32 size) {
 	if (Memory::IsValidRange(dst, size) && Memory::IsValidRange(src, size)) {
 		const int retval = memcmp(Memory::GetCharPointerUnchecked(dst), Memory::GetCharPointerUnchecked(src), size);
@@ -854,9 +892,9 @@ static int sysclib_memcmp(u32 dst, u32 src, u32 size) {
 	}
 }
 
-static int sysclib_sprintf_impl(u32 dst, int limit, u32 fmt, int firstVarArg) {
+static int sysclib_sprintf_impl(MIPSState *mips, u32 dst, int limit, u32 fmt, int firstVarArg) {
 	std::string result;
-	if (!HLEFormatPrintf(fmt, firstVarArg, &result)) {
+	if (!HLEFormatPrintf(mips, fmt, firstVarArg, &result)) {
 		return 0;
 	}
 
@@ -879,15 +917,15 @@ static int sysclib_sprintf_impl(u32 dst, int limit, u32 fmt, int firstVarArg) {
 	return (int)retval;
 }
 
-static int sysclib_sprintf(u32 dst, u32 fmt) {
+static int sysclib_sprintf(MIPSState *mips, u32 dst, u32 fmt) {
 	DEBUG_LOG(Log::sceKernel, "Not fully implemented: sysclib_sprintf(dst=%08x, fmt=%08x)", dst, fmt);
 	// dst is a0 and fmt a1, so the varargs start at a2.
-	return hleLogDebug(Log::sceKernel, sysclib_sprintf_impl(dst, 0, fmt, 2));
+	return hleLogDebug(Log::sceKernel, sysclib_sprintf_impl(mips, dst, 0, fmt, 2));
 }
 
-static int sysclib_snprintf(u32 dst, int size, u32 fmt) {
+static int sysclib_snprintf(MIPSState *mips, u32 dst, int size, u32 fmt) {
 	DEBUG_LOG(Log::sceKernel, "Not fully implemented: sysclib_snprintf(dst=%08x, fmt=%08x)", dst, fmt);
-	return hleLogDebug(Log::sceKernel, sysclib_sprintf_impl(dst, size, fmt, 3));
+	return hleLogDebug(Log::sceKernel, sysclib_sprintf_impl(mips, dst, size, fmt, 3));
 }
 
 static u32 sysclib_memset(u32 destAddr, int data, int size) {
@@ -921,8 +959,10 @@ static int sysclib_strncmp(u32 s1, u32 s2, u32 size) {
 	return hleLogError(Log::sceKernel, 0, "Bad addresses");
 }
 
-static u32 sysclib_memmove(u32 dst, u32 src, u32 size) {
-	if (Memory::IsValidRange(dst, size) && Memory::IsValidRange(src, size)) {
+static u32 sysclib_memmove(MIPSState *mips, u32 dst, u32 src, u32 size) {
+	if (MMIO::Copy(mips, dst, src, size)) {
+		// To or from hardware registers.
+	} else if (Memory::IsValidRange(dst, size) && Memory::IsValidRange(src, size)) {
 		memmove(Memory::GetPointerWriteUnchecked(dst), Memory::GetPointerUnchecked(src), size);
 	}
 	if (MemBlockInfoDetailed(size)) {
@@ -1015,6 +1055,7 @@ const HLEFunction SysclibForKernel[] =
 	{0x4C0E0274, &WrapU_UI<sysclib_strrchr>,                   "strrchr",                             'x', "xx",    HLE_KERNEL_SYSCALL },
 	{0xCE2F7487, &WrapU_U<sysclib_toupper>,                    "toupper",                             'x', "x",     HLE_KERNEL_SYSCALL },
 	{0XC2145E80, &WrapI_UIU<sysclib_snprintf>,                 "snprintf",                            'i', "xx",     HLE_KERNEL_SYSCALL },
+	{0x90C5573D, &WrapU_UU<sysclib_strnlen>,                   "strnlen",                             'x', "xx",     HLE_KERNEL_SYSCALL },
 };
 
 void Register_Kernel_Library()

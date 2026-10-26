@@ -59,7 +59,7 @@ protected:
 	void CreateViews() override;
 	void CreateRecentTab();
 	GameBrowser *CreateBrowserTab(const Path &path, std::string_view title, std::string_view howToTitle, std::string_view howToUri, BrowseFlags browseFlags, int *viewMode, float *scrollPos);
-	void CreateMainButtons(UI::ViewGroup *parent, bool vertical);
+	void CreateMainButtons(UI::LinearLayout *parent, bool vertical);
 
 	void DrawBackground(UIContext &dc) override;
 	void update() override;
@@ -103,6 +103,8 @@ private:
 
 class UmdReplaceScreen : public UIBaseDialogScreen {
 public:
+	// insert: put a disc into the empty drive (the VSH) rather than swap the one a game is running from.
+	explicit UmdReplaceScreen(bool insert = false) : insert_(insert) {}
 	const char *tag() const override { return "UmdReplace"; }
 
 protected:
@@ -112,6 +114,9 @@ protected:
 private:
 	void OnGameSelected(UI::EventParams &e);
 	void OnGameSettings(UI::EventParams &e);
+	void UseDisc(const Path &path);
+
+	bool insert_;
 };
 
 class GridSettingsPopupScreen : public UI::PopupScreen {

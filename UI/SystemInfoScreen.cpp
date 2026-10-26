@@ -30,6 +30,12 @@
 #include "UI/OnScreenDisplay.h"
 #include "android/jni/app-android.h"
 
+#if PPSSPP_PLATFORM(ANDROID)
+#include "android/jni/AndroidAudio.h"
+
+extern AndroidAudioState *g_audioState;
+#endif
+
 void SystemInfoScreen::update() {
 	UITabbedBaseDialogScreen::update();
 	g_OSD.NudgeIngameNotifications();
@@ -38,7 +44,7 @@ void SystemInfoScreen::update() {
 // TODO: How can we de-duplicate this and SystemInfoScreen::CreateTabs?
 static void CopySummaryToClipboard(Draw::DrawContext *draw) {
 	auto di = GetI18NCategory(I18NCat::DIALOG);
-	auto si = GetI18NCategory(I18NCat::DIALOG);
+	auto si = GetI18NCategory(I18NCat::SYSINFO);
 
 	char *summary = new char[100000];
 	StringWriter w(summary, 100000);
@@ -123,7 +129,7 @@ void SystemInfoScreen::CreateDeviceInfoTab(UI::LinearLayout *deviceSpecs) {
 
 	Draw::DrawContext *draw = screenManager()->getDrawContext();
 
-	systemInfo->Add(new Choice(si->T("Copy summary to clipboard"), ImageID("I_FILE_COPY")))->OnClick.Add([draw](UI::EventParams &e) { CopySummaryToClipboard(draw); });
+	systemInfo->Add(new Choice(si->T("Copy summary to clipboard"), ImageID("I_FILE_COPY")))->OnClick.Add([this](UI::EventParams &e) { CopySummaryToClipboard(screenManager()->getDrawContext()); });
 	systemInfo->Add(new InfoItem(si->T("System Name"), System_GetProperty(SYSPROP_NAME)));
 #if PPSSPP_PLATFORM(ANDROID)
 	systemInfo->Add(new InfoItem(si->T("System Version"), StringFromInt(System_GetPropertyInt(SYSPROP_SYSTEMVERSION))));
@@ -145,7 +151,7 @@ void SystemInfoScreen::CreateDeviceInfoTab(UI::LinearLayout *deviceSpecs) {
 	UI::CollapsibleSection *cpuInfo = deviceSpecs->Add(new UI::CollapsibleSection(si->T("CPU Information")));
 
 	// Don't bother showing the CPU name if we don't have one.
-	if (equals(cpu_info.brand_string, "Unknown")) {
+	if (!equals(cpu_info.brand_string, "Unknown")) {
 		cpuInfo->Add(new InfoItem(si->T("CPU Name"), cpu_info.brand_string));
 	}
 
@@ -393,7 +399,8 @@ void SystemInfoScreen::CreateBuildConfigTab(UI::LinearLayout *buildConfig) {
 		}
 		System_CopyStringToClipboard(buildConfigStr.c_str());
 		auto di = GetI18NCategory(I18NCat::DIALOG);
-		g_OSD.Show(OSDType::MESSAGE_INFO, ApplySafeSubstitutions(di->T("Copied to clipboard: %1"), di->T("Build Configuration")), 0.0f, "copyToClip");
+		auto si = GetI18NCategory(I18NCat::SYSINFO);
+		g_OSD.Show(OSDType::MESSAGE_INFO, ApplySafeSubstitutions(di->T("Copied to clipboard: %1"), si->T("Build Configuration")), 0.0f, "copyToClip");
 	});
 
 	for (auto &item : buildConfigItems) {
@@ -432,6 +439,13 @@ void SystemInfoScreen::CreateAudioInfoTab(UI::LinearLayout *audio) {
 		audioInformation->Add(new InfoItem(a->T("Audio Error"), error.empty() ? di->T("None") : error));
 	} else {
 		audioInformation->Add(new InfoItem(si->T("Sample rate"), StringFromFormat(si->T_cstr("%d Hz"), System_GetPropertyInt(SYSPROP_AUDIO_SAMPLE_RATE))));
+#if PPSSPP_PLATFORM(ANDROID)
+		// What actually got opened: the API, whether it's MMAP, the device's rate and buffers.
+		const std::string streamInfo = AndroidAudio_GetInfoString(g_audioState);
+		audioInformation->Add(new InfoItem(si->T("Stream format"), streamInfo.empty() ? di->T("None") : streamInfo));
+		const std::string error = AndroidAudio_GetErrorString(g_audioState);
+		audioInformation->Add(new InfoItem(a->T("Audio Error"), error.empty() ? di->T("None") : error));
+#endif
 	}
 	int framesPerBuffer = System_GetPropertyInt(SYSPROP_AUDIO_FRAMES_PER_BUFFER);
 	if (framesPerBuffer > 0) {

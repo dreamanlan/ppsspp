@@ -555,7 +555,7 @@ void DrawThreadView(ImConfig &cfg, ImControl &control) {
 				}
 				if (ImGui::MenuItem("Kill thread")) {
 					// Dangerous!
-					sceKernelTerminateThread(thread.id);
+					sceKernelTerminateThread(&mipsr4k, thread.id);
 				}
 				if (thread.status == THREADSTATUS_WAIT) {
 					if (ImGui::MenuItem("Force run now")) {
@@ -911,6 +911,7 @@ static void DrawInternals(ImConfig &cfg) {
 		{DIRECTORY_EXDATA, "EXDATA"},
 		{DIRECTORY_CUSTOM_SHADERS, "CUSTOM_SHADERS"},
 		{DIRECTORY_CUSTOM_THEMES, "CUSTOM_THEMES"},
+		{DIRECTORY_CUSTOM_OVERLAYS, "CUSTOM_OVERLAYS"},
 	};
 
 	if (ImGui::CollapsingHeader("GetSysDirectory")) {
@@ -2655,6 +2656,10 @@ ImDebugger::ImDebugger() {
 }
 
 ImDebugger::~ImDebugger() {
+	SaveConfig();
+}
+
+void ImDebugger::SaveConfig() {
 	cfg_.SaveConfig(ConfigPath());
 }
 

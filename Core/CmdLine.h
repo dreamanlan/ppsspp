@@ -36,6 +36,7 @@ struct CommandLineOptions {
 	// --graphics=null: headless only, see GPU_Null.h.
 	std::optional<bool> nullGraphics;
 	std::optional<bool> enableLogging;
+	std::optional<bool> skipLogo;
 	std::optional<LogLevel> logLevel;  // Override log level with this.
 	std::optional<std::string> log;
 	std::vector<std::string> bootFilenames;
@@ -45,6 +46,7 @@ struct CommandLineOptions {
 	std::optional<std::string> startScreen;
 
 	std::optional<bool> escapeExit;
+	std::optional<bool> gameWindow;
 	// Run as if no memory stick were inserted.
 	std::optional<bool> memStickInserted;
 	// Quit the app instead of going to the main menu when the game ends, for external launchers.
@@ -199,12 +201,15 @@ struct CommandLineOptions {
 	std::optional<std::string> screenshotDir;
 	std::optional<std::string> depthFilenameSave;
 	std::optional<std::string> dumpAudioFilename;
+	std::optional<std::string> pressScript;
+	std::optional<std::string> screenshotAt;
 	std::optional<int> replayEnd;
 	// Headless: apply the game's compatibility settings when replaying a GE frame dump.
 	std::optional<bool> dumpCompat;
 	std::optional<bool> hardwareTransform;
 	std::optional<bool> vertexJit;
 	std::optional<bool> shaderCache;
+	std::optional<bool> emulateMediaEngine;
 	// Headless: comma-separated clip-distance, cull-distance, depth-clamp, framebuffer-fetch, dual-source-blend.
 	std::optional<std::string> disableGPUFeatures;
 	std::optional<bool> screenshotRenderTarget;
@@ -212,7 +217,7 @@ struct CommandLineOptions {
 	// Headless: preserve the alpha channel when saving PNG screenshots.
 	std::optional<bool> screenshotSaveKeepAlpha;
 
-	// Headless: mount an ISO/CSO on umd1:.
+	// Mount an ISO/CSO on umd1: when booting an ELF/PBP (or the VSH).
 	std::optional<std::string> mountIso;
 	// Headless: also log through OutputDebugString (Windows).
 	std::optional<bool> odsLog;

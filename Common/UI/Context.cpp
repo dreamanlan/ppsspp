@@ -162,13 +162,24 @@ Bounds UIContext::GetLayoutBounds(ViewLayoutMode layoutMode, bool immersiveMode)
 	case ViewLayoutMode::IgnoreBottomInset:
 		bottom = 0.0f;
 		break;
+	case ViewLayoutMode::IgnoreSideInsets:
+		left = 0.0f;
+		right = 0.0f;
+		break;
 	}
+
+	// The side insets are only evened out in landscape. In portrait, a camera cutout is at the top, so a
+	// side inset is a real edge (like the sensor bar on the iPhone Duo's cover screen) and stays as is.
+	const Bounds screenBounds = GetBounds();
+	const bool landscape = screenBounds.w > screenBounds.h;
 
 	if (immersiveMode) {
 		if (!hasCameraCutout) {
 			// No cutout, so if the nav bar is hidden, we can use the full width of the screen.
 			left = 0.0f;
 			right = 0.0f;
+		} else if (!landscape) {
+			// Keep the insets.
 		} else if (left > 0 && right > 0) {
 			// Navigation bar is available, so insets leave space for it
 			// even if it's hidden.
@@ -181,7 +192,7 @@ Bounds UIContext::GetLayoutBounds(ViewLayoutMode layoutMode, bool immersiveMode)
 			right = sideWidth;
 		}
 	} else {
-		if ((left > 0) != (right > 0)) {
+		if (landscape && (left > 0) != (right > 0)) {
 			// Only one side has a cutout (surely the camera, which is usually smaller than the nav bar), so use the larger of the two for both sides.
 			int sideWidth = std::max(left, right);
 			left = sideWidth;
@@ -273,10 +284,19 @@ void UIContext::MeasureText(const FontStyle &style, float scaleX, float scaleY, 
 		Draw()->SetFontScale(scaleX * sizeFactor, scaleY * sizeFactor);
 		Draw()->MeasureText(AtlasFontFromStyle(style), str, x, y);
 	} else {
-		textDrawer_->SetOrCreateFont(style);
+		// Switching fonts costs two lookups, and most measuring is done in the current style.
+		const bool switchFont = !(style == *fontStyle_);
+		if (switchFont) {
+			textDrawer_->SetOrCreateFont(style);
+		}
 		textDrawer_->SetFontScale(scaleX, scaleY);
 		textDrawer_->MeasureString(str, x, y);
-		textDrawer_->SetOrCreateFont(*fontStyle_);
+		if (switchFont) {
+			// Check for bad "old font".
+			if (fontStyle_ && fontStyle_->sizePts > 0) {
+				textDrawer_->SetOrCreateFont(*fontStyle_);
+			}
+		}
 	}
 }
 
@@ -287,10 +307,16 @@ void UIContext::MeasureTextRect(const FontStyle &style, float scaleX, float scal
 		Draw()->SetFontScale(scaleX * sizeFactor, scaleY * sizeFactor);
 		Draw()->MeasureTextRect(AtlasFontFromStyle(style), str, maxWidth, x, y, align);
 	} else {
-		textDrawer_->SetOrCreateFont(style);
+		// Switching fonts costs two lookups, and most measuring is done in the current style.
+		const bool switchFont = !(style == *fontStyle_);
+		if (switchFont) {
+			textDrawer_->SetOrCreateFont(style);
+		}
 		textDrawer_->SetFontScale(scaleX, scaleY);
 		textDrawer_->MeasureStringRect(str, maxWidth, x, y, align);
-		textDrawer_->SetOrCreateFont(*fontStyle_);
+		if (switchFont) {
+			textDrawer_->SetOrCreateFont(*fontStyle_);
+		}
 	}
 }
 
@@ -375,6 +401,24 @@ void UIContext::DrawTextShadowRect(std::string_view str, const Bounds &bounds, u
 	Bounds shadowBounds(bounds.x+2, bounds.y+2, bounds.w, bounds.h);
 	DrawTextRect(str, shadowBounds, alpha, align);
 	DrawTextRect(str, bounds, color, align);
+}
+
+void UIContext::FillRoundRect(const UI::Drawable &drawable, const Bounds &bounds, float radius) {
+	FillRoundRect(drawable, bounds, radius, RoundCorners::All);
+}
+
+void UIContext::FillRoundRect(const UI::Drawable &drawable, const Bounds &bounds, float radius, RoundCorners corners) {
+	// Only draw if alpha is non-zero.
+	if ((drawable.color & 0xFF000000) == 0)
+		return;
+	switch (drawable.type) {
+	case UI::DRAW_SOLID_COLOR:
+		uidrawbuffer_->DrawRoundRect(bounds, radius, drawable.color, RoundRectStyle::Filled, corners);
+		break;
+	default:
+		// Not supported
+		break;
+	}
 }
 
 void UIContext::FillRect(const UI::Drawable &drawable, const Bounds &bounds) {

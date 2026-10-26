@@ -20,6 +20,7 @@
 #include <map>
 
 class PointerWrap;
+class MIPSState;
 
 enum PSPInterrupt {
 	PSP_GPIO_INTR      =  4,
@@ -129,8 +130,8 @@ public:
 	SubIntrHandler *get(int subIntrNum);
 	void clear();
 
-	// The handler a kernel driver registered for the whole interrupt (sceKernelRegisterIntrHandler).
-	// Nothing raises those interrupts yet, so it's only kept.
+	// The handler a kernel driver registered for the whole interrupt (sceKernelRegisterIntrHandler),
+	// raised with PSP_INTR_SUB_NONE. Only the Media Engine raises one so far.
 	bool hasBaseHandler() const { return baseHandler_ != 0; }
 	void setBaseHandler(u32 handler, u32 arg) {
 		baseHandler_ = handler;
@@ -138,6 +139,8 @@ public:
 		baseEnabled_ = false;
 	}
 	void enableBase(bool enable) { baseEnabled_ = enable; }
+	// Stands in for a firmware driver's handler, which homebrew releases to register its own.
+	static constexpr u32 FIRMWARE_HANDLER = 1;
 
 	void DoState(PointerWrap &p);
 
@@ -164,7 +167,7 @@ int __TriggerInterrupt(int type, PSPInterrupt intno, int subInterrupts = -1);
 // Forgets interrupts that have been raised but not taken, except for one that's being handled. Returns how many.
 int __CancelRaisedInterrupts(PSPInterrupt intno);
 bool __RunOnePendingInterrupt();
-void __KernelReturnFromInterrupt();
+void __KernelReturnFromInterrupt(MIPSState *mips);
 
 void __RegisterIntrHandler(u32 intrNumber, IntrHandler* handler);
 void __SetIntrHandlerCosts(PSPInterrupt intno, int entryCycles, int exitCycles);
