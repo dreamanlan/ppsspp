@@ -599,7 +599,7 @@ PSPAction *__KernelCreateAction(int actionType) {
 
 void MipsCall::DoState(PointerWrap &p)
 {
-	auto s = p.Section("MipsCall", 1);
+	auto s = p.Section("MipsCall", 1, 2);
 	if (!s)
 		return;
 
@@ -624,11 +624,14 @@ void MipsCall::DoState(PointerWrap &p)
 	Do(p, savedId);
 	Do(p, reschedAfter);
 
-	int actionTypeID = 0;
+	// Action type 0 is a real type (ActionAfterMipsCall, the first one registered), so version 1 lost
+	// those actions. Version 2 marks "no action" with -1.
+	const int noAction = s >= 2 ? -1 : 0;
+	int actionTypeID = noAction;
 	if (doAfter != NULL)
 		actionTypeID = doAfter->actionTypeID;
 	Do(p, actionTypeID);
-	if (actionTypeID != 0)
+	if (actionTypeID != noAction)
 	{
 		if (p.mode == p.MODE_READ)
 			doAfter = __KernelCreateAction(actionTypeID);
@@ -3493,10 +3496,10 @@ void __KernelCallAddress(PSPThread *thread, u32 entryPoint, PSPAction *afterActi
 				// Already paused when the callback was notified.
 				thread->waitPausedForCallback = false;
 			} else if (cbId > 0 && (thread->nt.status & THREADSTATUS_WAIT) != 0) {
-				if (waitTypeFuncs[thread->nt.waitType].beginFunc != NULL) {
+				if (waitTypeFuncs[thread->nt.waitType].beginFunc) {
 					waitTypeFuncs[thread->nt.waitType].beginFunc(after->threadID, thread->currentCallbackId);
 				} else {
-					ERROR_LOG_REPORT(Log::HLE, "Missing begin/restore funcs for wait type %d", thread->nt.waitType);
+					ERROR_LOG_REPORT(Log::HLE, "Missing begin/restore funcs for wait type %d (%s)", thread->nt.waitType, WaitTypeToString(thread->nt.waitType));
 				}
 			}
 
@@ -3655,10 +3658,11 @@ void __KernelReturnFromMipsCall(MIPSState *mips) {
 	cur->currentMipscallId = call->savedId;
 
 	if (cur->nt.waitType != WAITTYPE_NONE && (cur->nt.status & THREADSTATUS_WAIT) != 0 && call->cbId > 0) {
-		if (waitTypeFuncs[cur->nt.waitType].endFunc != NULL)
+		if (waitTypeFuncs[cur->nt.waitType].endFunc) {
 			waitTypeFuncs[cur->nt.waitType].endFunc(cur->GetUID(), cur->currentCallbackId);
-		else
-			ERROR_LOG_REPORT(Log::HLE, "Missing begin/restore funcs for wait type %d", cur->nt.waitType);
+		} else {
+			ERROR_LOG_REPORT(Log::HLE, "Missing begin/restore funcs for wait type %d (%s)", cur->nt.waitType, WaitTypeToString(cur->nt.waitType));
+		}
 	}
 
 	// If the wait ended (or there was none), the thread never gave up the CPU, so it shouldn't

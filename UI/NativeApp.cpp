@@ -141,6 +141,7 @@
 #include "UI/DevScreens.h"
 #include "UI/DiscordIntegration.h"
 #include "UI/EmuScreen.h"
+#include "UI/FirmwareScreen.h"
 #include "UI/GameInfoCache.h"
 #include "UI/GameSettingsScreen.h"
 #include "UI/GPUDriverTestScreen.h"
@@ -440,6 +441,9 @@ void runImDebugger(Draw::DrawContext *draw) {
 	} else {
 		uiContext->SetOverrideScreenFrame(nullptr);
 		SetOverrideScreenFrame(nullptr);
+		if (imDebugger_) {
+			imDebugger_->OnHidden();
+		}
 	}
 
 	// Enable text input (needed for KeyInputFlags::CHAR events) only while an imgui text field is active.
@@ -897,6 +901,9 @@ void NativeInit(int argc, const char *argv[], const CommandLineOptions &cmdLineO
 			GameSettingsScreen *settings = new GameSettingsScreen(Path());
 			settings->OpenDeveloperTools();
 			g_screenManager->push(settings);
+		} else if (equals(cmdLineOptions.startScreen.value(), "firmware")) {
+			g_screenManager->switchScreen(new MainScreen());
+			g_screenManager->push(new FirmwareScreen(Path()));
 		} else {
 			WARN_LOG(Log::System, "Unknown start screen '%s'", cmdLineOptions.startScreen.value().c_str());
 			g_screenManager->switchScreen(new LogoScreen(AfterLogoScreen::DEFAULT));
@@ -1002,10 +1009,6 @@ bool NativeInitGraphics(GraphicsContext *graphicsContext) {
 	ui_draw2d.Init(g_draw, texColorPipeline);
 
 	uiContext->Init(g_draw, texColorPipeline, colorPipeline, &ui_draw2d);
-	if (uiContext->Text()) {
-		// This seems unnecessary.
-		// uiContext->Text()->SetOrCreateFont(FontStyle(FontID::invalid(), FontFamily::SansSerif, 20, FontStyleFlags::Default));
-	}
 
 	g_screenManager->setUIContext(uiContext);
 	// Live before the queue is processed: a removal that comes in while the outputs' swapchains are being
@@ -1518,6 +1521,11 @@ bool HandleGlobalMessage(UIMessage message, const std::string &value) {
 		return true;
 	} else if (message == UIMessage::SAVE_FRAME_DUMP) {
 		SaveFrameDump();
+		return true;
+	} else if (message == UIMessage::SOFT_KEYBOARD_HIDDEN) {
+		if (imDebugger_) {
+			imDebugger_->OnSoftKeyboardHidden();
+		}
 		return true;
 	} else {
 		return false;

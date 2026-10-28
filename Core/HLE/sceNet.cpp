@@ -659,6 +659,7 @@ void __NetInit() {
 
 	__ResetInitNetLib();
 	__NetApctlInit();
+	__NetInetInit();
 	__NetCallbackInit();
 }
 
@@ -712,7 +713,7 @@ void netValidateLoopMemory() {
 
 // This feels like a dubious proposition, mostly...
 void __NetDoState(PointerWrap &p) {
-	auto s = p.Section("sceNet", 1, 7);
+	auto s = p.Section("sceNet", 1, 9);
 	if (!s)
 		return;
 
@@ -780,6 +781,7 @@ void __NetDoState(PointerWrap &p) {
 		apctlEvents.clear();
 		apctlProdCodeAddr = 0;
 	}
+	__NetInetDoState(p, s >= 8, s >= 9);
 
 	if (p.mode == p.MODE_READ) {
 		// Let's not change "Inited" value when Loading SaveState in the middle of multiplayer to prevent memory & port leaks
@@ -812,7 +814,8 @@ void __NetApctlCallbacks()
 
 	// How AP works probably like this: Game use sceNetApctl function -> sceNetApctl let the hardware know and do their's thing and have a new State -> Let the game know the resulting State through Event on their handler
 	if (!apctlEvents.empty()) {
-		auto& args = apctlEvents.front();
+		// Copy it, the pop below destroys the element.
+		auto args = apctlEvents.front();
 		auto& oldState = args.data[0];
 		auto& newState = args.data[1];
 		auto& event = args.data[2];
@@ -1046,7 +1049,7 @@ static int sceNetInit(MIPSState *mips, u32 poolSize, u32 calloutPri, u32 callout
 
 	INFO_LOG(Log::sceNet, "sceNetInit(poolsize=%d, calloutpri=%i, calloutstack=%d, netintrpri=%i, netintrstack=%d) at %08x", poolSize, calloutPri, calloutStack, netinitPri, netinitStack, mips->pc);
 	
-	netMallocStat.pool = poolSize - 0x20; // On Vantage Master Portable this is slightly (32 bytes) smaller than the poolSize arg when tested with JPCSP + prx files
+	netMallocStat.pool = poolSize - 0x20; // 0x1FFE0 for a 0x20000 pool, as on the PSP (pspautotests net/inet/offline)
 	netMallocStat.maximum = 0x4050; // Dummy maximum foot print
 	netMallocStat.free = netMallocStat.pool; // Dummy free size, we should set this high enough to prevent any issue (ie. Vantage Master Portable), this is probably the only field being checked by games?
 
@@ -1062,12 +1065,24 @@ static int sceNetInit(MIPSState *mips, u32 poolSize, u32 calloutPri, u32 callout
 
 // Free(delete) thread info / data. 
 // Normal usage: sceKernelDeleteThread followed by sceNetFreeThreadInfo with the same threadID as argument
+// Both take any thread, also the current one or one that has ended (pspautotests net/inet/offline).
+static bool IsThreadID(SceUID thid) {
+	int type = 0;
+	return thid != 0 && kernelObjects.GetIDType(thid, &type) && type == SCE_KERNEL_TMID_Thread;
+}
+
 static int sceNetFreeThreadinfo(SceUID thid) {
+	if (!IsThreadID(thid)) {
+		return hleLogError(Log::sceNet, 0x80410104, "not a thread");
+	}
 	return hleLogError(Log::sceNet, 0, "UNIMPL");
 }
 
 // Abort a thread.
 static int sceNetThreadAbort(SceUID thid) {
+	if (!IsThreadID(thid)) {
+		return hleLogError(Log::sceNet, 0x80410104, "not a thread");
+	}
 	return hleLogError(Log::sceNet, 0, "UNIMPL");
 }
 
@@ -1181,7 +1196,7 @@ static void sceNetEtherStrton(u32 bufferPtr, u32 macPtr) {
 static int sceNetGetMallocStat(u32 statPtr) {
 	auto stat = PSPPointer<SceNetMallocStat>::Create(statPtr);
 	if (!stat.IsValid())
-		return hleLogError(Log::sceNet, 0, "invalid address");
+		return hleLogError(Log::sceNet, 0x80410103, "invalid address");
 
 	*stat = netMallocStat;
 	stat.NotifyWrite("sceNetGetMallocStat");
@@ -1494,6 +1509,10 @@ static int NetApctl_AddHandler(u32 handlerPtr, u32 handlerArg) {
 // TODO: Should we allow the same handler to be added more than once?
 static u32 sceNetApctlAddHandler(u32 handlerPtr, u32 handlerArg) {
 	INFO_LOG(Log::sceNet, "%s(%08x, %08x)", __FUNCTION__, handlerPtr, handlerArg);
+	// A game gets two (pspautotests net/inet/offline).
+	if (apctlHandlers.size() >= MAX_APCTL_GAME_HANDLERS) {
+		return hleLogError(Log::sceNet, 0x80410A0F, "too many handlers");
+	}
 	return NetApctl_AddHandler(handlerPtr, handlerArg);
 }
 
@@ -1510,6 +1529,14 @@ static int NetApctl_DelHandler(u32 handlerID) {
 
 static int sceNetApctlDelHandler(u32 handlerID) {
 	INFO_LOG(Log::sceNet, "%s(%d)", __FUNCTION__, handlerID);
+	// An ID that can't be a handler's (100, -1) and a free one give different errors
+	// (pspautotests net/inet/offline). Where the range ends is inferred from the handler limit.
+	if (handlerID >= MAX_APCTL_GAME_HANDLERS) {
+		return hleLogError(Log::sceNet, 0x80410A82, "bad handler id");
+	}
+	if (apctlHandlers.find(handlerID) == apctlHandlers.end()) {
+		return hleLogError(Log::sceNet, SCE_NET_APCTL_ERROR_INVALID_ID, "no such handler");
+	}
 	return NetApctl_DelHandler(handlerID);
 }
 
@@ -1572,7 +1599,7 @@ static int sceNetApctlGetState(u32 pStateAddr) {
 		return hleLogDebug(Log::sceNet, 0);
 	}
 
-	return hleLogError(Log::sceNet, -1, "apctl invalid arg"); // 0x8002013A or ERROR_NET_WLAN_INVALID_ARG ?
+	return hleLogError(Log::sceNet, 0x80410A03, "apctl invalid arg"); // pspautotests net/inet/offline
 }
 
 // This one logs like a syscall because it's called at the end of some.
@@ -1598,8 +1625,9 @@ int NetApctl_GetBSSDescIDListUser(u32 sizeAddr, u32 bufAddr) {
 	const int userInfoSize = 8; // 8 bytes per entry (next address + entry id)
 	// Faking 4 entries, games like MGS:PW Recruit will need to have a different AP for each entry
 	int entries = 4;
-	if (!Memory::IsValid4AlignedAddress(sizeAddr) || !Memory::IsValidAddress(bufAddr))
-		return hleLogError(Log::sceNet, -1, "apctl invalid arg"); // 0x8002013A or ERROR_NET_WLAN_INVALID_ARG ?
+	// A NULL buffer asks for the size (pspautotests net/inet/offline).
+	if (!Memory::IsValid4AlignedAddress(sizeAddr) || (bufAddr != 0 && !Memory::IsValidAddress(bufAddr)))
+		return hleLogError(Log::sceNet, 0x80410A03, "apctl invalid arg");
 
 	int size = Memory::ReadUnchecked_U32(sizeAddr);
 	// Return size required
@@ -1745,16 +1773,14 @@ static int sceNetApctlDelInternalHandler(u32 handlerID) {
 
 static int sceNetApctlAddInternal03Handler(u32 handlerPtr, u32 handlerArg) {
 	ERROR_LOG(Log::sceNet, "UNIMPL %s(%08x, %08x)", __FUNCTION__, handlerPtr, handlerArg);
-	// This seems to be a 3rd kind of handler
-	// Simple forward, don't need to use hleCall
-	return sceNetApctlAddHandler(handlerPtr, handlerArg);
+	// This seems to be a 3rd kind of handler. The game handler limit doesn't apply.
+	return NetApctl_AddHandler(handlerPtr, handlerArg);
 }
 
 static int sceNetApctlDelInternal03Handler(u32 handlerID) {
 	ERROR_LOG(Log::sceNet, "UNIMPL %s(%i)", __FUNCTION__, handlerID);
 	// This seems to be a 3rd kind of handler
-	// Simple forward, don't need to use hleCall
-	return sceNetApctlDelHandler(handlerID);
+	return NetApctl_DelHandler(handlerID);
 }
 
 static int sceNetApctl_lib2_69745F0A(int handlerId) {

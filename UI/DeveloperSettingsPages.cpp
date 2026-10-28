@@ -67,7 +67,7 @@ static bool SupportsCustomDriver() {
 
 static bool SupportsCustomDriver() {
 #ifdef _DEBUG
-	return false;  // change to true to debug driver installation on other platforms
+	return false;  // change to true to debug driver installation on other platforms. DO NOT commit as true.
 #else
 	return false;
 #endif
@@ -182,7 +182,7 @@ static void BuildGeneralPage(SettingsPage *page) {
 	// Experimental, so not translated yet.
 	page->Setting(&g_Config.bEmulateMediaEngine);
 
-	page->Choice("JIT debug tools").OnClick([host](UI::EventParams &e) {
+	page->Choice("JIT debug tools").OpensScreen().OnClick([host](UI::EventParams &e) {
 		OnJitDebugTools(host);
 	});
 	page->Setting(&g_Config.bShowDeveloperMenu);
@@ -195,7 +195,7 @@ static void BuildGeneralPage(SettingsPage *page) {
 	page->Header({ I18NCat::MAINSETTINGS, "General" });
 
 	page->Bool(&g_Config.bEnableLogging, "Enable Logging").OnChange(&OnLoggingChanged);
-	page->Choice("Logging Channels").OnClick([host](UI::EventParams &e) {
+	page->Choice("Logging Channels").OpensScreen().OnClick([host](UI::EventParams &e) {
 		host->PageScreenManager()->push(new LogConfigScreen());
 	});
 	page->Setting(&g_Config.bEnableFileLogging).Enabled(&g_Config.bEnableLogging);
@@ -233,8 +233,6 @@ static void BuildGeneralPage(SettingsPage *page) {
 		host->PageScreenManager()->push(new GPIGPOScreen(T(I18NCat::DEVELOPER, "GPI/GPO switches/LEDs")));
 	});
 
-	page->Setting(&g_Config.bShowSaveLoadIndicator);
-
 #if PPSSPP_PLATFORM(ANDROID)
 	page->Setting(&g_Config.iDisplayFramerateMode).EnabledFunc([]() {
 		return System_GetPropertyInt(SYSPROP_SYSTEMVERSION) >= 30;
@@ -244,8 +242,8 @@ static void BuildGeneralPage(SettingsPage *page) {
 #endif
 
 #if PPSSPP_PLATFORM(IOS)
-	page->Custom({ I18NCat::MAINSETTINGS, "Moving the memstick directory is NOT recommended on iOS" }, [](UI::ViewGroup *parent) -> UI::View * {
-		NoticeView *notice = parent->Add(new NoticeView(NoticeLevel::WARN, T(I18NCat::MAINSETTINGS, "Moving the memstick directory is NOT recommended on iOS"), ""));
+	page->Custom({ I18NCat::MEMSTICK, "Moving the memstick directory is NOT recommended on iOS" }, [](UI::ViewGroup *parent) -> UI::View * {
+		NoticeView *notice = parent->Add(new NoticeView(NoticeLevel::WARN, T(I18NCat::MEMSTICK, "Moving the memstick directory is NOT recommended on iOS"), ""));
 		notice->SetWrapText(true);
 		return notice;
 	});
@@ -283,10 +281,10 @@ static void BuildTestsPage(SettingsPage *page) {
 	using namespace UI;
 	SettingsPageHost *host = page->Host();
 
-	page->Choice("Touchscreen Test").OnClick([host](UI::EventParams &e) {
+	page->Choice("Touchscreen Test").OpensScreen().OnClick([host](UI::EventParams &e) {
 		host->PageScreenManager()->push(new TouchTestScreen(host->PageGamePath()));
 	});
-	page->Choice("Framedump tests").OnClick([host](UI::EventParams &e) {
+	page->Choice("Framedump tests").OpensScreen().OnClick([host](UI::EventParams &e) {
 		host->PageScreenManager()->push(new FrameDumpTestScreen());
 	}).EnabledFunc([] {
 		return !PSP_IsInited();
@@ -294,7 +292,7 @@ static void BuildTestsPage(SettingsPage *page) {
 	// For now, we only implement GPU driver tests for Vulkan and OpenGL. This is simply
 	// because the D3D drivers are generally solid enough to not need this type of investigation.
 	if (g_Config.iGPUBackend == (int)GPUBackend::VULKAN || g_Config.iGPUBackend == (int)GPUBackend::OPENGL) {
-		page->Choice("GPU Driver Test").OnClick([host](UI::EventParams &e) {
+		page->Choice("GPU Driver Test").OpensScreen().OnClick([host](UI::EventParams &e) {
 			OnGPUDriverTest(host);
 		});
 	}
@@ -379,7 +377,7 @@ static void BuildMIPSTracerPage(SettingsPage *page) {
 		return true;
 	});
 
-	page->Info("Current log file", mipsTracer.get_logging_path());
+	page->Info("Current trace file", mipsTracer.get_logging_path());
 
 	page->IntSlider(&mipsTracer.in_storage_capacity, 0x4'0000, 0x40'0000, "Storage capacity").Default(0x10'0000).Step(0x10000).Format("0x%x asm opcodes").OnChange([](UI::EventParams &) {
 		INFO_LOG(Log::JIT, "User changed the tracer's storage capacity to 0x%x", mipsTracer.in_storage_capacity);
@@ -530,7 +528,7 @@ static void BuildGraphicsPage(SettingsPage *page) {
 
 	page->Setting(&g_Config.iDisplayRefreshRate);
 
-	page->Header("Vulkan");
+	page->Header({ I18NCat::GRAPHICS, "Vulkan" });
 	page->Setting(&g_Config.bVulkanDisableImplicitLayers);
 
 	if (g_Config.iGPUBackend == (int)GPUBackend::VULKAN) {
@@ -541,7 +539,7 @@ static void BuildGraphicsPage(SettingsPage *page) {
 	}
 
 	if (GetGPUBackend() == GPUBackend::VULKAN && SupportsCustomDriver()) {
-		page->Choice({ I18NCat::GRAPHICS, "AdrenoTools driver manager" }).OnClick([host](UI::EventParams &e) {
+		page->Choice({ I18NCat::GRAPHICS, "AdrenoTools driver manager" }).OpensScreen().OnClick([host](UI::EventParams &e) {
 			host->PageScreenManager()->push(new DriverManagerScreen(host->PageGamePath()));
 		});
 	}
@@ -654,7 +652,7 @@ void BuildDeveloperToolsPage(SettingsPage *page) {
 	link({ I18NCat::MAINSETTINGS, "Networking" }, &BuildNetworkPage);
 	link({ I18NCat::MAINSETTINGS, "Audio" }, &BuildAudioPage);
 	link({ I18NCat::DEVELOPER, "Tests" }, &BuildTestsPage);
-	link({ I18NCat::DEVELOPER, "UI" }, &BuildUIPage);
+	link({ I18NCat::SYSTEM, "UI" }, &BuildUIPage);
 	link({ I18NCat::DEVELOPER, "Dump files" }, &BuildDumpFilePage);
 	link({ I18NCat::DEVELOPER, "HLE" }, &BuildHLEPage);
 #if !PPSSPP_PLATFORM(ANDROID) && !PPSSPP_PLATFORM(IOS) && !PPSSPP_PLATFORM(SWITCH)
@@ -744,7 +742,7 @@ static void OnMIPSTracerPathChanged(SettingsPageHost *host) {
 	auto dev = GetI18NCategory(I18NCat::DEVELOPER);
 	System_BrowseForFileSave(
 		host->PageRequesterToken(),
-		dev->T("Select the log file"),
+		dev->T("Select the trace file"),
 		"trace.txt",
 		BrowseFileType::ANY,
 		[host](std::string_view value, int) {
