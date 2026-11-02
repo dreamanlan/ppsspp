@@ -808,6 +808,9 @@ EXEC_AND_LIB_FILES := \
   $(SRC)/Core/HLE/proAdhoc.cpp \
   $(SRC)/Core/HLE/proAdhocServer.cpp \
   $(SRC)/Core/HLE/NetAdhocCommon.cpp \
+  $(SRC)/Core/HLE/AdhocTransportP2P.cpp \
+  $(SRC)/Core/HLE/AdhocTransportRelay.cpp \
+  $(SRC)/Core/HLE/AdhocTransportNetSim.cpp \
   $(SRC)/Core/HLE/sceNetAdhoc.cpp \
   $(SRC)/ext/aemu_postoffice/client/postoffice.c \
   $(SRC)/ext/aemu_postoffice/client/postoffice_mem_stdc.c \
@@ -1064,6 +1067,7 @@ LOCAL_SRC_FILES := \
   $(SRC)/UI/EmuScreen.cpp \
   $(SRC)/UI/ImposeHome.cpp \
   $(SRC)/UI/GameBrowser.cpp \
+  $(SRC)/UI/GameButton.cpp \
   $(SRC)/UI/MainScreen.cpp \
   $(SRC)/UI/TabbedDialogScreen.cpp \
   $(SRC)/UI/SettingsPage.cpp \

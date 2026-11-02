@@ -921,6 +921,37 @@ static void __NetInetWaitPoll(u64 userdata, int cyclesLate) {
 	__KernelReSchedule("inet wait done");
 }
 
+// Roughly what the calls cost on a PSP when they return without waiting, by how much they handle
+// (pspautotests net/inet/timing and net/inet/sizes). Sends are measured with UDP over WiFi, receives
+// with the data already waiting.
+static const int INET_RECV_US = 4;
+
+static int InetSendUs(int bytes) {
+	return 125 + bytes / 25;
+}
+
+static int InetRecvUs(int bytes) {
+	return bytes < 0 ? INET_RECV_US : 35 + bytes / 70;
+}
+
+// Worse than linear, as each socket costs more the further along the PSP's list it is.
+static int InetPollUs(int sockets, bool select) {
+	return (select ? 15 : 10) + 3 * sockets + sockets * sockets / 8;
+}
+
+static int CountFdSetSockets(int nfds, const u32 *ptrs, int count) {
+	int sockets = 0;
+	for (int fd = 0; fd < nfds; ++fd) {
+		for (int i = 0; i < count; ++i) {
+			if (ptrs[i] && (((const SceNetInetFdSet *)Memory::GetPointerUnchecked(ptrs[i]))->fds_bits[fd >> 5] & (1U << (fd & 31)))) {
+				sockets++;
+				break;
+			}
+		}
+	}
+	return sockets;
+}
+
 // FIXME: nfds is number of fd(s) as in posix poll, or was it maximum fd value as in posix select? Star Wars Battlefront Renegade seems to set the nfds to 64, while Coded Arms Contagion is using 256
 int sceNetInetSelect(int nfds, u32 readfdsPtr, u32 writefdsPtr, u32 exceptfdsPtr, u32 timeoutPtr) {
 	INET_CHECK_STACK_SOCKET();
@@ -948,6 +979,7 @@ int sceNetInetSelect(int nfds, u32 readfdsPtr, u32 writefdsPtr, u32 exceptfdsPtr
 	}
 
 	const u32 args[] = { (u32)nfds, readfdsPtr, writefdsPtr, exceptfdsPtr };
+	const int sockets = CountFdSetSockets(nfds, args + 1, 3);
 	// A null timeout waits for as long as it takes.
 	const s64 waitUs = timeout ? (s64)timeout->tv_sec * 1000000 + timeout->tv_usec : -1;
 	InetTry attempt = TrySelect(__KernelGetCurThread(), args, true);
@@ -957,7 +989,8 @@ int sceNetInetSelect(int nfds, u32 readfdsPtr, u32 writefdsPtr, u32 exceptfdsPtr
 		}
 		attempt.result = InetWouldBlockResult(InetWaitOp::Select, __KernelGetCurThread(), args, attempt.hostErrno, __FUNCTION__);
 	}
-	return hleDelayResult(hleLogDebug(Log::sceNet, attempt.result), "workaround until blocking-socket", 500); // Using hleDelayResult as a workaround for games that need blocking-socket to be implemented (ie. Coded Arms Contagion)
+	hleEatMicro(InetPollUs(sockets, true));
+	return hleLogDebug(Log::sceNet, attempt.result);
 }
 
 int sceNetInetPoll(MIPSState *mips, u32 fdsPtr, u32 nfds, int timeout) {
@@ -982,7 +1015,8 @@ int sceNetInetPoll(MIPSState *mips, u32 fdsPtr, u32 nfds, int timeout) {
 		}
 		attempt.result = 0;
 	}
-	return hleDelayResult(hleLogDebug(Log::sceNet, attempt.result), "workaround until blocking-socket", 1000); // Using hleDelayResult as a workaround for games that need blocking-socket to be implemented
+	hleEatMicro(InetPollUs((int)nfds, false));
+	return hleLogDebug(Log::sceNet, attempt.result);
 }
 
 static int sceNetInetRecv(int socket, u32 bufPtr, u32 bufLen, u32 flags) {
@@ -1003,12 +1037,14 @@ static int sceNetInetRecv(int socket, u32 bufPtr, u32 bufLen, u32 flags) {
 			return hleLogDebug(Log::sceNet, 0, "waiting");
 		}
 		attempt.result = InetWouldBlockResult(InetWaitOp::Recv, __KernelGetCurThread(), args, attempt.hostErrno, __FUNCTION__);
-		return hleDelayResult(hleLogDebug(Log::sceNet, attempt.result, "EAGAIN"), "workaround until blocking-socket", 500);
+		hleEatMicro(INET_RECV_US);
+		return hleLogDebug(Log::sceNet, attempt.result, "EAGAIN");
 	}
+	hleEatMicro(InetRecvUs(attempt.result));
 	if (attempt.result < 0) {
-		return hleDelayResult(hleLogError(Log::sceNet, attempt.result), "workaround until blocking-socket", 500);
+		return hleLogError(Log::sceNet, attempt.result);
 	}
-	return hleDelayResult(hleLogInfo(Log::sceNet, attempt.result), "workaround until blocking-socket", 500); // Using hleDelayResult as a workaround for games that need blocking-socket to be implemented
+	return hleLogInfo(Log::sceNet, attempt.result);
 }
 
 static int sceNetInetSend(int socket, u32 bufPtr, u32 bufLen, u32 flags) {
@@ -1036,6 +1072,7 @@ static int sceNetInetSend(int socket, u32 bufPtr, u32 bufLen, u32 flags) {
 	if (attempt.result < 0) {
 		return hleLogError(Log::sceNet, attempt.result);
 	}
+	hleEatMicro(InetSendUs(attempt.result));
 	return hleLogInfo(Log::sceNet, attempt.result);
 }
 
@@ -1748,14 +1785,14 @@ static int sceNetInetRecvfrom(int socket, u32 bufferPtr, int len, int flags, u32
 			return hleLogDebug(Log::sceNet, 0, "waiting");
 		}
 		attempt.result = InetWouldBlockResult(InetWaitOp::RecvFrom, __KernelGetCurThread(), args, attempt.hostErrno, __FUNCTION__);
-		// Using hleDelayResult as a workaround for games that need blocking-socket to be implemented (ie. Coded Arms Contagion)
-		return hleDelayResult(hleLogDebug(Log::sceNet, attempt.result, "EAGAIN"), "workaround until blocking-socket", 500);
+		hleEatMicro(INET_RECV_US);
+		return hleLogDebug(Log::sceNet, attempt.result, "EAGAIN");
 	}
+	hleEatMicro(InetRecvUs(attempt.result));
 	if (attempt.result < 0) {
-		return hleDelayResult(hleLogError(Log::sceNet, attempt.result), "workaround until blocking-socket", 500);
+		return hleLogError(Log::sceNet, attempt.result);
 	}
-	// Using hleDelayResult as a workaround for games that need blocking-socket to be implemented (ie. Coded Arms Contagion)
-	return hleDelayResult(hleLogDebug(Log::sceNet, attempt.result), "workaround until blocking-socket", 500);
+	return hleLogDebug(Log::sceNet, attempt.result);
 }
 
 // args: socket, buf, len, flags, to, tolen.
@@ -1854,6 +1891,7 @@ static int sceNetInetSendto(int socket, u32 bufferPtr, int len, int flags, u32 t
 	if (attempt.result < 0) {
 		return hleLogError(Log::sceNet, attempt.result);
 	}
+	hleEatMicro(InetSendUs(attempt.result));
 	return hleLogDebug(Log::sceNet, attempt.result);
 }
 
@@ -1993,6 +2031,7 @@ static int sceNetInetSendmsg(int socket, u32 msghdrPtr, int flags) {
 		}
 		return hleLogError(Log::sceNet, retval);
 	}
+	hleEatMicro(InetSendUs(retval));
 	return hleLogInfo(Log::sceNet, retval);
 }
 
@@ -2080,8 +2119,10 @@ static int sceNetInetRecvmsg(MIPSState *mips, int socket, u32 msghdrPtr, int fla
 		if (StartInetWait(InetWaitOp::RecvMsg, args, ARRAY_SIZE(args), SocketWaitUs(inetSock, flags, false))) {
 			return hleLogDebug(Log::sceNet, 0, "waiting");
 		}
+		hleEatMicro(INET_RECV_US);
 		return hleLogDebug(Log::sceNet, InetWouldBlockResult(InetWaitOp::RecvMsg, __KernelGetCurThread(), args, attempt.hostErrno, __FUNCTION__), "EAGAIN");
 	}
+	hleEatMicro(InetRecvUs(attempt.result));
 	if (attempt.result < 0) {
 		return hleLogError(Log::sceNet, attempt.result);
 	}
