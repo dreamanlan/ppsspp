@@ -61,7 +61,6 @@ public:
 	int u_stencilReplaceValue;
 	int u_tex;
 	int u_proj;
-	int u_proj_lens;
 	int u_xywh;
 	int u_vpScale;
 	int u_vpOffset;
@@ -71,19 +70,10 @@ public:
 	int u_world;
 	int u_mipBias;
 	int u_texLodBias;
-	int u_scaleX;
-	int u_scaleY;
 	int u_NaN;
 
 	int u_rasterOffset;
 	int u_minZmaxZ;
-
-#ifdef USE_BONE_ARRAY
-	int u_bone;  // array, size is numBones
-#else
-	int u_bone[8];
-#endif
-	int numBones;
 
 	// Shader blending.
 	int u_fbotex;

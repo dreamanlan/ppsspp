@@ -49,7 +49,6 @@ enum class GLRRenderCommand : uint8_t {
 	UNIFORM4UI,
 	UNIFORM4F,
 	UNIFORMMATRIX,
-	UNIFORMSTEREOMATRIX,
 	TEXTURESAMPLER,
 	TEXTURELOD,
 	VIEWPORT,
@@ -109,8 +108,11 @@ struct GLRRenderData {
 			GLRInputLayout *inputLayout;
 			GLRBuffer *vertexBuffer;
 			GLRBuffer *indexBuffer;
+			// For the input layout's stream 1.
+			GLRBuffer *vertexBuffer1;
 			uint32_t vertexOffset;
 			uint32_t indexOffset;
+			uint32_t vertexOffset1;
 			GLenum mode;  // primitive
 			GLint first;
 			GLint count;
@@ -129,11 +131,6 @@ struct GLRRenderData {
 			const GLint *loc;
 			float m[16];
 		} uniformMatrix4;
-		struct {
-			const char *name;  // if null, use loc
-			const GLint *loc;
-			float *mData;  // new'd, 32 entries
-		} uniformStereoMatrix4;
 		struct {
 			uint32_t clearColor;
 			float clearZ;
@@ -366,9 +363,10 @@ public:
 		caps_ = caps;
 	}
 
-	void RunInitSteps(const FastVec<GLRInitStep> &steps, bool skipGLCalls);
+	// dryRun: the steps will never run (left over at shutdown), so only free what they own.
+	void RunInitSteps(const FastVec<GLRInitStep> &steps, bool dryRun);
 
-	void RunSteps(const std::vector<GLRStep *> &steps, GLFrameData &frameData, bool skipGLCalls, bool keepSteps, bool useVR);
+	void RunSteps(const std::vector<GLRStep *> &steps, GLFrameData &frameData, bool dryRun);
 
 	void CreateDeviceObjects();
 	void DestroyDeviceObjects();

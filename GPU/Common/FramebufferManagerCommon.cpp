@@ -20,6 +20,7 @@
 #include <cmath>
 
 #include "Common/GPU/thin3d.h"
+#include "Common/Profiler/Profiler.h"
 #include "Common/Data/Collections/TinySet.h"
 #include "Common/Data/Convert/ColorConv.h"
 #include "Common/LogReporting.h"
@@ -119,6 +120,7 @@ void FramebufferManagerCommon::BeginFrame(const DisplayLayoutConfig &config) {
 	DecimateFBOs();
 	presentation_->BeginFrame(config);
 	currentRenderVfb_ = nullptr;
+	DiscardFramebufferCopy();
 
 	// Hack.
 	displayLayoutConfigCopy_ = config;
@@ -438,7 +440,7 @@ VirtualFramebuffer *FramebufferManagerCommon::DoSetRenderFrameBuffer(Framebuffer
 				const int x_offset = (params.fb_address - v->fb_address) / bpp;
 				if (x_offset < params.fb_stride && v->height >= drawing_height) {
 					// Pretty certainly a pure render-to-X-offset.
-					WARN_LOG_REPORT_ONCE(renderoffset, Log::FrameBuf, "Rendering to framebuffer offset at %08x +%dx%d (stride %d)", v->fb_address, x_offset, 0, v->fb_stride);
+					WARN_LOG_N_TIMES(fbxoffset, 5, Log::FrameBuf, "Rendering to framebuffer offset at %08x +%dx%d (stride %d)", v->fb_address, x_offset, 0, v->fb_stride);
 					normal_vfb = v;
 					gstate_c.SetCurRTOffset(x_offset, 0);
 					normal_vfb->width = std::max((int)normal_vfb->width, x_offset + drawing_width);
@@ -466,7 +468,7 @@ VirtualFramebuffer *FramebufferManagerCommon::DoSetRenderFrameBuffer(Framebuffer
 		// These are prioritized over normal VFBs matches, to ensure things work even if the higher-address one
 		// is created first. Only enabled under compat flag.
 		vfb = large_offset_vfb;
-		WARN_LOG_REPORT_ONCE(tokimeki, Log::FrameBuf, "Detected FBO at Y offset %d of %08x: %08x", y_offset, large_offset_vfb->fb_address, params.fb_address);
+		WARN_LOG_N_TIMES(fbyoffset, 5, Log::FrameBuf, "Detected FBO at Y offset %d of %08x: %08x", y_offset, large_offset_vfb->fb_address, params.fb_address);
 		gstate_c.SetCurRTOffset(0, y_offset);
 		vfb->height = std::max((int)vfb->height, y_offset + drawing_height);
 		drawing_height += y_offset;
@@ -949,8 +951,10 @@ void FramebufferManagerCommon::CopyToColorFromOverlappingFramebuffers(VirtualFra
 				BlitFramebufferDepth(src, dst, true);
 			}
 
-			if (pipeline && src->fb_format != dst->fb_format) {
-				WriteStencilFromFramebufferAlpha(dst);
+			if (pipeline && src->fb_format != dst->fb_format && dst->fb_format != GE_FORMAT_565) {
+				// Rebuilt when a draw first uses it. MX vs. ATV Untamed reinterprets about 60 times a frame, and
+				// stencil tests after one of them.
+				dst->stencilFromAlphaPending = true;
 			}
 		}
 	}
@@ -1254,7 +1258,7 @@ void FramebufferManagerCommon::WriteRectFromMemory(u32 addr, int size, int strid
 
 	VirtualFramebuffer *target = nullptr;
 	for (auto vfb : vfbs_) {
-		if (!vfb->fbo || vfb->FbStrideInBytes() != byteStride || addr <= vfb->fb_address || addr >= vfb->fb_address + vfb->BufferByteSize(RASTER_COLOR)) {
+		if (!vfb->fbo || vfb->FbStrideInBytes() != byteStride || addr < vfb->fb_address || addr >= vfb->fb_address + vfb->BufferByteSize(RASTER_COLOR)) {
 			continue;
 		}
 		if (!target || vfb->colorBindSeq > target->colorBindSeq) {
@@ -1404,6 +1408,11 @@ bool FramebufferManagerCommon::BindFramebufferAsColorTexture(int stage, VirtualF
 			draw_->BindFramebufferAsTexture(currentFramebufferCopy_, stage, Draw::Aspect::COLOR_BIT, layer);
 			return true;
 		}
+		const bool maskRead = (flags & BINDFBCOLOR_MASK_READ) != 0;
+		if (maskRead && maskCopy_ && maskCopyVfb_ == framebuffer && maskCopyMask_ == gstate.getColorMask()) {
+			draw_->BindFramebufferAsTexture(maskCopy_, stage, Draw::Aspect::COLOR_BIT, layer);
+			return true;
+		}
 
 		// There's a special case we can handle here, where the game is texturing from the same pixels being read, in order to
 		// implement a DST*DST blending function, which the PSP can't do. However on the PC we can absolutely do this!
@@ -1420,7 +1429,7 @@ bool FramebufferManagerCommon::BindFramebufferAsColorTexture(int stage, VirtualF
 			return true;
 		}
 
-		Draw::Framebuffer *renderCopy = GetTempFBO(TempFBO::COPY, framebuffer->renderWidth, framebuffer->renderHeight);
+		Draw::Framebuffer *renderCopy = GetTempFBO(maskRead ? TempFBO::MASK_COPY : TempFBO::COPY, framebuffer->renderWidth, framebuffer->renderHeight);
 		if (renderCopy) {
 			VirtualFramebuffer copyInfo = *framebuffer;
 			copyInfo.fbo = renderCopy;
@@ -1434,6 +1443,11 @@ bool FramebufferManagerCommon::BindFramebufferAsColorTexture(int stage, VirtualF
 			// TODO: Improve on this.
 			if (!partial && (flags & BINDFBCOLOR_UNCACHED) == 0) {
 				currentFramebufferCopy_ = renderCopy;
+			}
+			if (!partial && maskRead) {
+				maskCopy_ = renderCopy;
+				maskCopyVfb_ = framebuffer;
+				maskCopyMask_ = gstate.getColorMask();
 			}
 			gpuStats.perFrame.numCopiesForSelfTex++;
 		} else {
@@ -1504,8 +1518,10 @@ static bool IsValidDisplayRange(u32 addr, int stride, GEBufferFormat format) {
 	if (stride <= 0) {
 		return false;
 	}
-	const u32 bpp = BufferFormatBytesPerPixel(format);
-	return Memory::IsValidRange(addr, ((272 - 1) * (u32)stride + 480) * bpp);
+	// In 64 bits: a huge stride (a multiple of 64 is all sceDisplaySetFramebuf asks for) wrapped
+	// this to a small size that passed.
+	const u64 bytes = ((272 - 1) * (u64)stride + 480) * BufferFormatBytesPerPixel(format);
+	return bytes <= 0xFFFFFFFF && Memory::IsValidRange(addr, (u32)bytes);
 }
 
 Draw::Texture *FramebufferManagerCommon::MakePixelTexture(const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, int width, int height) {
@@ -3192,6 +3208,14 @@ void FramebufferManagerCommon::DestroyAllFBOs() {
 	drawPixelsCache_.clear();
 }
 
+void FramebufferManagerCommon::CheckMaskCopyStillValid(const VirtualFramebuffer *vfb) {
+	// Anything but a draw with the same write mask, without blending or a logic op, can change the bits the copy holds.
+	if (vfb != maskCopyVfb_ || gstate.isModeClear() || gstate.getColorMask() != maskCopyMask_ ||
+		gstate.isAlphaBlendEnabled() || (gstate.isLogicOpEnabled() && gstate.getLogicOp() != GE_LOGIC_COPY)) {
+		maskCopy_ = nullptr;
+	}
+}
+
 static const char *TempFBOReasonToString(TempFBO reason) {
 	switch (reason) {
 	case TempFBO::DEPAL: return "depal";
@@ -3200,6 +3224,7 @@ static const char *TempFBOReasonToString(TempFBO reason) {
 	case TempFBO::STENCIL: return "stencil";
 	case TempFBO::DEPTH_SHIFT: return "depth_shift";
 	case TempFBO::SAMPLE0: return "sample0";
+	case TempFBO::MASK_COPY: return "mask_copy";
 	default: break;
 	}
 	return "";
@@ -3484,6 +3509,7 @@ bool FramebufferManagerCommon::GetOutputFramebuffer(GPUDebugBuffer &buffer) {
 // dithering behavior and games that expect exact colors like Danganronpa, so we
 // can't entirely be rid of the CPU path.) -- unknown
 void FramebufferManagerCommon::ReadbackFramebuffer(VirtualFramebuffer *vfb, int x, int y, int w, int h, RasterChannel channel, Draw::ReadbackMode mode, u8 *shadow) {
+	PROFILE_THIS_SCOPE("fb_readback");
 	if (w <= 0 || h <= 0) {
 		ERROR_LOG(Log::FrameBuf, "Bad inputs to ReadbackFramebufferSync: %d %d %d %d", x, y, w, h);
 		return;
@@ -3714,6 +3740,7 @@ void FramebufferManagerCommon::FlushBeforeCopy() {
 
 // TODO: Replace with with depal, reading the palette from the texture on the GPU directly.
 void FramebufferManagerCommon::DownloadFramebufferForClut(u32 fb_address, u32 loadBytes) {
+	PROFILE_THIS_SCOPE("fb_clut_download");
 	VirtualFramebuffer *vfb = GetVFBAt(fb_address);
 	// Without an fbo there's nothing to read back (ReadbackFramebuffer would read the backbuffer instead).
 	if (vfb && vfb->fb_stride != 0 && vfb->fbo) {

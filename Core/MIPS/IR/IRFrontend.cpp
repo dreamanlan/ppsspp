@@ -196,7 +196,7 @@ void IRFrontend::Comp_ReplacementFunc(MIPSOpcode op) {
 	bool disabled = (entry->flags & REPFLAG_DISABLED) != 0;
 	if (!disabled && funcSize != SymbolMap::INVALID_ADDRESS && funcSize > sizeof(u32)) {
 		// We don't need to disable hooks, the code will still run.
-		if ((entry->flags & (REPFLAG_HOOKENTER | REPFLAG_HOOKEXIT)) == 0) {
+		if ((entry->flags & (REPFLAG_HOOK | REPFLAG_HOOKEXIT)) == 0) {
 			// Any breakpoint at the func entry was already tripped, so we can still run the replacement.
 			// That's a common case - just to see how often the replacement hits.
 			disabled = g_breakpoints.RangeContainsBreakPoint(GetCompilerPC() + sizeof(u32), funcSize - sizeof(u32));
@@ -211,7 +211,7 @@ void IRFrontend::Comp_ReplacementFunc(MIPSOpcode op) {
 		ir.Write(IROp::SetPCConst, 0, 0, 0, GetCompilerPC());
 		ir.Write(IROp::CallReplacement, IRTEMP_0, 0, 0, index);
 
-		if (entry->flags & (REPFLAG_HOOKENTER | REPFLAG_HOOKEXIT)) {
+		if (entry->flags & (REPFLAG_HOOK | REPFLAG_HOOKEXIT)) {
 			// Compile the original instruction at this address.  We ignore cycles for hooks.
 			ApplyRoundingMode();
 			MIPSCompileOp(Memory::Read_Instruction(GetCompilerPC()), this);
@@ -317,7 +317,8 @@ MIPSOpcode IRFrontend::GetOffsetInstruction(int offset) {
 	return ReadOp(GetCompilerPC() + 4 * offset);
 }
 
-void IRFrontend::DoJit(u32 em_address, std::vector<IRInst> &instructions, u32 &mipsBytes) {
+void IRFrontend::DoJit(u32 em_address, std::vector<IRInst> &instructions, u32 &mipsBytes, bool timePhases) {
+	const uint64_t start = timePhases ? time_now_fast_ticks() : 0;
 	js.cancel = false;
 	js.blockStart = em_address;
 	js.compilerPC = em_address;
@@ -352,10 +353,12 @@ void IRFrontend::DoJit(u32 em_address, std::vector<IRInst> &instructions, u32 &m
 
 	mipsBytes = js.compilerPC - em_address;
 
-	IRWriter simplified;
+	IRWriter &simplified = simplified_;
+	simplified.Clear();
 	IRWriter *code = &ir;
+	const uint64_t passStart = timePhases ? time_now_fast_ticks() : 0;
 	if (!js.hadBreakpoints) {
-		std::vector<IRPassFunc> passes{
+		IRPassFunc passes[16]{
 			&ApplyMemoryValidation,
 			&RemoveLoadStoreLeftRight,
 			&OptimizeFPMoves,
@@ -368,12 +371,15 @@ void IRFrontend::DoJit(u32 em_address, std::vector<IRInst> &instructions, u32 &m
 			// &MergeLoadStore,
 			// &ThreeOpToTwoOp,
 		};
+		size_t numPasses = 0;
+		while (passes[numPasses])
+			numPasses++;
 
 		if (opts.optimizeForInterpreter) {
 			// Add special passes here.
-			passes.push_back(&OptimizeForInterpreter);
+			passes[numPasses++] = &OptimizeForInterpreter;
 		}
-		if (IRApplyPasses(passes.data(), passes.size(), ir, simplified, opts))
+		if (IRApplyPasses(passes, numPasses, ir, simplified, opts))
 			logBlocks = 1;
 		code = &simplified;
 		//if (ir.GetInstructions().size() >= 24)
@@ -381,16 +387,26 @@ void IRFrontend::DoJit(u32 em_address, std::vector<IRInst> &instructions, u32 &m
 	}
 
 	if (!mipsTracer.tracing_enabled) {
-		instructions = code->GetInstructions();
+		instructions.assign(code->GetInstructions().begin(), code->GetInstructions().end());
 	}
 	else {
-		std::vector<IRInst> block_instructions = code->GetInstructions();
+		std::vector<IRInst> block_instructions(code->GetInstructions().begin(), code->GetInstructions().end());
 		instructions.reserve(block_instructions.size() + 2); // +2 for Downcount and LogIRBlock
 		// The first instruction is "Downcount"
 		instructions.push_back(block_instructions.front());
 		// prepare_block() fills in the constant, unless it fails to record the block.
 		instructions.push_back({ IROp::LogIRBlock, {0}, 0, 0, INVALID_TRACE_INDEX });
 		std::copy(block_instructions.begin() + 1, block_instructions.end(), std::back_inserter(instructions));
+	}
+	if (timePhases) {
+		lastEnd_ = time_now_fast_ticks();
+		const double nanosPerTick = fast_ticks_to_nanos();
+		lastFrontendNanos_ = (int64_t)((passStart - start) * nanosPerTick);
+		lastPassNanos_ = (int64_t)((lastEnd_ - passStart) * nanosPerTick);
+	} else {
+		lastEnd_ = 0;
+		lastFrontendNanos_ = 0;
+		lastPassNanos_ = 0;
 	}
 
 	if (logBlocks > 0 && dontLogBlocks == 0) {

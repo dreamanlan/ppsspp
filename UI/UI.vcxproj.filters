@@ -91,6 +91,9 @@
     <ClCompile Include="MemStickScreen.cpp">
       <Filter>Screens</Filter>
     </ClCompile>
+    <ClCompile Include="StorageTestScreen.cpp">
+      <Filter>Screens</Filter>
+    </ClCompile>
     <ClCompile Include="Theme.cpp" />
     <ClCompile Include="GamepadEmu.cpp">
       <Filter>Views</Filter>
@@ -176,6 +179,9 @@
       <Filter>Screens</Filter>
     </ClCompile>
     <ClCompile Include="ImDebugger\ImJitViewer.cpp">
+      <Filter>ImDebugger</Filter>
+    </ClCompile>
+    <ClCompile Include="ImDebugger\ImProfiler.cpp">
       <Filter>ImDebugger</Filter>
     </ClCompile>
     <ClCompile Include="UploadScreen.cpp">
@@ -291,6 +297,9 @@
     <ClInclude Include="MemStickScreen.h">
       <Filter>Screens</Filter>
     </ClInclude>
+    <ClInclude Include="StorageTestScreen.h">
+      <Filter>Screens</Filter>
+    </ClInclude>
     <ClInclude Include="Theme.h" />
     <ClInclude Include="GamepadEmu.h">
       <Filter>Views</Filter>
@@ -352,6 +361,9 @@
       <Filter>Screens</Filter>
     </ClInclude>
     <ClInclude Include="ImDebugger\ImJitViewer.h">
+      <Filter>ImDebugger</Filter>
+    </ClInclude>
+    <ClInclude Include="ImDebugger\ImProfiler.h">
       <Filter>ImDebugger</Filter>
     </ClInclude>
     <ClInclude Include="UploadScreen.h">

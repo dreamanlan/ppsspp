@@ -1,4 +1,5 @@
 #include "VRBase.h"
+#include "VRInput.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -39,9 +40,27 @@ void VR_Init( void* system, const char* name, int version ) {
 	}
 #endif
 
+	std::vector<XrExtensionProperties> available;
+	uint32_t availableCount = 0;
+	if (XR_SUCCEEDED(xrEnumerateInstanceExtensionProperties(nullptr, 0, &availableCount, nullptr)) && availableCount) {
+		available.resize(availableCount, { XR_TYPE_EXTENSION_PROPERTIES });
+		xrEnumerateInstanceExtensionProperties(nullptr, availableCount, &availableCount, available.data());
+	}
+	auto isAvailable = [&](const char *name) {
+		for (const XrExtensionProperties &ext : available) {
+			if (!strcmp(ext.extensionName, name)) {
+				return true;
+			}
+		}
+		return false;
+	};
+
 	std::vector<const char *> extensions;
-#ifdef XR_USE_GRAPHICS_API_OPENGL_ES
-	extensions.push_back(XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME);
+#ifdef XR_USE_GRAPHICS_API_VULKAN
+	if (isAvailable(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME)) {
+		extensions.push_back(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME);
+		VR_SetPlatformFLag(VR_PLATFORM_EXTENSION_VULKAN, true);
+	}
 #endif
 	extensions.push_back(XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME);
 #ifdef ANDROID
@@ -120,19 +139,6 @@ void VR_Init( void* system, const char* name, int version ) {
 		exit(1);
 	}
 
-	// Get the graphics requirements.
-#ifdef XR_USE_GRAPHICS_API_OPENGL_ES
-	PFN_xrGetOpenGLESGraphicsRequirementsKHR pfnGetOpenGLESGraphicsRequirementsKHR = NULL;
-	OXR(xrGetInstanceProcAddr(
-			vr_engine.appState.Instance,
-			"xrGetOpenGLESGraphicsRequirementsKHR",
-			(PFN_xrVoidFunction*)(&pfnGetOpenGLESGraphicsRequirementsKHR)));
-
-	XrGraphicsRequirementsOpenGLESKHR graphicsRequirements = {};
-	graphicsRequirements.type = XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_ES_KHR;
-	OXR(pfnGetOpenGLESGraphicsRequirementsKHR(vr_engine.appState.Instance, systemId, &graphicsRequirements));
-#endif
-
 #ifdef ANDROID
 	vr_engine.appState.MainThreadTid = gettid();
 #endif
@@ -144,6 +150,7 @@ void VR_Destroy( engine_t* engine ) {
 	if (engine == &vr_engine) {
 		xrDestroyInstance(engine->appState.Instance);
 		ovrApp_Destroy(&engine->appState);
+		vr_initialized = 0;
 	}
 }
 
@@ -154,26 +161,11 @@ void VR_EnterVR( engine_t* engine ) {
 		return;
 	}
 
-	// Create the OpenXR Session.
-	XrSessionCreateInfo sessionCreateInfo = {};
-#ifdef ANDROID
-	XrGraphicsBindingOpenGLESAndroidKHR graphicsBindingGL = {};
-#elif XR_USE_GRAPHICS_API_OPENGL
-	XrGraphicsBindingOpenGLWin32KHR graphicsBindingGL = {};
+	// Create the OpenXR Session, with the Vulkan binding the presentation filled in.
+	XrSessionCreateInfo sessionCreateInfo = { XR_TYPE_SESSION_CREATE_INFO };
+#ifdef XR_USE_GRAPHICS_API_VULKAN
+	sessionCreateInfo.next = &engine->appState.VulkanBinding;
 #endif
-	memset(&sessionCreateInfo, 0, sizeof(sessionCreateInfo));
-#ifdef ANDROID
-	graphicsBindingGL.type = XR_TYPE_GRAPHICS_BINDING_OPENGL_ES_ANDROID_KHR;
-	graphicsBindingGL.next = NULL;
-	graphicsBindingGL.display = eglGetCurrentDisplay();
-	graphicsBindingGL.config = NULL;
-	graphicsBindingGL.context = eglGetCurrentContext();
-	sessionCreateInfo.next = &graphicsBindingGL;
-#else
-	//TODO:PCVR definition
-#endif
-	sessionCreateInfo.type = XR_TYPE_SESSION_CREATE_INFO;
-	sessionCreateInfo.createFlags = 0;
 	sessionCreateInfo.systemId = engine->appState.SystemId;
 
 	XrResult initResult;
@@ -193,6 +185,7 @@ void VR_EnterVR( engine_t* engine ) {
 
 void VR_LeaveVR( engine_t* engine ) {
 	if (engine->appState.Session) {
+		IN_VRShutdown(engine);
 		OXR(xrDestroySpace(engine->appState.HeadSpace));
 		// StageSpace is optional.
 		if (engine->appState.StageSpace != XR_NULL_HANDLE) {

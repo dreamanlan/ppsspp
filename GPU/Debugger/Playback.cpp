@@ -106,6 +106,15 @@ static bool g_opDone = true;
 static bool g_cancelled = false;
 static int g_drawLimit = 0;
 
+// Command data in a dump is only 2-byte aligned at times. Reading it through a struct pointer can then compile
+// to LDRD/LDM on 32-bit ARM, which fault on that (SIGBUS in 11583 Weird shader bug Z-fighting_4).
+template <typename T>
+static T ReadPushbuf(const std::vector<u8> &pushbuf, u32 ptr) {
+	T value;
+	memcpy(&value, pushbuf.data() + ptr, sizeof(T));
+	return value;
+}
+
 void SetReplayDrawLimit(int lastPrim) {
 	g_drawLimit = lastPrim;
 }
@@ -402,6 +411,8 @@ private:
 	u32 execListID = 0;
 	const int LIST_BUF_SIZE = 256 * 1024;
 	std::vector<u32> execListQueue;
+	// Control points of the patch Init() draws to reset the zero-normal state.
+	u32 resetPatch_ = 0;
 	u16 lastBufw_[8]{};
 	u32 lastTex_[8]{};
 	int prims_ = 0;
@@ -630,7 +641,9 @@ void DumpExecute::Init(u32 ptr, u32 sz) {
 	// Dumps from before savedContextVersion 1 hold PPSSPP's old context layout, with the matrices as raw
 	// floats; the new one ends its commands with an END. Restoring an old one as new turned its matrices
 	// into garbage and the scene disappeared (4140). The PSP replayer tells them apart the same way.
-	const u32_le *context = (const u32_le *)(pushbuf_.data() + ptr);
+	std::vector<u32_le> contextBuf(512);
+	memcpy(contextBuf.data(), pushbuf_.data() + ptr, std::min(sz, (u32)(contextBuf.size() * sizeof(u32_le))));
+	const u32_le *context = contextBuf.data();
 	bool oldLayout = true;
 	for (int i = 17; i < 512; ++i) {
 		if (context[i] == GE_CMD_END << 24) {
@@ -659,6 +672,43 @@ void DumpExecute::Init(u32 ptr, u32 sz) {
 	}
 	lastBase_ = 0xFFFFFFFF;
 	initialClut_ = true;
+
+	// A zero normal lights by a sign the GE keeps from the last Bezier patch drawn, which outlives
+	// programs (ppsspp-re geprobe exp226-253). As the PSP replayer does before the replay, a flat patch
+	// facing +z sets it to +1: alpha test NEVER keeps it from drawing, texturing off from touching the
+	// texture cache, and the registers it uses go back to the context's values. Only the software renderer
+	// keeps that sign, and on the hardware renderers the patch made about 70 dumps replay black.
+	if (PSP_CoreParameter().gpuCore != GPUCORE_SOFTWARE) {
+		return;
+	}
+	if (resetPatch_ == 0) {
+		u32 size = 16 * 3 * 4;
+		resetPatch_ = userMemory.Alloc(size, true, "Reset patch");
+		if (resetPatch_ == (u32)-1)
+			resetPatch_ = 0;
+		for (int i = 0; resetPatch_ != 0 && i < 16; ++i) {
+			Memory::WriteUnchecked_Float(0.01f * (float)(i & 3), resetPatch_ + i * 12 + 0);
+			Memory::WriteUnchecked_Float(0.01f * (float)(i >> 2), resetPatch_ + i * 12 + 4);
+			Memory::WriteUnchecked_Float(0.0f, resetPatch_ + i * 12 + 8);
+		}
+	}
+	if (resetPatch_ != 0) {
+		const u32 words[] = {
+			((u32)GE_CMD_TEXTUREMAPENABLE << 24) | 0,
+			((u32)GE_CMD_ALPHATESTENABLE << 24) | 1,
+			((u32)GE_CMD_ALPHATEST << 24) | 0,
+			((u32)GE_CMD_VERTEXTYPE << 24) | GE_VTYPE_POS_FLOAT,
+			((u32)GE_CMD_BASE << 24) | ((resetPatch_ >> 8) & 0x00FF0000),
+			((u32)GE_CMD_VADDR << 24) | (resetPatch_ & 0x00FFFFFF),
+			((u32)GE_CMD_PATCHDIVISION << 24) | 1 | (1 << 8),
+			((u32)GE_CMD_PATCHPRIMITIVE << 24) | GE_PATCHPRIM_POINTS,
+			((u32)GE_CMD_PATCHFACING << 24) | 0,
+			((u32)GE_CMD_BEZIER << 24) | 4 | (4 << 8),
+			gstate.textureMapEnable, gstate.alphaTestEnable, gstate.alphatest, gstate.vertType, gstate.base,
+			((u32)GE_CMD_VADDR << 24) | (gstate_c.vertexAddr & 0x00FFFFFF), gstate.patchdivision, gstate.patchprimitive, gstate.patchfacing,
+		};
+		execListQueue.insert(execListQueue.end(), std::begin(words), std::end(words));
+	}
 }
 
 // The drawing-space bounds of a through mode draw's vertices, or false if they aren't simple to read
@@ -739,13 +789,29 @@ void DumpExecute::MarkDrawn(u32 prim) {
 			return;
 	}
 
+	// Real frames draw to a few targets with a few distinct areas, but a crafted dump can make every
+	// prim new, and each one is checked against all the others. Past these, coarsen instead.
+	const size_t MAX_TARGETS = 1024;
+	const size_t MAX_RECTS = 64;
 	auto add = [&](u32 base, u32 strideBytes, u32 bytesPerPixel, const DrawnRect &rect) {
+		if (drawnTargets_.size() >= MAX_TARGETS && drawnTargets_.find(base) == drawnTargets_.end())
+			return;
 		DrawnTarget &t = drawnTargets_[base];
 		t.strideBytes = strideBytes;
 		t.bpp = bytesPerPixel;
 		for (const DrawnRect &r : t.rects) {
 			if (r.Contains(rect.x1, rect.y1) && r.Contains(rect.x2, rect.y2))
 				return;
+		}
+		if (t.rects.size() >= MAX_RECTS) {
+			// Merge everything into one bounding box. That can only skip more in CopyAroundDrawn.
+			DrawnRect u = rect;
+			for (const DrawnRect &r : t.rects) {
+				u = DrawnRect{ std::min(u.x1, r.x1), std::min(u.y1, r.y1), std::max(u.x2, r.x2), std::max(u.y2, r.y2) };
+			}
+			t.rects.clear();
+			t.rects.push_back(u);
+			return;
 		}
 		t.rects.push_back(rect);
 	};
@@ -794,9 +860,9 @@ void DumpExecute::ClutAddr(u32 ptr, u32 sz) {
 		u32 addr;
 		u32 flags;
 	};
-	const ClutAddrData *data = (const ClutAddrData *)(pushbuf_.data() + ptr);
-	execClutAddr = data->addr;
-	execClutFlags = data->flags;
+	const ClutAddrData data = ReadPushbuf<ClutAddrData>(pushbuf_, ptr);
+	execClutAddr = data.addr;
+	execClutFlags = data.flags;
 }
 
 void DumpExecute::Clut(u32 ptr, u32 sz) {
@@ -886,7 +952,8 @@ void DumpExecute::Memset(u32 ptr, u32 sz) {
 		u32 sz;
 	};
 
-	const MemsetCommand *data = (const MemsetCommand *)(pushbuf_.data() + ptr);
+	const MemsetCommand cmd = ReadPushbuf<MemsetCommand>(pushbuf_, ptr);
+	const MemsetCommand *data = &cmd;
 
 	const u32 size = Memory::ClampValidSizeAt(data->dest, data->sz);
 	if (Memory::IsVRAMAddress(data->dest) && size != 0) {
@@ -901,7 +968,7 @@ void DumpExecute::Memset(u32 ptr, u32 sz) {
 }
 
 void DumpExecute::MemcpyDest(u32 ptr, u32 sz) {
-	execMemcpyDest = *(const u32 *)(pushbuf_.data() + ptr);
+	execMemcpyDest = ReadPushbuf<u32>(pushbuf_, ptr);
 }
 
 void DumpExecute::Memcpy(u32 ptr, u32 sz) {
@@ -941,7 +1008,8 @@ void DumpExecute::Framebuf(int level, u32 ptr, u32 sz, bool needed) {
 		u32 pad;
 	};
 
-	FramebufData *framebuf = (FramebufData *)(pushbuf_.data() + ptr);
+	const FramebufData header = ReadPushbuf<FramebufData>(pushbuf_, ptr);
+	const FramebufData *framebuf = &header;
 
 	if (lastTex_[level] != framebuf->addr || lastBufw_[level] != framebuf->bufw) {
 		u32 bufwCmd = GE_CMD_TEXBUFWIDTH0 + level;
@@ -987,7 +1055,8 @@ void DumpExecute::MarkNeededTargets() {
 		if (cmd.type < CommandType::FRAMEBUF0 || cmd.type > CommandType::FRAMEBUF7 || cmd.sz < 16) {
 			continue;
 		}
-		const u32 *header = (const u32 *)(pushbuf_.data() + cmd.ptr);
+		u32 header[3];
+		memcpy(header, pushbuf_.data() + cmd.ptr, sizeof(header));
 		if (!Memory::IsVRAMAddress(header[0])) {
 			continue;
 		}
@@ -1067,7 +1136,8 @@ void DumpExecute::Display(u32 ptr, u32 sz, bool allowFlip) {
 		int linesize, pixelFormat;
 	};
 
-	DisplayBufData *disp = (DisplayBufData *)(pushbuf_.data() + ptr);
+	const DisplayBufData data = ReadPushbuf<DisplayBufData>(pushbuf_, ptr);
+	const DisplayBufData *disp = &data;
 
 	// Sync up drawing.
 	SyncStall();
@@ -1077,6 +1147,12 @@ void DumpExecute::Display(u32 ptr, u32 sz, bool allowFlip) {
 	haveDisplay_ = disp->topaddr.ptr != 0;
 	if (!haveDisplay_)
 		return;
+	// The dump is a file, so check what sceDisplaySetFramebuf would have.
+	if ((disp->topaddr.ptr & 0xF) != 0 || disp->linesize <= 0 || (disp->linesize & 0x3F) != 0 || disp->linesize > 4096 || disp->pixelFormat < 0 || disp->pixelFormat > GE_FORMAT_8888) {
+		ERROR_LOG(Log::G3D, "Bad display in dump: %08x, stride %d, format %d", disp->topaddr.ptr, disp->linesize, disp->pixelFormat);
+		haveDisplay_ = false;
+		return;
+	}
 	__DisplaySetFramebuf(disp->topaddr.ptr, disp->linesize, disp->pixelFormat, 1);
 	if (allowFlip) {
 		__DisplaySetFramebuf(disp->topaddr.ptr, disp->linesize, disp->pixelFormat, 0);
@@ -1095,6 +1171,8 @@ void DumpExecute::EdramTrans(u32 ptr, u32 sz) {
 }
 
 DumpExecute::~DumpExecute() {
+	if (resetPatch_ != 0)
+		userMemory.Free(resetPatch_);
 	execMemcpyDest = 0;
 	if (execListBuf) {
 		userMemory.Free(execListBuf);

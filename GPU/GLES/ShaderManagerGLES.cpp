@@ -36,7 +36,6 @@
 #include "Common/GPU/OpenGL/GLRenderManager.h"
 #include "Common/System/Display.h"
 #include "Common/System/OSD.h"
-#include "Common/VR/PPSSPPVR.h"
 
 #include "Common/Log.h"
 #include "Common/File/FileUtil.h"
@@ -93,8 +92,8 @@ LinkedShader::LinkedShader(GLRenderManager *render, VShaderID VSID, Shader *vs, 
 		semantics.push_back({ ATTR_NORMAL, "normal" });
 	else
 		semantics.push_back({ ATTR_NORMAL, "fog" });
-	semantics.push_back({ ATTR_W1, "w1" });
-	semantics.push_back({ ATTR_W2, "w2" });
+	semantics.push_back({ ATTR_CPU_LIT0, "cpulit0" });
+	semantics.push_back({ ATTR_CPU_LIT1, "cpulit1" });
 	semantics.push_back({ ATTR_COLOR0, "color0" });
 	semantics.push_back({ ATTR_COLOR1, "color1" });
 
@@ -105,7 +104,6 @@ LinkedShader::LinkedShader(GLRenderManager *render, VShaderID VSID, Shader *vs, 
 	queries.push_back({ &u_fbotex, "fbotex" });
 
 	queries.push_back({ &u_proj, "u_proj" });
-	queries.push_back({ &u_proj_lens, "u_proj_lens" });
 	queries.push_back({ &u_xywh, "u_xywh" });
 	queries.push_back({ &u_vpScale, "u_vpScale" });
 	queries.push_back({ &u_vpOffset, "u_vpOffset"});
@@ -127,19 +125,6 @@ LinkedShader::LinkedShader(GLRenderManager *render, VShaderID VSID, Shader *vs, 
 	queries.push_back({ &u_view, "u_view" });
 	queries.push_back({ &u_world, "u_world" });
 	queries.push_back({ &u_texmtx, "u_texmtx" });
-
-	// These two are only used for VR, but let's always query them for simplicity.
-	queries.push_back({ &u_scaleX, "u_scaleX" });
-	queries.push_back({ &u_scaleY, "u_scaleY" });
-
-#ifdef USE_BONE_ARRAY
-	queries.push_back({ &u_bone, "u_bone" });
-#else
-	static constexpr const char * boneNames[8] = { "u_bone0", "u_bone1", "u_bone2", "u_bone3", "u_bone4", "u_bone5", "u_bone6", "u_bone7", };
-	for (int i = 0; i < 8; i++) {
-		queries.push_back({ &u_bone[i], boneNames[i] });
-	}
-#endif
 
 	// Lighting, texturing
 	queries.push_back({ &u_ambient, "u_ambient" });
@@ -301,51 +286,6 @@ static void SetMatrix4x3(GLRenderManager *render, GLint *uniform, const float *m
 	render->SetUniformM4x4(uniform, m4x4);
 }
 
-static inline bool GuessVRDrawingHUD(bool is2D, bool flatScreen) {
-
-	bool hud = true;
-	//HUD shouldn't be modified in nonVR mode
-	if (IsBigScreenVRMode()) hud = false;
-	//HUD can be disabled in settings
-	else if (!g_Config.bRescaleHUD) hud = false;
-	//HUD cannot be rendered in flatscreen
-	else if (flatScreen) hud = false;
-	//HUD has to be 2D
-	else if (!is2D) hud = false;
-	//HUD has to be blended
-	else if (!gstate.isAlphaBlendEnabled()) hud = false;
-#ifdef __LIBRETRO__
-	// Untextured transition fades must cover the view, not be scaled with the HUD.
-	else if (!gstate.isTextureMapEnabled()) hud = false;
-#endif
-	//HUD cannot be rendered with clear color mask
-	else if (gstate.isClearModeColorMask()) hud = false;
-	//HUD cannot be rendered with depth color mask
-	else if (gstate.isClearModeDepthMask()) hud = false;
-	//HUD texture has to contain alpha channel
-	else if (!gstate.isTextureAlphaUsed()) hud = false;
-	//HUD texture cannot be in 5551 format
-	else if (gstate.getTextureFormat() == GETextureFormat::GE_TFMT_5551) hud = false;
-	//HUD texture cannot be in CLUT16 format
-	else if (gstate.getTextureFormat() == GETextureFormat::GE_TFMT_CLUT16) hud = false;
-	//HUD texture cannot be in CLUT32 format
-	else if (gstate.getTextureFormat() == GETextureFormat::GE_TFMT_CLUT32) hud = false;
-	//HUD cannot have full texture alpha
-	else if (gstate_c.textureSolidAlpha && gstate.getTextureFormat() != GETextureFormat::GE_TFMT_CLUT4) hud = false;
-	//HUD must have full vertex alpha
-	else if (!gstate_c.vertexFullAlpha && gstate.getDepthTestFunction() == GE_COMP_NEVER) hud = false;
-	//HUD cannot render FB screenshot
-	else if (gstate_c.curTextureHeight % 68 <= 1) hud = false;
-	//HUD cannot be rendered with add function
-	else if (gstate.getTextureFunction() == GETexFunc::GE_TEXFUNC_ADD) hud = false;
-	//HUD cannot be rendered with replace function
-	else if (gstate.getTextureFunction() == GETexFunc::GE_TEXFUNC_REPLACE) hud = false;
-	//HUD cannot be rendered with full clear color mask
-	else if ((gstate.getClearModeColorMask() == 0xFFFFFF) && (gstate.getColorMask() == 0xFFFFFF)) hud = false;
-
-	return hud;
-}
-
 void LinkedShader::use(const ShaderID &VSID) const {
 	render_->BindProgram(program);
 	// Note that we no longer track attr masks here - we do it for the input layouts instead.
@@ -355,53 +295,15 @@ void LinkedShader::UpdateUniforms(const ShaderID &vsid, const ShaderLanguageDesc
 	u64 dirty = dirtyUniforms & availableUniforms;
 	dirtyUniforms = 0;
 
-	// Analyze scene
-	bool is2D = false, flatScreen = false;
-
-	const bool useVR = gstate_c.Use(GPU_USE_VIRTUAL_REALITY);
-
-	if (useVR) {
-		is2D = Is2DVRObject(gstate.projMatrix, gstate.isModeThrough());
-		flatScreen = IsFlatVRScene();
-	}
-
-#ifdef __LIBRETRO__
-	// Blend and texture-enable changes can change HUD classification without dirtying uniforms.
-	if (!dirty && !useVR)
-#else
 	if (!dirty)
-#endif
 		return;
 
 	if (dirty & DIRTY_DEPAL) {
 		render_->SetUniformUI1(&u_depal_mask_shift_off_fmt, PackDepalBits(pixelMapped));
 	}
 
-	// Set HUD mode
-	if (useVR) {
-		if (GuessVRDrawingHUD(is2D, flatScreen)) {
-			float aspect = 480.0f / 272.0f * (IsImmersiveVRMode() ? 0.5f : 1.0f);
-			render_->SetUniformF1(&u_scaleX, g_Config.fHeadUpDisplayScale * aspect);
-			render_->SetUniformF1(&u_scaleY, g_Config.fHeadUpDisplayScale);
-		} else {
-			render_->SetUniformF1(&u_scaleX, 1.0f);
-			render_->SetUniformF1(&u_scaleY, 1.0f);
-		}
-	}
-
 	// Update any dirty uniforms before we draw
 	if (dirty & DIRTY_PROJMATRIX) {
-		if (useVR) {
-			Matrix4x4 vrProjection;
-			if (flatScreen || is2D) {
-				memcpy(&vrProjection, gstate.projMatrix, 16 * sizeof(float));
-			} else {
-				UpdateVRProjection(gstate.projMatrix, vrProjection.m);
-			}
-			UpdateVRParams(gstate.projMatrix);
-			render_->SetUniformM4x4(&u_proj_lens, vrProjection.m);
-		}
-
 		Matrix4x4 matrix;
 		memcpy(&matrix, gstate.projMatrix, 16 * sizeof(float));
 		render_->SetUniformM4x4(&u_proj, matrix.m);
@@ -442,9 +344,6 @@ void LinkedShader::UpdateUniforms(const ShaderID &vsid, const ShaderLanguageDesc
 	}
 	if (dirty & DIRTY_FOGCOLOR) {
 		SetColorUniform3(render_, &u_fogcolor, gstate.fogcolor);
-		if (useVR) {
-			SetVRCompat(VR_COMPAT_FOG_COLOR, gstate.fogcolor);
-		}
 	}
 	if (dirty & DIRTY_FOGCOEF) {
 		float fogcoef[2];
@@ -485,18 +384,7 @@ void LinkedShader::UpdateUniforms(const ShaderID &vsid, const ShaderLanguageDesc
 		SetMatrix4x3(render_, &u_world, gstate.worldMatrix);
 	}
 	if (dirty & DIRTY_VIEWMATRIX) {
-		if (useVR) {
-			float leftEyeView[16];
-			float rightEyeView[16];
-			ConvertMatrix4x3To4x4Transposed(leftEyeView, gstate.viewMatrix);
-			ConvertMatrix4x3To4x4Transposed(rightEyeView, gstate.viewMatrix);
-			if (!is2D) {
-				UpdateVRView(leftEyeView, rightEyeView);
-			}
-			render_->SetUniformM4x4Stereo("u_view", &u_view, leftEyeView, rightEyeView);
-		} else {
-			SetMatrix4x3(render_, &u_view, gstate.viewMatrix);
-		}
+		SetMatrix4x3(render_, &u_view, gstate.viewMatrix);
 	}
 	if (dirty & DIRTY_TEXMATRIX) {
 		SetMatrix4x3(render_, &u_texmtx, gstate.tgenMatrix);
@@ -717,6 +605,7 @@ Shader *ShaderManagerGLES::ApplyVertexShader(bool useHWTransform, u32 vertexType
 }
 
 LinkedShader *ShaderManagerGLES::ApplyFragmentShader(VShaderID VSID, Shader *vs, const ComputedPipelineState &pipelineState, ClipInfoFlags clipInfoFlags, bool pixelMapped) {
+	DirtyDepalIfPixelMappedChanged(pixelMapped);
 	uint64_t dirty = gstate_c.GetDirtyUniforms();
 	if (dirty) {
 		if (lastShader_)
@@ -781,6 +670,7 @@ LinkedShader *ShaderManagerGLES::ApplyFragmentShader(VShaderID VSID, Shader *vs,
 
 		// Check if we can link these.
 		ls = new LinkedShader(render_, VSID, vs, FSID, fs, vs->UseHWTransform());
+		gpuStats.totals.numPipelinesCreated++;
 		ls->use(VSID);
 		const LinkedShaderCacheEntry entry(vs, fs, ls);
 		linkedShaderCache_.push_back(entry);
@@ -868,7 +758,7 @@ enum class CacheDetectFlags {
 };
 
 #define CACHE_HEADER_MAGIC 0x83277592
-#define CACHE_VERSION 47
+#define CACHE_VERSION 48
 
 struct CacheHeader {
 	uint32_t magic;
@@ -1031,6 +921,7 @@ bool ShaderManagerGLES::LoadCache(File::IOFile &f) {
 		fsCache_.Get(fsid, &fs);
 		if (vs && fs) {
 			LinkedShader *ls = new LinkedShader(render_, vsid, vs, fsid, fs, vs->UseHWTransform(), true);
+			gpuStats.totals.numPipelinesCreated++;
 			LinkedShaderCacheEntry entry(vs, fs, ls);
 			linkedShaderCache_.push_back(entry);
 		}

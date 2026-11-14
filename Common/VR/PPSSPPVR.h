@@ -30,7 +30,8 @@ enum VRAppMode {
 // VR app flow integration
 bool IsVREnabled();
 void InitVROnAndroid(void* vm, void* activity, const char* system, int version, const char* name);
-void EnterVR(bool firstStart);
+// Tears down what InitVROnAndroid set up, so a new activity can start over in this process.
+void ShutdownVR();
 void GetVRResolutionPerEye(int* width, int* height);
 void SetVRCallbacks(void(*axis)(const AxisInput *axis, size_t count), bool(*key)(const KeyInput &key), void(*touch)(const TouchInput &touch));
 
@@ -41,16 +42,15 @@ bool UpdateVRAxis(const AxisInput *axes, size_t count);
 bool UpdateVRKeys(const KeyInput &key);
 
 // VR games compatibility
-void PreprocessStepVR(void* step);
+struct VKRStep;
+void PreprocessVulkanStepVR(VKRStep *step);
 void SetVRCompat(VRCompatFlag flag, long value);
 
 // VR rendering integration
-void* BindVRFramebuffer();
+// Begins the frame (emu thread). The render thread ends it once it's submitted.
 bool StartVRRender();
-void FinishVRRender();
-void PreVRFrameRender(int fboIndex);
-void PostVRFrameRender();
-int GetVRFBOIndex();
+// The pointer for the menus, in backbuffer pixels from the top left, if it should be drawn.
+bool GetVRMouseCursorRect(int *x, int *y, int *w, int *h);
 int GetVRPassesCount();
 bool IsPassthroughSupported();
 bool IsBigScreenVRMode();

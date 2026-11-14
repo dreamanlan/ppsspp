@@ -1,25 +1,12 @@
 #include "VRFramebuffer.h"
 
-#if XR_USE_GRAPHICS_API_OPENGL || XR_USE_GRAPHICS_API_OPENGL_ES
-
-#include "Common/GPU/OpenGL/GLCommon.h"
-
-#endif
-
-#if XR_USE_GRAPHICS_API_OPENGL_ES
-#define XR_GL_IMAGE XrSwapchainImageOpenGLESKHR
-#define XR_GL_SWAPCHAIN XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR
-#else
-#define XR_GL_IMAGE XrSwapchainImageOpenGLKHR
-#define XR_GL_SWAPCHAIN XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR
-#endif
-
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <ctime>
 #include <cassert>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <pthread.h>
@@ -47,130 +34,98 @@ void ovrFramebuffer_Clear(ovrFramebuffer* frameBuffer) {
 	frameBuffer->ColorSwapChain.Width = 0;
 	frameBuffer->ColorSwapChain.Height = 0;
 	frameBuffer->ColorSwapChainImage = NULL;
-
-	frameBuffer->GLDepthBuffers = NULL;
-	frameBuffer->GLFrameBuffers = NULL;
+	frameBuffer->ArraySize = 0;
+	frameBuffer->SwapchainFormat = 0;
 	frameBuffer->Acquired = false;
+	frameBuffer->EverReleased = false;
 }
 
-#if XR_USE_GRAPHICS_API_OPENGL || XR_USE_GRAPHICS_API_OPENGL_ES
+#ifdef XR_USE_GRAPHICS_API_VULKAN
 
-static const char* GlErrorString(GLenum error) {
-	switch (error) {
-	case GL_NO_ERROR:
-		return "GL_NO_ERROR";
-	case GL_INVALID_ENUM:
-		return "GL_INVALID_ENUM";
-	case GL_INVALID_VALUE:
-		return "GL_INVALID_VALUE";
-	case GL_INVALID_OPERATION:
-		return "GL_INVALID_OPERATION";
-	case GL_INVALID_FRAMEBUFFER_OPERATION:
-		return "GL_INVALID_FRAMEBUFFER_OPERATION";
-	case GL_OUT_OF_MEMORY:
-		return "GL_OUT_OF_MEMORY";
-	default:
-		return "unknown";
-	}
-}
-
-void GLCheckErrors(const char* file, int line) {
-	for (int i = 0; i < 10; i++) {
-		const GLenum error = glGetError();
-		if (error == GL_NO_ERROR) {
-			break;
-		}
-		ALOGE("GL error on line %s:%d %s", file, line, GlErrorString(error));
-	}
-}
-
-#endif
-
-#if XR_USE_GRAPHICS_API_OPENGL_ES || XR_USE_GRAPHICS_API_OPENGL
-
-static bool ovrFramebuffer_CreateGL(XrSession session, ovrFramebuffer* frameBuffer, int width, int height) {
+static bool ovrFramebuffer_CreateVK(XrSession session, ovrFramebuffer* frameBuffer, int width, int height, int layers) {
 	frameBuffer->Width = width;
 	frameBuffer->Height = height;
+	frameBuffer->ArraySize = layers;
 
-	XrSwapchainCreateInfo swapChainCreateInfo;
-	memset(&swapChainCreateInfo, 0, sizeof(swapChainCreateInfo));
-	swapChainCreateInfo.type = XR_TYPE_SWAPCHAIN_CREATE_INFO;
+	// We write sRGB-encoded values and want them shown as they are. The Quest shows UNORM images as
+	// they are. By the spec, an sRGB image drawn through a UNORM view (mutable) would be the way, but
+	// the Quest's compositor shows that with snow along edges, even with the view formats listed
+	// (XR_KHR_vulkan_swapchain_format_list). So sRGB only where there's no UNORM.
+	uint32_t formatCount = 0;
+	OXR(xrEnumerateSwapchainFormats(session, 0, &formatCount, nullptr));
+	std::vector<int64_t> formats(formatCount);
+	OXR(xrEnumerateSwapchainFormats(session, formatCount, &formatCount, formats.data()));
+	const int64_t preferred[] = { VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_B8G8R8A8_SRGB };
+	int64_t format = 0;
+	for (int64_t want : preferred) {
+		for (int64_t have : formats) {
+			if (have == want) {
+				format = want;
+				break;
+			}
+		}
+		if (format) {
+			break;
+		}
+	}
+	if (!format) {
+		ALOGE("No usable Vulkan swapchain format");
+		return false;
+	}
+	frameBuffer->SwapchainFormat = format;
+
+	XrSwapchainCreateInfo swapChainCreateInfo{ XR_TYPE_SWAPCHAIN_CREATE_INFO };
+	swapChainCreateInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+	if (format == VK_FORMAT_R8G8B8A8_SRGB || format == VK_FORMAT_B8G8R8A8_SRGB) {
+		// Drawn through a UNORM view.
+		swapChainCreateInfo.usageFlags |= XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT;
+	}
+	swapChainCreateInfo.format = format;
 	swapChainCreateInfo.sampleCount = 1;
 	swapChainCreateInfo.width = width;
 	swapChainCreateInfo.height = height;
 	swapChainCreateInfo.faceCount = 1;
+	swapChainCreateInfo.arraySize = layers;
 	swapChainCreateInfo.mipCount = 1;
-	swapChainCreateInfo.arraySize = 1;
 
-	frameBuffer->ColorSwapChain.Width = swapChainCreateInfo.width;
-	frameBuffer->ColorSwapChain.Height = swapChainCreateInfo.height;
+	frameBuffer->ColorSwapChain.Width = width;
+	frameBuffer->ColorSwapChain.Height = height;
 
-	// Create the color swapchain.
-	swapChainCreateInfo.format = GL_SRGB8_ALPHA8;
-	swapChainCreateInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
-	OXR(xrCreateSwapchain(session, &swapChainCreateInfo, &frameBuffer->ColorSwapChain.Handle));
-	OXR(xrEnumerateSwapchainImages(frameBuffer->ColorSwapChain.Handle, 0, &frameBuffer->TextureSwapChainLength, NULL));
-	frameBuffer->ColorSwapChainImage = malloc(frameBuffer->TextureSwapChainLength * sizeof(XR_GL_IMAGE));
-
-	// Populate the swapchain image array.
-	for (uint32_t i = 0; i < frameBuffer->TextureSwapChainLength; i++) {
-		((XR_GL_IMAGE*)frameBuffer->ColorSwapChainImage)[i].type = XR_GL_SWAPCHAIN;
-		((XR_GL_IMAGE*)frameBuffer->ColorSwapChainImage)[i].next = NULL;
+	XrResult res;
+	OXR(res = xrCreateSwapchain(session, &swapChainCreateInfo, &frameBuffer->ColorSwapChain.Handle));
+	if (XR_FAILED(res)) {
+		return false;
 	}
-	OXR(xrEnumerateSwapchainImages(
-			frameBuffer->ColorSwapChain.Handle,
-			frameBuffer->TextureSwapChainLength,
-			&frameBuffer->TextureSwapChainLength,
-			(XrSwapchainImageBaseHeader*)frameBuffer->ColorSwapChainImage));
-
-	frameBuffer->GLDepthBuffers = (GLuint*)malloc(frameBuffer->TextureSwapChainLength * sizeof(GLuint));
-	frameBuffer->GLFrameBuffers = (GLuint*)malloc(frameBuffer->TextureSwapChainLength * sizeof(GLuint));
+	OXR(xrEnumerateSwapchainImages(frameBuffer->ColorSwapChain.Handle, 0, &frameBuffer->TextureSwapChainLength, nullptr));
+	XrSwapchainImageVulkanKHR *images = (XrSwapchainImageVulkanKHR *)calloc(frameBuffer->TextureSwapChainLength, sizeof(XrSwapchainImageVulkanKHR));
 	for (uint32_t i = 0; i < frameBuffer->TextureSwapChainLength; i++) {
-		const GLuint colorTexture = ((XR_GL_IMAGE*)frameBuffer->ColorSwapChainImage)[i].image;
-
-		// Create the depth buffer.
-		GL(glGenRenderbuffers(1, &frameBuffer->GLDepthBuffers[i]));
-		GL(glBindRenderbuffer(GL_RENDERBUFFER, frameBuffer->GLDepthBuffers[i]));
-		GL(glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height));
-		GL(glBindRenderbuffer(GL_RENDERBUFFER, 0));
-
-		// Create the frame buffer.
-		GL(glGenFramebuffers(1, &frameBuffer->GLFrameBuffers[i]));
-		GL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer->GLFrameBuffers[i]));
-		GL(glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, frameBuffer->GLDepthBuffers[i]));
-		GL(glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, frameBuffer->GLDepthBuffers[i]));
-		GL(glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, colorTexture, 0));
-		GL(GLenum renderFramebufferStatus = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER));
-		GL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0));
-		if (renderFramebufferStatus != GL_FRAMEBUFFER_COMPLETE) {
-			ALOGE("Incomplete frame buffer object: %d", renderFramebufferStatus);
-			return false;
-		}
+		images[i].type = XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR;
 	}
-
+	OXR(xrEnumerateSwapchainImages(frameBuffer->ColorSwapChain.Handle, frameBuffer->TextureSwapChainLength, &frameBuffer->TextureSwapChainLength, (XrSwapchainImageBaseHeader *)images));
+	frameBuffer->ColorSwapChainImage = images;
 	return true;
 }
 
 #endif
 
-void ovrFramebuffer_Destroy(ovrFramebuffer* frameBuffer) {
-#if XR_USE_GRAPHICS_API_OPENGL_ES || XR_USE_GRAPHICS_API_OPENGL
-	GL(glDeleteRenderbuffers(frameBuffer->TextureSwapChainLength, frameBuffer->GLDepthBuffers));
-	GL(glDeleteFramebuffers(frameBuffer->TextureSwapChainLength, frameBuffer->GLFrameBuffers));
-	free(frameBuffer->GLDepthBuffers);
-	free(frameBuffer->GLFrameBuffers);
+void *ovrFramebuffer_GetVulkanImage(ovrFramebuffer* frameBuffer, uint32_t index) {
+#ifdef XR_USE_GRAPHICS_API_VULKAN
+	if (frameBuffer->ColorSwapChainImage && index < frameBuffer->TextureSwapChainLength) {
+		return (void *)((XrSwapchainImageVulkanKHR *)frameBuffer->ColorSwapChainImage)[index].image;
+	}
 #endif
+	return nullptr;
+}
+
+void ovrFramebuffer_Destroy(ovrFramebuffer* frameBuffer) {
+	if (frameBuffer->ColorSwapChain.Handle == XR_NULL_HANDLE) {
+		ovrFramebuffer_Clear(frameBuffer);
+		return;
+	}
 	OXR(xrDestroySwapchain(frameBuffer->ColorSwapChain.Handle));
 	free(frameBuffer->ColorSwapChainImage);
 
 	ovrFramebuffer_Clear(frameBuffer);
-}
-
-void* ovrFramebuffer_SetCurrent(ovrFramebuffer* frameBuffer) {
-#if XR_USE_GRAPHICS_API_OPENGL_ES || XR_USE_GRAPHICS_API_OPENGL
-	GL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer->GLFrameBuffers[frameBuffer->TextureSwapChainIndex]));
-#endif
-	return nullptr;
 }
 
 void ovrFramebuffer_Acquire(ovrFramebuffer* frameBuffer) {
@@ -183,18 +138,6 @@ void ovrFramebuffer_Acquire(ovrFramebuffer* frameBuffer) {
 	waitInfo.timeout = XR_INFINITE_DURATION;
 	XrResult res = xrWaitSwapchainImage(frameBuffer->ColorSwapChain.Handle, &waitInfo);
 	frameBuffer->Acquired = res == XR_SUCCESS;
-
-	ovrFramebuffer_SetCurrent(frameBuffer);
-
-#if XR_USE_GRAPHICS_API_OPENGL_ES || XR_USE_GRAPHICS_API_OPENGL
-	GL(glEnable( GL_SCISSOR_TEST ));
-	GL(glViewport( 0, 0, frameBuffer->Width, frameBuffer->Height ));
-	GL(glClearColor( 0.0f, 0.0f, 0.0f, 1.0f ));
-	GL(glScissor( 0, 0, frameBuffer->Width, frameBuffer->Height ));
-	GL(glClear( GL_COLOR_BUFFER_BIT ));
-	GL(glScissor( 0, 0, 0, 0 ));
-	GL(glDisable( GL_SCISSOR_TEST ));
-#endif
 }
 
 void ovrFramebuffer_Release(ovrFramebuffer* frameBuffer) {
@@ -202,14 +145,7 @@ void ovrFramebuffer_Release(ovrFramebuffer* frameBuffer) {
 		XrSwapchainImageReleaseInfo releaseInfo = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO, NULL};
 		OXR(xrReleaseSwapchainImage(frameBuffer->ColorSwapChain.Handle, &releaseInfo));
 		frameBuffer->Acquired = false;
-
-		// Clear the alpha channel, other way OpenXR would not transfer the framebuffer fully
-#if XR_USE_GRAPHICS_API_OPENGL_ES || XR_USE_GRAPHICS_API_OPENGL
-		GL(glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE));
-		GL(glClearColor(0.0f, 0.0f, 0.0f, 1.0f));
-		GL(glClear(GL_COLOR_BUFFER_BIT));
-		GL(glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE));
-#endif
+		frameBuffer->EverReleased = true;
 	}
 }
 
@@ -222,34 +158,20 @@ ovrRenderer
 */
 
 void ovrRenderer_Clear(ovrRenderer* renderer) {
-	for (int i = 0; i < ovrMaxNumEyes; i++) {
-		ovrFramebuffer_Clear(&renderer->FrameBuffer[i]);
-	}
+	ovrFramebuffer_Clear(&renderer->FrameBuffer);
 }
 
-void ovrRenderer_Create(XrSession session, ovrRenderer* renderer, int width, int height) {
-	for (int i = 0; i < ovrMaxNumEyes; i++) {
-#if XR_USE_GRAPHICS_API_OPENGL_ES || XR_USE_GRAPHICS_API_OPENGL
-		ovrFramebuffer_CreateGL(session, &renderer->FrameBuffer[i], width, height);
+bool ovrRenderer_Create(XrSession session, ovrRenderer* renderer, int width, int height) {
+#ifdef XR_USE_GRAPHICS_API_VULKAN
+	// Both eyes in one swapchain, a layer each, drawn with multiview.
+	return ovrFramebuffer_CreateVK(session, &renderer->FrameBuffer, width, height, ovrMaxNumEyes);
+#else
+	return false;
 #endif
-	}
 }
 
 void ovrRenderer_Destroy(ovrRenderer* renderer) {
-	for (int i = 0; i < ovrMaxNumEyes; i++) {
-		ovrFramebuffer_Destroy(&renderer->FrameBuffer[i]);
-	}
-}
-
-void ovrRenderer_MouseCursor(ovrRenderer* renderer, int x, int y, int sx, int sy) {
-#if XR_USE_GRAPHICS_API_OPENGL_ES || XR_USE_GRAPHICS_API_OPENGL
-	GL(glEnable(GL_SCISSOR_TEST));
-	GL(glScissor(x, y, sx, sy));
-	GL(glViewport(x, y, sx, sy));
-	GL(glClearColor(1.0f, 1.0f, 1.0f, 1.0f));
-	GL(glClear(GL_COLOR_BUFFER_BIT));
-	GL(glDisable(GL_SCISSOR_TEST));
-#endif
+	ovrFramebuffer_Destroy(&renderer->FrameBuffer);
 }
 
 /*

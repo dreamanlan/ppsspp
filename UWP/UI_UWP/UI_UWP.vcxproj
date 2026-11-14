@@ -115,6 +115,7 @@
     <ClInclude Include="..\..\UI\ImDebugger\ImDisasmView.h" />
     <ClInclude Include="..\..\UI\ImDebugger\ImGe.h" />
     <ClInclude Include="..\..\UI\ImDebugger\ImJitViewer.h" />
+    <ClInclude Include="..\..\UI\ImDebugger\ImProfiler.h" />
     <ClInclude Include="..\..\UI\ImDebugger\ImMemView.h" />
     <ClInclude Include="..\..\UI\ImDebugger\ImStructViewer.h" />
     <ClInclude Include="..\..\UI\InstallPkgScreen.h" />
@@ -134,6 +135,7 @@
     <ClInclude Include="..\..\UI\Theme.h" />
     <ClInclude Include="..\..\UI\MainScreen.h" />
     <ClInclude Include="..\..\UI\MemStickScreen.h" />
+    <ClInclude Include="..\..\UI\StorageTestScreen.h" />
     <ClInclude Include="..\..\UI\MiscScreens.h" />
     <ClInclude Include="..\..\UI\IAPScreen.h" />
     <ClInclude Include="..\..\UI\OnScreenDisplay.h" />
@@ -183,6 +185,7 @@
     <ClCompile Include="..\..\UI\ImDebugger\ImDisasmView.cpp" />
     <ClCompile Include="..\..\UI\ImDebugger\ImGe.cpp" />
     <ClCompile Include="..\..\UI\ImDebugger\ImJitViewer.cpp" />
+    <ClCompile Include="..\..\UI\ImDebugger\ImProfiler.cpp" />
     <ClCompile Include="..\..\UI\ImDebugger\ImMemView.cpp" />
     <ClCompile Include="..\..\UI\ImDebugger\ImStructViewer.cpp" />
     <ClCompile Include="..\..\UI\InstallPkgScreen.cpp" />
@@ -210,6 +213,7 @@
     <ClCompile Include="..\..\UI\Theme.cpp" />
     <ClCompile Include="..\..\UI\MainScreen.cpp" />
     <ClCompile Include="..\..\UI\MemStickScreen.cpp" />
+    <ClCompile Include="..\..\UI\StorageTestScreen.cpp" />
     <ClCompile Include="..\..\UI\MiscScreens.cpp" />
     <ClCompile Include="..\..\UI\IAPScreen.cpp" />
     <ClCompile Include="..\..\UI\NativeApp.cpp" />

@@ -21,6 +21,7 @@
 #include <mutex>
 #include <vector>
 #include "Common/CommonTypes.h"
+#include "Common/Log.h"
 #include "Common/Serialize/SerializeFuncs.h"
 #include "Common/System/System.h"
 #include "Common/TimeUtil.h"
@@ -28,6 +29,7 @@
 #include "Core/Config.h"
 #include "Core/System.h"
 #include "Core/MIPS/MIPS.h"
+#include "Core/MIPS/JitCommon/JitCommon.h"
 #include "Core/CoreTiming.h"
 #include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceCtrl.h"
@@ -71,13 +73,47 @@ static int fpsHistoryValid = 0;
 // Frame time stats.
 static float frameTimeHistory[600];
 static float frameSleepHistory[600];
+static float frameJitHistory[600];
 static constexpr int frameTimeHistorySize = (int)ARRAY_SIZE(frameTimeHistory);
 static int frameTimeHistoryPos = 0;
 static int frameTimeHistoryValid = 0;
 static double lastFrameTimeHistory = 0.0;
 
+// JIT compile time in the frame since the last flip, from the running totals.
+static MIPSComp::JitCompileTimes lastFlipJitTimes;
+static double lastFlipTime = 0.0;
+// Frames that spend this long compiling are logged.
+static constexpr double JIT_STALL_LOG_SECONDS = 0.002;
+
+static double CheckJitStall(double now) {
+	const MIPSComp::JitCompileTimes &cur = MIPSComp::g_jitCompileTimes;
+	const MIPSComp::JitCompileTimes &last = lastFlipJitTimes;
+	const double jitSeconds = (cur.TotalNanos() - last.TotalNanos()) * 1e-9;
+	if (jitSeconds >= JIT_STALL_LOG_SECONDS && lastFlipTime != 0.0) {
+		char phases[160] = "";
+		if (cur.phaseBlocks != last.phaseBlocks) {
+			snprintf(phases, sizeof(phases), "; frontend %0.2f, passes %0.2f, backend %0.2f, finalize %0.2f",
+				(cur.frontendNanos - last.frontendNanos) * 1e-6, (cur.passNanos - last.passNanos) * 1e-6,
+				(cur.backendNanos - last.backendNanos) * 1e-6, (cur.finalizeNanos - last.finalizeNanos) * 1e-6);
+		}
+		INFO_LOG(Log::JIT, "JIT stall: %0.2f ms in a %0.2f ms frame (%d blocks, %d MIPS instructions, compiling %0.2f ms%s; invalidate %0.2f, %d clears %0.2f ms)",
+			jitSeconds * 1000.0, (now - lastFlipTime) * 1000.0,
+			(int)(cur.blocks - last.blocks), (int)(cur.mipsInstructions - last.mipsInstructions),
+			(cur.CompileNanos() - last.CompileNanos()) * 1e-6, phases,
+			(cur.invalidateNanos - last.invalidateNanos) * 1e-6,
+			cur.clears - last.clears, (cur.clearNanos - last.clearNanos) * 1e-6);
+	}
+	lastFlipJitTimes = cur;
+	lastFlipTime = now;
+	return jitSeconds;
+}
+
 static void CalculateFPS() {
 	double now = time_now_d();
+	const double jitSeconds = CheckJitStall(now);
+	if (g_Config.iJitBenchFlip > 0 && actualFlips == g_Config.iJitBenchFlip) {
+		mipsr4k.BenchmarkJitDeferred();
+	}
 
 	if (now >= lastFpsTime + 1.0) {
 		double frames = (numVBlanks - lastFpsFrame);
@@ -99,6 +135,7 @@ static void CalculateFPS() {
 	}
 
 	if ((DebugOverlay)g_Config.iDebugOverlay == DebugOverlay::FRAME_GRAPH || g_coreCollectDebugStats) {
+		frameJitHistory[frameTimeHistoryPos] = (float)jitSeconds;
 		frameTimeHistory[frameTimeHistoryPos++] = (float)(now - lastFrameTimeHistory);
 		lastFrameTimeHistory = now;
 		frameTimeHistoryPos = frameTimeHistoryPos % frameTimeHistorySize;
@@ -160,9 +197,10 @@ uint64_t DisplayFrameStartTicks() {
 
 uint32_t __DisplayGetCurrentHcount() {
 	const int ticksIntoFrame = (int)(CoreTiming::GetTicks(currentMIPS) - frameStartTicks);
-	const int ticksPerVblank = CoreTiming::GetClockFrequencyHz() / 60 / hCountPerVblank;
-	// Can't seem to produce a 0 on real hardware, offsetting by 1 makes things look right.
-	return 1 + (ticksIntoFrame / ticksPerVblank);
+	// A frame is 1001/60 ms, and lines 0-285 fill it. Line 0 starts at the vblank, and is rarely
+	// seen outside a vblank handler: the interrupt takes most of it (pspautotests display/vblankphase).
+	const s64 ticksPerFrame = (s64)CoreTiming::GetClockFrequencyHz() * 1001 / 60000;
+	return (u32)((s64)ticksIntoFrame * hCountPerVblank / ticksPerFrame);
 }
 
 uint32_t __DisplayGetAccumulatedHcount() {
@@ -180,6 +218,10 @@ float *__DisplayGetFrameTimes(int *out_valid, int *out_pos, float **out_sleep) {
 	*out_pos = frameTimeHistoryPos;
 	*out_sleep = frameSleepHistory;
 	return frameTimeHistory;
+}
+
+const float *__DisplayGetFrameJitTimes() {
+	return frameJitHistory;
 }
 
 int DisplayGetSleepPos() {
@@ -250,15 +292,14 @@ void DisplayFireVblankEnd() {
 }
 
 void DisplayFireFlip() {
-	std::vector<FlipListener> toCall = [] {
-		std::lock_guard<std::mutex> guard(listenersLock);
-		return flipListeners;
-	}();
-
 	// This is also the right time to calculate FPS.
 	CalculateFPS();
 
-	for (FlipListener cb : toCall) {
+	// Held across the calls, so that once __DisplayForgetFlip() returns (on a debugger connection's
+	// thread, say) its listener isn't running and won't be called again. A listener must not add or
+	// remove listeners.
+	std::lock_guard<std::mutex> guard(listenersLock);
+	for (const FlipListener &cb : flipListeners) {
 		cb.first(cb.second);
 	}
 }
@@ -281,7 +322,10 @@ void __DisplayForgetFlip(FlipCallback callback, void *userdata) {
 
 // This is called on game bootup.
 void DisplayHWInit() {
-	flipListeners.clear();
+	{
+		std::lock_guard<std::mutex> guard(listenersLock);
+		flipListeners.clear();
+	}
 	frameStartTicks = 0;
 	numVBlanks = 0;
 	isVblank = 0;
@@ -302,6 +346,8 @@ void DisplayHWInit() {
 	frameTimeHistoryValid = 0;
 	frameTimeHistoryPos = 0;
 	lastFrameTimeHistory = 0.0;
+	lastFlipJitTimes = MIPSComp::g_jitCompileTimes;
+	lastFlipTime = 0.0;
 }
 
 void DisplayHWShutdown() {

@@ -122,7 +122,8 @@ enum class OperationType {
 struct PendingRead {
 	std::atomic<bool> done{ false };
 	CChunkFileReader::Error error = CChunkFileReader::ERROR_NONE;
-	std::unique_ptr<u8[]> buffer;
+	// From LoadFile, so malloc'd.
+	std::unique_ptr<u8, decltype(&free)> buffer{ nullptr, &free };
 	size_t size = 0;
 	std::string gitVersion;
 	// "PPSSPP <version>" from the header, for the failure message.
@@ -292,7 +293,7 @@ int g_screenshotFailures;
 		if (p.mode == p.MODE_READ) {
 			g_loadCount++;
 			hookedOps = Replacement_GetHookedOps();
-			RestoreReplacedInstructions(0, 0xFFFFFFFF);
+			RemoveReplacements(0, 0xFFFFFFFF);
 			codeCompare.ranges = __KernelModuleCodeRanges();
 		}
 		Memory::DoState(p, &codeCompare);
@@ -453,9 +454,16 @@ int g_screenshotFailures;
 
 	// A save is done (written, failed or refused). Returns the callbacks of its repeats.
 	static std::vector<Callback> FinishPendingSave(const std::shared_ptr<SaveRecord> &save) {
-		std::lock_guard<std::mutex> guard(mutex);
-		g_pendingSaves.erase(std::remove(g_pendingSaves.begin(), g_pendingSaves.end(), save), g_pendingSaves.end());
-		return std::move(save->repeats);
+		std::vector<Callback> repeats;
+		{
+			std::lock_guard<std::mutex> guard(mutex);
+			g_pendingSaves.erase(std::remove(g_pendingSaves.begin(), g_pendingSaves.end(), save), g_pendingSaves.end());
+			repeats = std::move(save->repeats);
+		}
+		// The pause screen shows a slot with a save pending as busy, or listed it before the file was there.
+		// Posted after the save left the pending list, so the refresh doesn't still see it.
+		System_PostUIMessage(UIMessage::SAVESTATE_SLOT_SAVED);
+		return repeats;
 	}
 
 	static void RefuseOperation(const Operation &op) {
@@ -934,6 +942,10 @@ int g_screenshotFailures;
 		return g_files.find(GenerateSaveSlotFilename(gamePrefix, slot, extension)) != g_files.end();
 	}
 
+	bool IsSlotSavePending(std::string_view gamePrefix, int slot) {
+		return IsSavePending(GenerateSaveSlotPath(gamePrefix, slot, STATE_EXTENSION));
+	}
+
 	bool HasSaveInSlot(std::string_view gamePrefix, int slot) {
 		return SaveStateFileExists(gamePrefix, slot, STATE_EXTENSION);
 	}
@@ -1253,8 +1265,6 @@ int g_screenshotFailures;
 					g_Config.Save("Saving config for savestate last save undo");
 				}
 				g_filesStale = true;
-				// The pause screen may have listed the slots before the file was there.
-				System_PostUIMessage(UIMessage::SAVESTATE_SLOT_SAVED);
 			}
 		} else {
 			if (result == CChunkFileReader::ERROR_BROKEN_STATE) {

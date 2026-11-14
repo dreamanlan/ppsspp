@@ -191,6 +191,8 @@ public:
 	bool bBreakOnFrameTimeout;  // not saved
 	// Sample the JIT and write a report of the hottest blocks to this file. Not saved.
 	std::string sJitProfileFile;
+	// After this many flips, time recompiling the whole JIT cache (--jit-bench). Not saved.
+	int iJitBenchFlip = 0;
 
 	// General
 	bool bScreenshotsAsPNG;
@@ -425,6 +427,7 @@ public:
 	bool bGfxDebugOutput;
 	int iInflightFrames;
 	bool bRenderDuplicateFrames;
+	int iLimitFrameRateTo30;  // FrameRateLimit30
 	bool bRenderMultiThreading;
 
 	// HW debug
@@ -450,6 +453,10 @@ public:
 	int iAchievementVolume;
 	int iAltSpeedVolume;
 
+	// Filter the SAS reverb's rate conversions to and from 22khz. Off gives the hardware's
+	// unfiltered decimation and zero-stuffing. No UI.
+	bool bReverbFilter;
+
 	bool bExtraAudioBuffering;  // For bluetooth
 	// Android only.
 	int iAndroidAudioApi;  // AndroidAudioApi
@@ -468,6 +475,7 @@ public:
 	bool bShowRegionOnGameIcon;
 	bool bShowIDOnGameIcon;
 	float fGameGridScale;
+	float fGameListScale;
 	int iBackgroundAnimation;  // enum BackgroundAnimation
 	bool bTransparentBackground;
 	int iSettingsCurrentTab;
@@ -601,7 +609,10 @@ public:
 	// Risky JIT optimizations
 	bool bDiscardRegsOnJRRA;
 
-	// SystemParam
+	// SystemParam settings - well, they are queries by systemparam but they're actually stored in the registry.
+	// So now, we mirror these out into the actual registry.
+	int iSceRegCategoryVersion;  // The version of the registry. Resets to 1 if you install an older firmware. The system will reject too-new regs and rewrite too-old ones.
+
 	std::string sNickName;  // AdHoc and system nickname
 	std::string sMACAddress;
 	// The Fuse ID of the PSP a game patch was installed on (12 hex digits), to decrypt it with.
@@ -610,13 +621,35 @@ public:
 	int iLanguage;
 	int iTimeFormat;
 	int iDateFormat;
-	int iTimeZone;
+	int iTimeZoneOffset;
+	std::string sTimeZoneArea;
 	bool bDayLightSavings;
 	int iButtonPreference;
 	int iLockParentalLevel;
 	bool bEncryptSave;
 	// /CONFIG/SYSTEM/umd_autoboot: whether the VSH starts an inserted disc by itself.
 	bool bVshUmdAutoboot;
+	// /CONFIG/SYSTEM/XMB (language and button_assign are iLanguage and iButtonPreference).
+	int iXmbThemeType;
+	int iXmbThemeColorMode;
+	int iXmbThemeWallpaperMode;
+	int iXmbThemeSystemColor;
+	int iXmbThemeCustomThemeMode;
+	// /CONFIG/VIDEO (UMD Video). The languages are two-letter codes, "00" meaning the disc's own.
+	std::string sXmbVideoMenuLanguage;
+	std::string sXmbVideoAudioLanguage;
+	std::string sXmbVideoSubtitleLanguage;
+	int iXmbVideoAppendedVolume;
+	bool bXmbVideoLRButtonEnable;
+	bool bXmbVideoListPlayMode;
+	int iXmbVideoTitleDisplayMode;
+	// /CONFIG/PHOTO/slideshow_speed
+	int iXmbPhotoSlideshowSpeed;
+	// /CONFIG/SYSTEM/CHARACTER_SET: code page indices, for file names and for text in files.
+	int iXmbCharsetOem;
+	int iXmbCharsetAnsi;
+	// /CONFIG/SYSTEM/LOCK/password: four digits.
+	std::string sXmbLockPassword;
 
 	// Networking
 	bool bEnableAdhocServer;
@@ -788,6 +821,7 @@ public:
 	void SetSearchPath(const Path &path);
 
 	void UpdateIniLocation(const char *iniFileName = nullptr, const char *controllerIniFilename = nullptr);
+	const Path &IniFilename() const { return iniFilename_; }
 
 	bool SupportsUpgradeCheck() const;
 	void CheckForUpdate();

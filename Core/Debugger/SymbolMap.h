@@ -164,7 +164,9 @@ public:
 	// store: -1 means "work it out from the address", and an address in no module is module 0
 	// ("absolute"), never -1. See the implementation for why that distinction matters.
 	int ResolveModuleIndex(u32 address, int moduleIndex);
-	bool IsModuleActive(int moduleIndex);
+	bool IsModuleActive(int moduleIndex) const;
+	// Unused by any module so far, including ones loaded from a symbol map.
+	int NextModuleIndex() const;
 	std::vector<LoadedModuleInfo> getAllModules() const;
 
 	// updateName controls whether an existing label at this address gets its name overwritten -
@@ -248,6 +250,12 @@ private:
 
 	// Module ID, index
 	typedef std::pair<int, u32> SymbolKey;
+
+	// Add or remove one module's symbols in the active copies, as UpdateActiveSymbols would. Rebuilding
+	// them all costs a std::map insert per symbol of every module ever loaded, which was half the time
+	// of loading a firmware module.
+	void ActivateModuleSymbols(const ModuleEntry &module);
+	void DeactivateModuleSymbols(const ModuleEntry &module);
 
 	// These are indexed by the module id and relative address in the module.
 	std::map<SymbolKey, FunctionEntry> functions;

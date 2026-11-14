@@ -21,7 +21,6 @@
 #include <thread>
 
 #include "Common/BitSet.h"
-#include "Common/Profiler/Profiler.h"
 #include "Common/Thread/ParallelLoop.h"
 #include "Common/Thread/ThreadManager.h"
 #include "Common/Data/Text/StringWriter.h"
@@ -244,7 +243,6 @@ void BinManager::DeswizzleMirrorTextures(RasterizerState &state) {
 }
 
 void BinManager::UpdateState() {
-	PROFILE_THIS_SCOPE("bin_state");
 	if (HasDirty(SoftDirty::PIXEL_ALL | SoftDirty::SAMPLER_ALL | SoftDirty::RAST_ALL)) {
 		PushState();
 		ClearDirty(SoftDirty::PIXEL_ALL | SoftDirty::SAMPLER_ALL | SoftDirty::RAST_ALL);
@@ -262,6 +260,17 @@ void BinManager::UpdateState() {
 		drawTargetAddr_ = gstate.getFrameBufAddress();
 		DrawingCoords scissorTL(gstate.getScissorX1(), gstate.getScissorY1());
 		DrawingCoords scissorBR(std::min(gstate.getScissorX2(), gstate.getRegionX2()), std::min(gstate.getScissorY2(), gstate.getRegionY2()));
+		// fb.data points into VRAM's mirrors, which end 8MB from its start. A wide 32-bit stride can
+		// reach past that within 1024 rows, so leave out the rows that would.
+		const int fbStride = gstate.FrameBufStride();
+		if (fbStride > 0) {
+			const int bpp = gstate.FrameBufFormat() == GE_FORMAT_8888 ? 4 : 2;
+			const int bytesLeft = 0x00800000 - (int)gstate.getFrameBufRawAddress() - (scissorBR.x + 1) * bpp;
+			const int maxY = bytesLeft / (fbStride * bpp);
+			if (scissorBR.y > maxY) {
+				scissorBR.y = maxY;
+			}
+		}
 		ScreenCoords screenScissorTL = TransformUnit::DrawingToScreen(scissorTL, 0);
 		ScreenCoords screenScissorBR = TransformUnit::DrawingToScreen(scissorBR, 0);
 
@@ -476,7 +485,6 @@ inline void BinDirtyRange::Expand(uint32_t newBase, uint32_t bpp, uint32_t strid
 }
 
 void BinManager::UpdateClut(const void *src) {
-	PROFILE_THIS_SCOPE("bin_clut");
 	if (cluts_.Full())
 		Flush("cluts");
 	BinClut &clut = cluts_.PeekPush();
@@ -606,8 +614,6 @@ void BinManager::AddPoint(const VertexData &v0) {
 }
 
 void BinManager::Drain() {
-	PROFILE_THIS_SCOPE("bin_drain");
-
 	// Also when switching to one thread: what's left goes to the tiles, which hold the earlier items.
 	if (maxTasks_ > 1 || activeCount_ != 0) {
 		DistributeItems();
@@ -623,7 +629,6 @@ void BinManager::Drain() {
 	OptimizePendingStates(pendingStateIndex_, stateIndex_);
 	pendingStateIndex_ = stateIndex_;
 
-	PROFILE_THIS_SCOPE("bin_drain_single");
 	// Anything (transfers, the CPU) may have written memory since the last drain.
 	selfTexValid_ = false;
 	while (!queue_.Empty()) {

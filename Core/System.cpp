@@ -334,6 +334,13 @@ static void ShowCompatWarnings(const Compatibility &compat) {
 	} else {
 		g_OSD.CancelById("defaultclock");
 	}
+
+	if (!compat.flags().RequireDefaultCPUClock && g_Config.iLockedCPUSpeed != 0) {
+		auto sy = GetI18NCategory(I18NCat::SYSTEM);
+		g_OSD.Show(OSDType::MESSAGE_WARNING, ApplySafeSubstitutions(sy->T("SystemClockSpeedChanged", "PSP system clock speed is set to %1 MHz"), g_Config.iLockedCPUSpeed), 5.0f, "clockspeed");
+	} else {
+		g_OSD.CancelById("clockspeed");
+	}
 }
 
 extern const std::string INDEX_FILENAME;
@@ -354,6 +361,8 @@ static void MountFileSystems() {
 	pspFileSystem.Mount("fatms0:", memstickSystem);
 	pspFileSystem.Mount("fatms:", memstickSystem);
 	pspFileSystem.Mount("pfat0:", memstickSystem);
+	// The memory stick with 8.3 names in the OEM code page. The 1.50 XMB's music browser uses it.
+	pspFileSystem.Mount("msoem0:", memstickSystem);
 
 	// TODO: These should be made "lazy" mounts.
 	auto flash0System = std::make_shared<DirectoryFileSystem>(&pspFileSystem, g_Config.nandRootDirectory / "flash0", FileSystemFlags::FLASH);
@@ -385,6 +394,7 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 
 	g_RemasterMode = false;
 	g_DoubleTextureCoordinates = false;
+	g_RemasterHLEFonts = false;
 	Memory::g_PSPModel = g_Config.iPSPModel;
 
 	g_CoreParameter.fileType = type;
@@ -462,10 +472,16 @@ static bool CPU_Init(FileLoader *fileLoader, IdentifiedFileType type, std::strin
 			INFO_LOG(Log::Loader, "ELF, using full PSP-2000 memory access");
 			Memory::g_MemorySize = Memory::RAM_DOUBLE_SIZE;
 		}
-		// The XMB is an ELF too, with no title of its own.
-		const std::string vshTitle = GetVSHTitle(fileLoader->GetPath());
+		// The XMB is an ELF too, with no PARAM.SFO. It gets an ID like a game's, with the firmware's version.
+		std::string vshVersion;
+		const std::string vshTitle = GetVSHTitle(fileLoader->GetPath(), &vshVersion);
 		if (!vshTitle.empty()) {
 			gameTitle = vshTitle;
+			g_paramSFO.SetValue("TITLE", vshTitle, 128);
+			g_paramSFO.SetValue("DISC_ID", VSH_DISC_ID, 16);
+			if (!vshVersion.empty()) {
+				g_paramSFO.SetValue("DISC_VERSION", vshVersion, 8);
+			}
 		}
 		break;
 	}
@@ -873,6 +889,18 @@ bool PSP_InitStart(const CoreParameter &coreParam) {
 				}
 				filename = vshmain;
 				loadedFile = ResolveFileLoaderTarget(ConstructFileLoader(filename), &fileType, errorString);
+			}
+		}
+
+		if (filename.GetFilename() == "vshmain.prx") {
+			// A firmware installed for the other model makes the XMB look for files it doesn't have.
+			InstalledFirmwareInfo firmware;
+			ReadInstalledFirmwareInfo(g_Config.nandRootDirectory, &firmware, false);
+			if (!InstalledFirmwareFitsModel(firmware, g_Config.iPSPModel)) {
+				auto sy = GetI18NCategory(I18NCat::SYSTEM);
+				g_OSD.Show(OSDType::MESSAGE_WARNING, ApplySafeSubstitutions(
+					sy->T("FirmwareOtherModel", "Firmware %1 was installed for a different PSP model than the selected one, so the XMB may not work until you install it again."),
+					firmware.version), 10.0f, "firmware_model");
 			}
 		}
 

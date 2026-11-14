@@ -29,7 +29,6 @@
 #include "Common/Data/Convert/ColorConv.h"
 #include "Common/Math/math_util.h"
 #include "Common/MemoryUtil.h"
-#include "Common/Profiler/Profiler.h"
 #include "Common/Thread/ThreadManager.h"
 #include "Common/TimeUtil.h"
 #include "GPU/GPUState.h"
@@ -681,8 +680,6 @@ static bool PreparePositions4(const Vec4F32 pos[4], const TransformState &state,
 // Writes straight into the destination: building the vertex in a temporary and copying it reloads its
 // fields with wider loads than they were stored with, which stalls.
 void TransformUnit::ReadVertex(const VertexReader &vreader, const TransformState &state, VertexCarry &carry, ClipVertexData &vertex, const PreparedPosition *prepared) {
-	PROFILE_THIS_SCOPE("read_vert");
-
 	// (x, y, z, 1), the left operands of the transform's rows.
 	Vec4F32 pos = vreader.ReadPosOne();
 
@@ -709,6 +706,8 @@ void TransformUnit::ReadVertex(const VertexReader &vreader, const TransformState
 	if (vreader.hasNormal())
 		vreader.ReadNrmF32().Store(carry.normal);
 	Vec4F32 normal = Vec4F32::Load(carry.normal);
+	if (!generatedNormals_ && carry.normal[0] == 0.0f && carry.normal[1] == 0.0f && carry.normal[2] == 0.0f)
+		normal = Vec4F32::Splat((float)zeroNormalSign_);
 	if (state.negateNormals)
 		normal = Vec4F32FromBits(Vec4S32FromBits(normal) ^ Vec4S32::Splat((int)0x80000000));
 
@@ -781,8 +780,9 @@ void TransformUnit::ReadVertex(const VertexReader &vreader, const TransformState
 				static const float zAxis[4] = { 0.0f, 0.0f, 1.0f, 0.0f };
 				worldnormal = Vec4F32::Load(zAxis);
 			}
-			// A zero normal stays zero: no diffuse or specular from any light (gpu/probe exp173; SOCOM
-			// UCES01242 has meshes without normals but lit).
+			// A zero normal that gets here (the zero-normal sign is 0, see NoteBezierPatch()) stays zero: no
+			// diffuse or specular from any light (gpu/probe exp173; SOCOM UCES01242 has meshes without
+			// normals but lit).
 		}
 
 		// Time to generate some texture coords.  Lighting will handle shade mapping.
@@ -818,7 +818,6 @@ void TransformUnit::ReadVertex(const VertexReader &vreader, const TransformState
 			Lighting::GenerateLightST(vertex.v, pos, worldnormal, normalRsqrt, state.lightingState.viewDir);
 		}
 
-		PROFILE_THIS_SCOPE("light");
 		if (state.enableLighting)
 			Lighting::Process(vertex.v, pos, worldnormal, normalRsqrt, state.lightingState);
 	} else {
@@ -1175,6 +1174,48 @@ protected:
 // Static to reduce allocations mid-frame.
 std::vector<ClipVertexData> SoftwareVertexReader::cached_;
 std::vector<TransformUnit::PreparedPosition> SoftwareVertexReader::prepared_;
+
+static u32 PatchIndex(const void *indices, u32 vertType, int k) {
+	switch (vertType & GE_VTYPE_IDX_MASK) {
+	case GE_VTYPE_IDX_8BIT: return ((const u8 *)indices)[k];
+	case GE_VTYPE_IDX_16BIT: return ((const u16_le *)indices)[k];
+	case GE_VTYPE_IDX_32BIT: return ((const u32_le *)indices)[k];
+	default: return k;
+	}
+}
+
+// The GE keeps the sign of the z of the last Bezier patch's normal at the surface's last corner (u = 1,
+// v = 1), from the control points in model space and flipped by patch facing, 0 if the patch faces sideways
+// or the corner is degenerate. A zero normal lights (and shade maps) as that sign times (1, 1, 1) in model
+// space, before reverse normals. Nothing else changes it, and it outlives the program that set it
+// (ppsspp-re geprobe exp226-253). Nayuta no Kiseki (NPJH50625) and Zettai Zetsumei Toshi 3 (ULJS00191)
+// light zero normals.
+void TransformUnit::NoteBezierPatch(const void *controlPoints, const void *indices, int pointsU, int pointsV, u32 vertType, bool patchFacing, SoftwareDrawEngine *drawEngine) {
+	if (pointsU < 2 || pointsV < 2 || (vertType & GE_VTYPE_POS_MASK) == 0)
+		return;
+	VertexDecoder &vdecoder = *drawEngine->FindVertexDecoder(vertType);
+	const UVScale uvScale{ 1.0f, 1.0f, 0.0f, 0.0f };
+	alignas(16) u8 decoded[256];
+	auto pos = [&](int u, int v) {
+		const u32 index = PatchIndex(indices, vertType, v * pointsU + u);
+		vdecoder.DecodeVerts(decoded, (const u8 *)controlPoints + vdecoder.VertexSize() * index, &uvScale, 1);
+		Vec3f p;
+		VertexReader(decoded, vdecoder.GetDecVtxFmt(), vertType).ReadPosAuto(p.AsArray());
+		return p;
+	};
+	const Vec3f corner = pos(pointsU - 1, pointsV - 1);
+	const Vec3f du = corner - pos(pointsU - 2, pointsV - 1);
+	const Vec3f dv = corner - pos(pointsU - 1, pointsV - 2);
+	float z = du.x * dv.y - du.y * dv.x;
+	if (patchFacing)
+		z = -z;
+	const int sign = z > 0.0f ? 1 : (z < 0.0f ? -1 : 0);
+	if (sign != zeroNormalSign_) {
+		// A run's chunks read it.
+		FinishRun();
+		zeroNormalSign_ = sign;
+	}
+}
 
 // Tuned on a 16 core Ryzen under WSL2, where a thread wake up costs the waker about 15 us and takes about 50 us
 // to arrive: on bare metal, other values may pay off. Below this, a run's vertices are transformed a draw at a

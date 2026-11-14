@@ -16,15 +16,6 @@
 #include <cmath>
 #include <cassert>
 
-#if defined(_DEBUG) && (defined(XR_USE_GRAPHICS_API_OPENGL) || defined(XR_USE_GRAPHICS_API_OPENGL_ES))
-
-void GLCheckErrors(const char* file, int line);
-
-#define GL(func) func; GLCheckErrors(__FILE__ , __LINE__);
-#else
-#define GL(func) func;
-#endif
-
 #if defined(_DEBUG)
 static void OXR_CheckErrors(XrInstance instance, XrResult result, const char* function, bool failOnError) {
 	if (XR_FAILED(result)) {
@@ -67,14 +58,17 @@ typedef struct {
 	uint32_t TextureSwapChainIndex;
 	ovrSwapChain ColorSwapChain;
 	void* ColorSwapChainImage;
-	unsigned int* GLDepthBuffers;
-	unsigned int* GLFrameBuffers;
+	// One swapchain whose images have a layer per eye.
+	int ArraySize;
+	int64_t SwapchainFormat;  // As created. Rendered through a UNORM view when it's sRGB.
 
 	bool Acquired;
+	// At least one image has been released, so the swapchain can be put in a layer.
+	bool EverReleased;
 } ovrFramebuffer;
 
 typedef struct {
-	ovrFramebuffer FrameBuffer[ovrMaxNumEyes];
+	ovrFramebuffer FrameBuffer;
 } ovrRenderer;
 
 typedef struct {
@@ -99,6 +93,11 @@ typedef struct {
 	int LayerCount;
 
 	ovrRenderer Renderer;
+
+#ifdef XR_USE_GRAPHICS_API_VULKAN
+	// Set before VR_EnterVR, which creates the session with it.
+	XrGraphicsBindingVulkanKHR VulkanBinding;
+#endif
 } ovrApp;
 
 #ifdef ANDROID
@@ -122,6 +121,7 @@ enum VRPlatformFlag {
 	VR_PLATFORM_EXTENSION_PASSTHROUGH,
 	VR_PLATFORM_EXTENSION_PERFORMANCE,
 	VR_PLATFORM_TRACKING_FLOOR,
+	VR_PLATFORM_EXTENSION_VULKAN,  // The runtime has XR_KHR_vulkan_enable.
 	VR_PLATFORM_MAX
 };
 

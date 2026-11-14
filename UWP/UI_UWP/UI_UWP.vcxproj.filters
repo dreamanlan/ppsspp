@@ -35,6 +35,9 @@
     <ClCompile Include="..\..\UI\ImDebugger\ImJitViewer.cpp">
       <Filter>ImDebugger</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\UI\ImDebugger\ImProfiler.cpp">
+      <Filter>ImDebugger</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\UI\ChatScreen.cpp">
       <Filter>Screens</Filter>
     </ClCompile>
@@ -105,6 +108,9 @@
       <Filter>Screens</Filter>
     </ClCompile>
     <ClCompile Include="..\..\UI\MemStickScreen.cpp">
+      <Filter>Screens</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\UI\StorageTestScreen.cpp">
       <Filter>Screens</Filter>
     </ClCompile>
     <ClCompile Include="..\..\UI\MiscScreens.cpp">
@@ -225,6 +231,9 @@
     <ClInclude Include="..\..\UI\ImDebugger\ImJitViewer.h">
       <Filter>ImDebugger</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\UI\ImDebugger\ImProfiler.h">
+      <Filter>ImDebugger</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\UI\ChatScreen.h">
       <Filter>Screens</Filter>
     </ClInclude>
@@ -295,6 +304,9 @@
       <Filter>Screens</Filter>
     </ClInclude>
     <ClInclude Include="..\..\UI\MemStickScreen.h">
+      <Filter>Screens</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\UI\StorageTestScreen.h">
       <Filter>Screens</Filter>
     </ClInclude>
     <ClInclude Include="..\..\UI\MiscScreens.h">

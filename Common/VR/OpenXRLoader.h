@@ -3,9 +3,6 @@
 #ifdef ANDROID
 #include <jni.h>
 #define XR_USE_PLATFORM_ANDROID 1
-#define XR_USE_GRAPHICS_API_OPENGL_ES 1
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
 
 #if OPENXR
 // One of the Android-based headsets. We're linking with a static OpenXR loader.
@@ -18,10 +15,6 @@
 #include "Common/CommonWindows.h"
 #if defined(WINAPI_FAMILY) && defined(WINAPI_FAMILY_PARTITION)
 #if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_APP) && WINAPI_FAMILY == WINAPI_FAMILY_DESKTOP_APP
-#if defined(_M_IX86) || defined(_M_X64)
-#include "Common/GPU/OpenGL/GLCommon.h"
-#define XR_USE_GRAPHICS_API_OPENGL 1
-#endif
 #define XR_USE_PLATFORM_WIN32 1
 #endif
 #endif
@@ -30,6 +23,12 @@
 #define XR_NO_PROTOTYPES 1
 #else
 #define XR_NO_PROTOTYPES 1
+#endif
+
+#if defined(ANDROID) || (defined(_WIN32) && defined(XR_USE_PLATFORM_WIN32))
+// Brings in the Vulkan types (no prototypes, we load Vulkan ourselves).
+#include "Common/GPU/Vulkan/VulkanLoader.h"
+#define XR_USE_GRAPHICS_API_VULKAN 1
 #endif
 
 #include <openxr/openxr.h>

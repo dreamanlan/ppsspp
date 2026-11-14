@@ -58,6 +58,8 @@ class Debugger:
 		self.send("broadcast.config.set", disallowed={"logger": not logs, "input": True})
 
 	def close(self):
+		if getattr(self, "shared", False):
+			return
 		try:
 			self.sock.close()
 		except OSError:
@@ -145,6 +147,21 @@ class Debugger:
 			self.wait_for(lambda m: m.get("event") == "cpu.resume")
 
 
+# One connection per instance for the whole command. `wait` polls every few milliseconds, and a
+# connection per poll means thousands of them, each with its own thread and subscribers on the
+# PPSSPP side.
+_connections = {}
+
+
+def connect(inst):
+	dbg = _connections.get(inst["port"])
+	if dbg is None:
+		dbg = Debugger(inst["port"])
+		dbg.shared = True
+		_connections[inst["port"]] = dbg
+	return dbg
+
+
 def session_file(args):
 	return os.path.join(args.dir, "session.json")
 
@@ -168,7 +185,7 @@ def emulated_seconds(session):
 	# The slowest instance's clock: the one a script is waiting for.
 	times = []
 	for inst in session["instances"]:
-		dbg = Debugger(inst["port"])
+		dbg = connect(inst)
 		times.append(dbg.request("cpu.status")["us"] / 1e6)
 		dbg.close()
 	return min(times)
@@ -241,13 +258,28 @@ def cmd_start(args):
 	if not args.no_sync:
 		# The instances keep within an emulated millisecond of each other through this file (InitInstanceSync).
 		sync_file = os.path.join(args.dir, "sync")
-		with open(sync_file, "wb") as f:
-			f.write(bytes(4096))
+		# On Windows, instances of the last session that are still exiting keep it mapped for a moment.
+		for attempt in range(50):
+			try:
+				with open(sync_file, "wb") as f:
+					f.write(bytes(4096))
+				break
+			except OSError:
+				if attempt == 49:
+					raise
+				time.sleep(0.1)
 	instances = []
 	for n in range(1, args.n + 1):
 		memstick = os.path.join(args.dir, "memstick%d" % n)
 		shutil.rmtree(memstick, ignore_errors=True)
-		shutil.copytree(os.path.join(args.memstick, "PSP", "SAVEDATA"), os.path.join(memstick, "PSP", "SAVEDATA"))
+		savedata = os.path.join(args.memstick, "PSP", "SAVEDATA")
+		if args.savedata is None:
+			shutil.copytree(savedata, os.path.join(memstick, "PSP", "SAVEDATA"))
+		else:
+			os.makedirs(os.path.join(memstick, "PSP", "SAVEDATA"))
+			for pattern in filter(None, args.savedata.split(",")):
+				for path in glob.glob(os.path.join(savedata, pattern)):
+					shutil.copytree(path, os.path.join(memstick, "PSP", "SAVEDATA", os.path.basename(path)))
 		log = os.path.join(args.dir, "instance%d.log" % n)
 		cmd = [headless, "--graphics=" + args.graphics, "--memstick=" + memstick,
 			"--nand=" + os.path.join(args.memstick, "PSP", "NAND"), "--realtime", "--instance=%d" % n,
@@ -304,11 +336,34 @@ def cmd_stop(args):
 	except FileNotFoundError:
 		return
 	for inst in session["instances"]:
+		if inst.get("pid") is None:
+			continue  # Attached: not ours to stop.
 		try:
 			os.kill(inst["pid"], 15)
 		except ProcessLookupError:
 			pass
 	os.remove(session_file(args))
+
+
+def cmd_attach(args):
+	# A session of one already running PPSSPP (the app, say) with the debugger on --port. With --adb, the
+	# app on an Android device, its debugger port forwarded to this machine, and screenshots taken with
+	# screencap from --rect, the game's image on the device's screen.
+	if os.path.exists(session_file(args)):
+		cmd_stop(args)
+	os.makedirs(args.dir, exist_ok=True)
+	inst = {"n": 1, "pid": None, "log": None, "port": args.port}
+	if args.adb is not None:
+		if not args.rect:
+			sys.exit("--adb needs --rect X,Y,W,H: where the game's image is on the device's screen")
+		inst["adb"] = args.adb
+		inst["rect"] = parse_ints(args.rect, 4)
+		subprocess.run(["adb"] + (["-s", args.adb] if args.adb else []) + ["forward", "tcp:%d" % args.port, "tcp:%d" % args.port], check=True, capture_output=True)
+	connect(inst).request("cpu.status")
+	session = {"game": None, "instances": [inst], "speed": 100, "attached": True}
+	with open(session_file(args), "w") as f:
+		json.dump(session, f, indent=1)
+	print("Attached to port %d%s, session in %s" % (args.port, " over adb" if args.adb is not None else "", args.dir))
 	print("Stopped")
 
 
@@ -318,7 +373,7 @@ def cmd_press(args):
 		if t > 0:
 			emulated_sleep(session, args.every)
 		for inst in selected(session, args.i):
-			dbg = Debugger(inst["port"])
+			dbg = connect(inst)
 			# The answer only comes once the press is over, so don't wait for it.
 			dbg.send("input.buttons.press", button=args.button, duration=args.frames)
 			dbg.close()
@@ -340,7 +395,7 @@ def cmd_type(args):
 
 	def press(button):
 		for inst in insts:
-			dbg = Debugger(inst["port"])
+			dbg = connect(inst)
 			dbg.send("input.buttons.press", button=button, duration=3)
 			dbg.close()
 		emulated_sleep(session, 0.15)
@@ -373,12 +428,12 @@ def cmd_stick(args):
 	session = load_session(args)
 	insts = selected(session, args.i)
 	for inst in insts:
-		dbg = Debugger(inst["port"])
+		dbg = connect(inst)
 		dbg.request("input.analog.send", x=args.x, y=args.y)
 		dbg.close()
 	emulated_sleep(session, args.seconds)
 	for inst in insts:
-		dbg = Debugger(inst["port"])
+		dbg = connect(inst)
 		dbg.request("input.analog.send", x=0, y=0)
 		dbg.close()
 
@@ -387,11 +442,27 @@ def cmd_wait(args):
 	emulated_sleep(load_session(args), args.seconds)
 
 
+def grab_adb_png(inst):
+	# The device's screen, cut down to the game's image and scaled to the PSP's 480x272, so references
+	# and pixel positions mean the same as with headless. Doesn't pause emulation, unlike the debugger's
+	# screenshot, so it can watch a run that's being profiled.
+	import io
+	from PIL import Image
+	cmd = ["adb"] + (["-s", inst["adb"]] if inst["adb"] else []) + ["exec-out", "screencap", "-p"]
+	screen = Image.open(io.BytesIO(subprocess.run(cmd, capture_output=True, check=True).stdout))
+	x, y, w, h = inst["rect"]
+	out = io.BytesIO()
+	screen.convert("RGB").crop((x, y, x + w, y + h)).resize((480, 272), Image.BILINEAR).save(out, "PNG")
+	return out.getvalue()
+
+
 def grab_png(inst, attempts=3):
+	if inst.get("adb") is not None:
+		return grab_adb_png(inst)
 	# An instance busy loading can be slow to answer; try again rather than end a long script.
 	for attempt in range(attempts):
 		try:
-			dbg = Debugger(inst["port"])
+			dbg = connect(inst)
 			dbg.stop_cpu()
 			answer = dbg.request("gpu.buffer.screenshot", type="uri")
 			dbg.resume_cpu()
@@ -428,12 +499,29 @@ def cmd_shot(args):
 def cmd_stats(args):
 	session = load_session(args)
 	for inst in selected(session, args.i):
-		dbg = Debugger(inst["port"])
+		dbg = connect(inst)
 		status = dbg.request("cpu.status")
 		stats = dbg.request("gpu.stats.get", timeout=5)
 		dbg.close()
 		print("instance %d: %.1f s emulated, %.1f fps, %.1f vblanks/s" % (inst["n"], status["us"] / 1e6,
 			stats["fps"]["actual"], stats["vblanksPerSecond"]["actual"]))
+
+
+def cmd_jitstats(args):
+	# Cumulative since the JIT started, so a script reads it twice and compares.
+	session = load_session(args)
+	for inst in selected(session, args.i):
+		dbg = connect(inst)
+		status = dbg.request("cpu.status")
+		stats = dbg.request("cpu.jitStats", timeout=5)
+		dbg.close()
+		if not stats.get("jit"):
+			print("instance %d: no JIT" % inst["n"])
+			continue
+		print("instance %d: %.1f s emulated, %d blocks (%d valid), %d invalidations (%d blocks), "
+			"%d large invalidation checks (%d blocks changed), %d full clears" % (inst["n"], status["us"] / 1e6,
+			stats["blocks"], stats["validBlocks"], stats["invalidations"], stats["invalidatedBlocks"],
+			stats["changedCodeChecks"], stats["changedCodeBlocks"], stats["fullClears"]))
 
 
 def parse_ints(text, count):
@@ -461,9 +549,16 @@ def screen_matches(args, image):
 	mask = ref.getchannel("A").point(lambda a: 255 if a >= 128 else 0) if "A" in ref.getbands() else None
 	ref = ref.convert("RGB")
 	x, y = parse_ints(args.box, 2)[:2] if args.box else (0, 0)
-	region = image.convert("RGB").crop((x, y, x + ref.width, y + ref.height))
-	diff = ImageStat.Stat(ImageChops.difference(region, ref), mask).mean
-	return sum(diff) / len(diff) <= args.tolerance
+	screen = image.convert("RGB")
+	# --slack N also tries the reference up to N pixels off in each direction, for screens that land a
+	# pixel or two away from where they did when the reference was cut.
+	for dy in range(-args.slack, args.slack + 1):
+		for dx in range(-args.slack, args.slack + 1):
+			region = screen.crop((x + dx, y + dy, x + dx + ref.width, y + dy + ref.height))
+			diff = ImageStat.Stat(ImageChops.difference(region, ref), mask).mean
+			if sum(diff) / len(diff) <= args.tolerance:
+				return True
+	return False
 
 
 def cmd_until(args):
@@ -487,13 +582,45 @@ def cmd_until(args):
 			sys.exit("until: instances %s never matched; their screens are in until_failed_N.png" % ",".join(str(i["n"]) for i in waiting))
 		if args.press and (last_press is None or now - last_press >= args.every):
 			for inst in waiting:
-				dbg = Debugger(inst["port"])
+				dbg = connect(inst)
 				dbg.send("input.buttons.press", button=args.press, duration=6)
 				dbg.close()
 			last_press = now
-		waiting = [inst for inst in waiting if not screen_matches(args, Image.open(io.BytesIO(grab_png(inst))))]
+		waiting = [inst for inst in waiting if not matches_any(args, Image.open(io.BytesIO(grab_png(inst))))]
 		if waiting:
 			time.sleep(wall_seconds(session, args.poll))
+
+
+def matches_any(args, image):
+	# The reference, or any of the --or ones (REF@X,Y), for screens that differ between runs: a menu
+	# that only shows when there's a save, say. Follow with "if" to tell which it was.
+	if screen_matches(args, image):
+		return True
+	for alt in getattr(args, "alt", None) or []:
+		ref, _, box = alt.partition("@")
+		if screen_matches(argparse.Namespace(ref=ref, box=box or None, pixel=None, tolerance=args.tolerance,
+				slack=args.slack, base=getattr(args, "base", ".")), image):
+			return True
+	return False
+
+
+def run_if(args, line):
+	# "if REF --box X,Y : COMMAND ; COMMAND ..." runs the commands when each selected instance shows the
+	# reference now (one screenshot each, no waiting). The condition takes until's matching options.
+	import io
+	from PIL import Image
+	cond, _, then = line[3:].partition(":")
+	if not then.strip():
+		sys.exit("if needs ': COMMAND' after the condition: %r" % line)
+	sub = build_parser().parse_args(["--dir", args.dir, "until"] + cond.split())
+	sub.base = os.path.dirname(os.path.abspath(args.script))
+	session = load_session(sub)
+	if all(matches_any(sub, Image.open(io.BytesIO(grab_png(inst)))) for inst in selected(session, sub.i)):
+		for command in then.split(";"):
+			command = command.strip()
+			if command:
+				print(">   " + command)
+				run_line(args, command)
 
 
 def cmd_crop(args):
@@ -509,7 +636,7 @@ def cmd_log(args):
 		print("log: verbose messages are compiled out (MAX_LOGLEVEL in Common/Log.h); this shows debug and above", file=sys.stderr)
 	session = load_session(args)
 	for inst in selected(session, args.i):
-		dbg = Debugger(inst["port"])
+		dbg = connect(inst)
 		dbg.request("log.channel.set", channel=args.channel, level=args.level, enabled=True)
 		dbg.close()
 
@@ -542,6 +669,15 @@ def cmd_watch(args):
 COMMANDS = {}
 
 
+def run_line(args, line):
+	if line.startswith("if "):
+		run_if(args, line)
+		return
+	sub = build_parser().parse_args(["--dir", args.dir] + line.split())
+	sub.base = os.path.dirname(os.path.abspath(args.script))
+	COMMANDS[sub.command](sub)
+
+
 def cmd_run(args):
 	with open(args.script) as f:
 		for line in f:
@@ -549,9 +685,7 @@ def cmd_run(args):
 			if not line:
 				continue
 			print("> " + line)
-			sub = build_parser().parse_args(["--dir", args.dir] + line.split())
-			sub.base = os.path.dirname(os.path.abspath(args.script))
-			COMMANDS[sub.command](sub)
+			run_line(args, line)
 
 
 def build_parser():
@@ -572,6 +706,7 @@ def build_parser():
 	p.add_argument("--speed", type=int, default=100, help="Run at this percentage of PSP speed (scripts count emulated time)")
 	p.add_argument("--state", help="Savestate to load at boot in every instance")
 	p.add_argument("--memstick", default=DEFAULT_MEMSTICK, help="Memory stick to take the firmware and savedata from")
+	p.add_argument("--savedata", help="Copy only the savedata folders matching these comma-separated globs (like ULUS10041*); empty for none")
 	p.add_argument("--graphics", default="vulkan")
 	p.add_argument("--headless", help="PPSSPPHeadless to run (default: the newest build*/ one)")
 	p.add_argument("--timeout", type=int, default=3600, help="Wall-clock seconds before the instances quit")
@@ -606,12 +741,17 @@ def build_parser():
 	p = sub.add_parser("stats", help="Emulated time and frame rate of each instance")
 	p.add_argument("-i")
 
+	p = sub.add_parser("jitstats", help="JIT block cache counters of each instance (cumulative)")
+	p.add_argument("-i")
+
 	p = sub.add_parser("until", help="Wait until the screen shows something: a region like a reference image, or a pixel's color")
 	p.add_argument("ref", nargs="?", help="Reference image (a crop of a screenshot, see crop); relative to the script in a script")
 	p.add_argument("--box", help="X,Y where the reference image goes on the screen (default 0,0)")
+	p.add_argument("--or", dest="alt", action="append", help="REF@X,Y: or this reference there (repeatable); a script follows with 'if REF --box X,Y : COMMANDS' to tell which")
 	p.add_argument("--pixel", help="X,Y of a pixel to check instead")
 	p.add_argument("--color", help="With --pixel: RRGGBB")
 	p.add_argument("--tolerance", type=float, default=12, help="Mean difference per channel allowed (0-255; default 12)")
+	p.add_argument("--slack", type=int, default=0, help="Also try the reference up to this many pixels off in each direction")
 	p.add_argument("--press", help="Keep pressing this button while waiting")
 	p.add_argument("--every", type=float, default=2, help="With --press: seconds between presses (default 2)")
 	p.add_argument("--timeout", type=float, default=60)
@@ -637,10 +777,15 @@ def build_parser():
 	p.add_argument("script")
 
 	sub.add_parser("stop", help="Stop the instances")
+
+	p = sub.add_parser("attach", help="Drive one PPSSPP that's already running with --debugger=PORT, like the app on a phone")
+	p.add_argument("--port", type=int, default=45678)
+	p.add_argument("--adb", nargs="?", const="", help="It runs on an Android device (this serial, or the only one): forward the port and screenshot with screencap")
+	p.add_argument("--rect", help="With --adb: X,Y,W,H of the game's image on the device's screen, in its pixels")
 	return parser
 
 
-COMMANDS.update(start=cmd_start, stop=cmd_stop, press=cmd_press, stick=cmd_stick, type=cmd_type, wait=cmd_wait, shot=cmd_shot, stats=cmd_stats, until=cmd_until, crop=cmd_crop, log=cmd_log,
+COMMANDS.update(start=cmd_start, stop=cmd_stop, attach=cmd_attach, press=cmd_press, stick=cmd_stick, type=cmd_type, wait=cmd_wait, shot=cmd_shot, stats=cmd_stats, jitstats=cmd_jitstats, until=cmd_until, crop=cmd_crop, log=cmd_log,
 	watch=cmd_watch, run=cmd_run)
 
 

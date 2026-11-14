@@ -34,12 +34,13 @@
 #include "Core/Util/PathUtil.h"
 
 #include "UI/FirmwareScreen.h"
+#include "UI/GameInfoCache.h"
 #include "UI/InstallUpdateScreen.h"
 #include "UI/MiscViews.h"
 
 std::string_view FirmwareScreen::GetTitle() const {
 	auto sy = GetI18NCategory(I18NCat::SYSTEM);
-	return sy->T("PSP Firmware");
+	return sy->T("PSP firmware (XMB)");
 }
 
 void FirmwareScreen::BeforeCreateViews() {
@@ -100,6 +101,14 @@ void FirmwareScreen::CreateContentViews(UI::ViewGroup *parent) {
 
 	ChoiceGroupList *list = parent->Add(new ChoiceGroupList());
 
+	// The description needs no scan, so it's there while loading too.
+	list->Add(new HintView(sy->T("FirmwareSources", "Installing a PSP firmware can improve game compatibility, gives some games their proper fonts, and lets you run the XMB, the real PSP's main menu. PPSSPP works without one, but having one installed is highly recommended.")));
+
+	// Matters most when there's no firmware yet, since that's when a disc's updater gets installed.
+	ChoiceGroup *contentSettings = list->Add(new ChoiceGroup());
+	contentSettings->Add(new CheckBox(&g_Config.bAutoUpgradeFirmware, sy->T("Install or upgrade firmware from game discs"),
+		sy->T("AutoUpgradeFirmwareDesc", "Most game discs carry a firmware updater. Install it when there's no firmware yet, or when the disc's is newer.")));
+
 	if (!scanned_) {
 		auto mm = GetI18NCategory(I18NCat::MAINMENU);
 		list->Add(new TextView(mm->T("Loading..."), ALIGN_LEFT, false));
@@ -107,8 +116,7 @@ void FirmwareScreen::CreateContentViews(UI::ViewGroup *parent) {
 	}
 
 	if (!info_.anythingInstalled) {
-		list->Add(new NoticeView(NoticeLevel::INFO, sy->T("No firmware installed"),
-			sy->T("FirmwareSources", "PPSSPP has its own replacements for the PSP's system files, so a firmware is optional. Installing one gets you the real fonts, and lets you launch the XMB. Most game discs carry a firmware updater - open a game's info screen to install from it.")));
+		list->Add(new NoticeView(NoticeLevel::INFO, sy->T("No firmware installed"), ""));
 		list->Add(new TextWithImage(ImageID("I_FOLDER"), GetFriendlyPath(nandRoot_)));
 		return;
 	}
@@ -171,10 +179,6 @@ void FirmwareScreen::CreateSettingsViews(UI::ViewGroup *parent) {
 	ChoiceGroup *launchGroup = groups->Add(new ChoiceGroup());
 	Choice *launch = launchGroup->Add(new Choice(sy->T("Launch XMB"), ImageID("I_PLAY")));
 
-	ChoiceGroup *settings = groups->Add(new ChoiceGroup());
-	settings->Add(new CheckBox(&g_Config.bAutoUpgradeFirmware, sy->T("Install or upgrade firmware from game discs"),
-		sy->T("AutoUpgradeFirmwareDesc", "Most game discs carry a firmware updater. Install it when there's no firmware yet, or when the disc's is newer.")));
-
 	ChoiceGroup *actions = groups->Add(new ChoiceGroup());
 	launch->OnClick.Add([this](UI::EventParams &) {
 		LaunchVSH();
@@ -207,7 +211,7 @@ void FirmwareScreen::CreateSettingsViews(UI::ViewGroup *parent) {
 
 	Choice *moreInfo = groups->Add(new ChoiceGroup())->Add(new Choice(di->T("More info")));
 	moreInfo->OnClick.Add([](UI::EventParams &) {
-		System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org/docs/getting-started/how-to-run-the-vsh/");
+		System_LaunchUrl(LaunchUrlType::BROWSER_URL, "https://www.ppsspp.org/docs/getting-started/how-to-run-the-xmb/");
 	});
 	moreInfo->SetIconRight(ImageID("I_LINK_OUT"));
 
@@ -232,7 +236,10 @@ void FirmwareScreen::BrowseForUpdater() {
 	auto iz = GetI18NCategory(I18NCat::INSTALLZIP);
 	System_BrowseForFile(GetRequesterToken(), iz->T("Install PSP firmware update"), BrowseFileType::BOOTABLE,
 		[this](std::string_view value, int) {
-		screenManager()->push(new InstallUpdateScreen(Path(value), "", false));
+		const Path path(value);
+		std::shared_ptr<GameInfo> info = g_gameInfoCache->GetInfo(nullptr, path, GameInfoFlags::PARAM_SFO, nullptr, GameInfoFlags::EMPTY, TaskPriority::HIGH);
+		info->WaitUntilReady(GameInfoFlags::PARAM_SFO);
+		screenManager()->push(new InstallUpdateScreen(path, info->GetTitle(), false));
 	});
 }
 

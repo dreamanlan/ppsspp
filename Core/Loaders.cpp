@@ -388,13 +388,11 @@ bool UmdMount(const Path &filepath, FileLoader **fileLoader, std::string &error)
 		delete loadedFile;
 		return false;
 	}
-	UpdateLoadedFile(loadedFile);
-
 	std::string errorString;
 	IdentifiedFileType fileType;
+	// Can delete loadedFile and return another, or return a ZipFileLoader that owns it, so what it
+	// returns is what g_loadedFile owns.
 	loadedFile = ResolveFileLoaderTarget(loadedFile, &fileType, &errorString);
-
-	*fileLoader = loadedFile;
 
 	switch (fileType) {
 	case IdentifiedFileType::PSP_ISO:
@@ -403,14 +401,21 @@ bool UmdMount(const Path &filepath, FileLoader **fileLoader, std::string &error)
 	case IdentifiedFileType::PSP_UMD_VIDEO_ISO:
 		if (!MountGameISO(loadedFile, &error)) {
 			error = "mounting the ISO failed: " + error;
+			delete loadedFile;
 			return false;
 		}
 		break;
 	default:
 		error = "Unsupported file type: " + std::string(IdentifiedFileTypeToString(fileType)) + " " + errorString;
+		delete loadedFile;
 		return false;
-		break;
 	}
+
+	// Only now, with the old disc's file systems replaced, is the old loader unused: a swap that
+	// fails leaves the old disc mounted. Reads hold pspFileSystem's lock, which Mount takes, so none
+	// is still going on the IO thread either.
+	UpdateLoadedFile(loadedFile);
+	*fileLoader = loadedFile;
 	return true;
 }
 
@@ -671,6 +676,7 @@ void DetectZipFileContents(zip_t *z, ZipFileInfo *info) {
 	bool hasIcon0PNG = false;
 	bool hasPRX = false;
 	bool hasPluginIni = false;
+	bool isPS3SaveData = false;  // Same PARAM.SFO + ICON0.PNG layout as a PSP save, but useless to us.
 	s64 totalFileSize = 0;
 	std::vector<ArchiveEntry> archiveEntries;  // In the root or one level down, where a disc image can be.
 
@@ -678,6 +684,10 @@ void DetectZipFileContents(zip_t *z, ZipFileInfo *info) {
 	// is quite convenient and makes it easy to add shared heuristics.
 	for (int i = 0; i < numFiles; i++) {
 		const char *fn = zip_get_name(z, i, 0);
+		if (!fn) {
+			// A corrupt central directory entry.
+			continue;
+		}
 
 		zip_stat_t stat{};
 		zip_stat_index(z, i, 0, &stat);
@@ -748,6 +758,10 @@ void DetectZipFileContents(zip_t *z, ZipFileInfo *info) {
 			if (ZipExtractFileToMemory(z, i, &paramSFOContents)) {
 				ParamSFOData sfo;
 				if (sfo.ReadSFO((const u8 *)paramSFOContents.data(), paramSFOContents.size())) {
+					// PSP saves have category MS, PS3 saves SD.
+					if (sfo.GetValueString("CATEGORY") == "SD") {
+						isPS3SaveData = true;
+					}
 					if (sfo.HasKey("TITLE")) {
 						info->gameTitle = sfo.GetValueString("TITLE");
 						info->savedataTitle = sfo.GetValueString("SAVEDATA_TITLE");
@@ -763,6 +777,9 @@ void DetectZipFileContents(zip_t *z, ZipFileInfo *info) {
 					}
 				}
 			}
+		} else if (lowerCaseName == "param.pfd" || endsWith(lowerCaseName, "/param.pfd")) {
+			// The PS3's save data protection file. PSP saves don't have one.
+			isPS3SaveData = true;
 		} else if (endsWith(lowerCaseName, "/icon0.png")) {
 			hasIcon0PNG = true;
 		} else if (endsWith(lowerCaseName, "/plugin.ini") && slashCount >= 1) {
@@ -818,6 +835,9 @@ void DetectZipFileContents(zip_t *z, ZipFileInfo *info) {
 		info->stripChars = stripCharsTexturePack;
 		info->ignoreMetaFiles = true;
 		info->contents = ZipFileContents::TEXTURE_PACK;
+	} else if (isPS3SaveData) {
+		WARN_LOG(Log::Loader, "Zip contains PS3 save data, not PSP");
+		info->contents = ZipFileContents::UNKNOWN;
 	} else if (stripChars == 0 && filesInRoot == 0 && hasParamSFO && hasIcon0PNG && !isExtractedISO) {
 		// As downloaded from GameFAQs, for example.
 		info->contents = ZipFileContents::SAVE_DATA;

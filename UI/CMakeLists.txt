@@ -22,6 +22,8 @@ list(APPEND UISource
 	ImDebugger/ImStructViewer.h
 	ImDebugger/ImJitViewer.cpp
 	ImDebugger/ImJitViewer.h
+	ImDebugger/ImProfiler.cpp
+	ImDebugger/ImProfiler.h
 	DiscordIntegration.cpp
 	DiscordIntegration.h
 	NativeApp.cpp
@@ -133,7 +135,9 @@ list(APPEND UISource
 	JitCompareScreen.h
 	JitCompareScreen.cpp
 	MemStickScreen.h
+	StorageTestScreen.h
 	MemStickScreen.cpp
+	StorageTestScreen.cpp
 	ProfilerDraw.h
 	ProfilerDraw.cpp
 	CustomButtonMappingScreen.h

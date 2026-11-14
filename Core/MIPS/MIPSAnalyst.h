@@ -106,8 +106,17 @@ namespace MIPSAnalyst {
 	void RegisterFunction(u32 startAddr, u32 size, const char *name);
 	// Returns new insertSymbols value for FinalizeScan().
 	bool ScanForFunctions(u32 startAddr, u32 endAddr, bool insertSymbols);
-	void FinalizeScan(bool insertSymbols);
+	// After scanning start to end (inclusive): hashes the functions found there, names them from the
+	// hash map and installs replacements.
+	void FinalizeScan(bool insertSymbols, u32 start, u32 end);
 	void ForgetFunctions(u32 startAddr, u32 endAddr);
+
+	// Debugger helpers. The range is widened to whole instructions. Callers should clear
+	// g_disassemblyManager afterwards.
+	void ScanFunctionsInRange(u32 addr, u32 size);
+	// Removes the function symbols starting in (or containing the start of) the range, forgets
+	// them, and reapplies replacements. Returns the number removed.
+	u32 RemoveFunctionsInRange(u32 addr, u32 size);
 
 	bool GetAnalyzedFunctionAt(u32 addr, AnalyzedFunction *out);
 	// endAddr is exclusive.
